@@ -137,6 +137,8 @@ from . import gateway_contract as contract
 from .composer import COMPLETE, EXIT, IMAGE_LABEL, INTERRUPT, SUBMIT, Composer, ComposerAction
 from .frame import INFO_INSET, MODE_NORMAL, MODE_SHELL, Frame, badge_forms, branch_forms, build_frame, sticky_line
 from .git_status import GitWatcher
+from .omp_look import LOOK_OMP, resolve_look  # fork q-design
+from .omp_look.wire import chrome_for  # fork q-design
 from .history import SEARCH_ACCEPT, SEARCH_CANCEL, SEARCH_HINTS, HistorySearch, append_entry, history_path, load_history
 from .gateway import (
     Event,
@@ -1880,6 +1882,8 @@ class App(ModesMixin, AgentViewMixin):
         self.turn_shown = 0  # the most tokens the working row has said this turn: it never goes back
         self.spinner_verb = ""  # Hermes' last spinner verb this turn: it stays in the verb slot while a status says more
         self.session_title = ""  # Hermes' auto-title for the session (`session.title`)
+        # fork q-design: the OMP look (opt-in), the last usage block and when the TUI started, for its status line
+        self.omp_look, self.omp_usage, self.omp_started_at = resolve_look(self.environ) == LOOK_OMP, None, time.monotonic()
         self.shown_title: str | None = None  # the terminal title last written
         self.title_words = ""  # what that title was cut from: the same words need no new cut
         # The info line's right side last composed: what it showed, and the theme and HUD snapshot it was composed with.
@@ -3034,6 +3038,8 @@ class App(ModesMixin, AgentViewMixin):
         if percent is not None and isinstance(usage, dict):
             self.context_percent = percent
             self.context_used, self.context_max = usage["context_used"], usage["context_max"]
+        if isinstance(usage, dict):  # fork q-design
+            self.omp_usage = usage
         output, calls = usage_count(usage, "output"), usage_count(usage, "calls")
         if output is None:
             return
@@ -6604,6 +6610,7 @@ class App(ModesMixin, AgentViewMixin):
             slot_caret=self._slot_caret(),  # read after `_slot_lines` drew the picker it comes from
             theme=self.theme,
             mode=self._display_mode(),
+            chrome=chrome_for(self) if self.omp_look else None,  # fork q-design
             placeholder=(TELL_PLACEHOLDER if self.tell_draft is not None else PLACEHOLDER)
             if self._composer_open()
             else "",
