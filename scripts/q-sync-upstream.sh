@@ -8,6 +8,7 @@
 #
 # Exit codes: 0 up to date or synced, 2 rebase conflict (rebase aborted, tree clean),
 # 3 tests failed after a clean rebase (q-design left rebased locally, not pushed), 4 install failed.
+# `--install` reinstalls OMH from the fork when the installed commit ($OMH_HOME/q-design-installed) is not HEAD.
 # Output is stable (no timestamps) so a cron monitor can hash it.
 set -eu
 cd "$(dirname "$0")/.."
@@ -27,8 +28,25 @@ git merge -q --ff-only upstream/main
 git push -q origin main
 git switch -q q-design
 
+install_if_new() {
+  # Reinstall OMH only when the installed q-design commit is not this one.
+  [ "${1:-}" = "--install" ] || return 0
+  head=$(git rev-parse --short HEAD)
+  stamp="${OMH_HOME:-$HOME/.omh}/q-design-installed"
+  [ "$(cat "$stamp" 2>/dev/null)" = "$head" ] && return 0
+  git push -q --force-with-lease origin q-design
+  if omh update --package-url "$FORK_ZIP" --source-ref "q-design@$head" --channel preview --yes --no-interactive >/dev/null 2>&1; then
+    echo "$head" > "$stamp"
+    echo "INSTALLED: omh from q-design@$head"
+  else
+    echo "INSTALL_FAILED: omh update from q-design@$head failed (previous generation kept)"
+    exit 4
+  fi
+}
+
 if git merge-base --is-ancestor upstream/main q-design; then
   echo "UP_TO_DATE: q-design already on upstream $(git rev-parse --short upstream/main)"
+  install_if_new "${1:-}"
   exit 0
 fi
 
@@ -56,11 +74,4 @@ fi
 git push -q --force-with-lease origin q-design
 echo "SYNCED: q-design $(git rev-parse --short HEAD) on upstream $(git rev-parse --short upstream/main)"
 
-if [ "${1:-}" = "--install" ]; then
-  if omh update --package-url "$FORK_ZIP" --source-ref "q-design@$(git rev-parse --short HEAD)" --yes --no-interactive >/dev/null 2>&1; then
-    echo "INSTALLED: omh from q-design"
-  else
-    echo "INSTALL_FAILED: omh update from q-design failed (previous generation kept)"
-    exit 4
-  fi
-fi
+install_if_new "${1:-}"
