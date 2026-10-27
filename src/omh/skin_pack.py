@@ -56,6 +56,8 @@ SKIN_THEMES: tuple[SkinTheme, ...] = (
     SkinTheme("amber", "omh-amber", "omh-amber.yaml", "Amber gold on deep bronze."),
     SkinTheme("crimson", "omh-crimson", "omh-crimson.yaml", "Ember red-orange on deep crimson."),
     SkinTheme("mono", "omh-mono", "omh-mono.yaml", "Neutral grayscale with white accents."),
+    # fork q-design: oh-my-pi's titanium palette, last so the default stays sky.
+    SkinTheme("titanium", "omh-titanium", "omh-titanium.yaml", "Electric blue on brushed titanium (oh-my-pi)."),
 )
 
 _SKIN_FILENAMES: tuple[str, ...] = tuple(theme.filename for theme in SKIN_THEMES)

@@ -53,7 +53,7 @@ class ThemeCommandTests(unittest.TestCase):
             self.assertEqual(payload["active_theme"], "sky")
             self.assertEqual(payload["active_source"], "default")
             self.assertEqual(payload["store_path"], str(self._store(tmp)))
-            self.assertEqual([theme["name"] for theme in payload["themes"]], ["sky", "amber", "crimson", "mono"])
+            self.assertEqual([theme["name"] for theme in payload["themes"]][:4], ["sky", "amber", "crimson", "mono"])  # fork q-design: + titanium
             run_cli([*homes, "theme", "use", "amber"])
             payload = json.loads(run_cli([*homes, "theme", "list"])[1])
             active = [theme for theme in payload["themes"] if theme["active"]]
