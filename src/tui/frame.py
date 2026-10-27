@@ -62,6 +62,7 @@ from .style import TRUECOLOR, Line, Span, Style, fill
 from .slash import slash_spans, slash_token_ranges
 from .theme import DEFAULT_THEME, KIND_FAMILIES, Theme, aura_moves, on_band
 from .width import cell_width, line_width, truncate, truncate_line
+from .omp_look.chrome import SIDE_CELLS, PiChrome, inner_width  # fork q-design: the OMP look's composer chrome
 
 RULE = "─"  # the composer's rules, above and under it, full width
 INFO_INSET = 2  # cells before the info line's text, under the rule
@@ -116,6 +117,7 @@ def build_frame(
     gaps: tuple[bool, bool] = (False, False),
     gap_reserve: int = 0,
     tail_spacer: bool = False,
+    chrome: PiChrome | None = None,  # fork q-design
 ) -> Frame:
     """The region for one repaint; `min_height` rows at least, pad rows under the live block making up the rest.
 
@@ -157,12 +159,14 @@ def build_frame(
         base, glint = (tuple(replace(style, depth=aura_depth) for style in styles) if aura_depth != TRUECOLOR
                        else styles for styles in (theme.aura, theme.aura_glint))
         input_lines, (caret_line, caret_col) = composer.render(
-            cols, cap, prompt, mark, theme.muted, marks, theme.slash,
+            cols if chrome is None else inner_width(cols), cap, prompt, mark, theme.muted, marks, theme.slash,
             glow, lambda offset, length: aura_style(base, glint, offset, length, aura),
         )
         if placeholder and not composer.text and input_lines:
             input_lines[0] = truncate_line((*input_lines[0], Span(placeholder, theme.hint)), cols)
         composer_lines = input_lines
+        if chrome is not None:  # fork q-design
+            composer_lines, caret_col = chrome.wrap(composer_lines, cols, theme), caret_col + SIDE_CELLS
     def fit(tail: Sequence[Line]) -> Budget:
         return allocate(
             rows,
@@ -200,9 +204,9 @@ def build_frame(
         sticky=sticky,
         tail=tail,
         slot=slot,
-        rule=rule,
+        rule=rule if chrome is None else chrome.top(cols, theme),  # fork q-design
         composer=_browsing_rows(len(composer_lines), cols, theme) if composer_blank else composer_lines,
-        bottom_rule=rule,
+        bottom_rule=rule if chrome is None else chrome.bottom(cols, theme),  # fork q-design
         info=truncate_line(info, cols),
         below=below,
         agents=agents,
