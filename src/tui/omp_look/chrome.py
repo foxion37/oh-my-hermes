@@ -5,7 +5,7 @@
     ╰───────────────────────────────────────────────────────╯
 
 Pure rendering over `Line`/`Span`; widths are terminal cells. When the top
-edge is too narrow the right group goes first, then the left. The composer's
+edge is too narrow, segments go one at a time from the right group's end, then from the left's. The composer's
 rows are rendered `2 * SIDE_CELLS` narrower and wrapped between `│ ` and ` │`,
 so the caret moves `SIDE_CELLS` to the right.
 """
@@ -41,11 +41,14 @@ class PiChrome:
         if width < 2:
             return (Span("─" * max(width, 0), theme.rule),)
         inner = width - 2  # between ╭ and ╮
-        left, right = _group(self.left, theme), _group(self.right, theme)
+        # Segments go one at a time from the right group's end, then from the left group's end, until both fit.
+        tries = [(len(self.left), k) for k in range(len(self.right), -1, -1)]
+        tries += [(j, 0) for j in range(len(self.left) - 1, -1, -1)]
         lhs: tuple[Span, ...] = ()
         rhs: tuple[Span, ...] = ()
-        for lhs, rhs in ((left, right), (left, ()), ((), ())):
-            if _cost(lhs) + _cost(rhs) <= inner:
+        for keep_left, keep_right in tries:
+            lhs, rhs = _group(self.left[:keep_left], theme), _group(self.right[:keep_right], theme)
+            if _cost(lhs) + _cost(rhs) + (1 if lhs and rhs else 0) <= inner:  # a `─` keeps the groups apart
                 break
         out: list[Span] = [Span("╭", theme.rule)]
         if lhs:
