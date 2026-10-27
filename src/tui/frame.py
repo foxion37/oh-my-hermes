@@ -62,6 +62,7 @@ from .style import TRUECOLOR, Line, Span, Style
 from .slash import slash_token_ranges
 from .theme import DEFAULT_THEME, KIND_FAMILIES, Theme, aura_moves
 from .width import cell_width, truncate, truncate_line
+from .omp_look.chrome import SIDE_CELLS, PiChrome, inner_width  # fork q-design: the OMP look's composer chrome
 
 RULE = "─"  # the composer's rules, above and under it, full width
 RULE_LABEL_LEAD = 8  # the rule cells a label at the top rule's end leaves before it, however long the label
@@ -117,6 +118,7 @@ def build_frame(
     slot_limit: int = 0,
     diagnostics: Sequence[tuple[int, int]] = (),
     rule_label: str = "",
+    chrome: PiChrome | None = None,  # fork q-design
 ) -> Frame:
     """The region for one repaint; `min_height` rows at least, pad rows under the live block making up the rest.
 
@@ -162,7 +164,7 @@ def build_frame(
         base, glint = (tuple(replace(style, depth=aura_depth) for style in styles) if aura_depth != TRUECOLOR
                        else styles for styles in (theme.aura, theme.aura_glint))
         input_lines, (caret_line, caret_col) = composer.render(
-            cols, cap, prompt, mark, theme.muted, marks, theme.slash,
+            cols if chrome is None else inner_width(cols), cap, prompt, mark, theme.muted, marks, theme.slash,
             glow, lambda offset, length: aura_style(base, glint, offset, length, aura),
             diagnostics=diagnostics,
         )
@@ -171,6 +173,8 @@ def build_frame(
         # The mark (or the indent under it) frames what you typed: a drag on the main screen copies only the text.
         composer_lines = [(replace(line[0], style=replace(line[0].style, gutter=True)), *line[1:]) if line else line
                           for line in input_lines]
+        if chrome is not None:  # fork q-design
+            composer_lines, caret_col = chrome.wrap(composer_lines, cols, theme), caret_col + SIDE_CELLS
     def fit(tail: Sequence[Line]) -> Budget:
         return allocate(
             rows,
@@ -223,9 +227,9 @@ def build_frame(
         budget,
         tail=tail,
         slot=slot,
-        rule=rule,
+        rule=rule if chrome is None else chrome.top(cols, theme),  # fork q-design
         composer=_browsing_rows(len(composer_lines), cols, theme) if composer_blank else composer_lines,
-        bottom_rule=bottom_rule,
+        bottom_rule=bottom_rule if chrome is None else chrome.bottom(cols, theme),  # fork q-design
         info=truncate_line(info, cols),
         below=below,
         agents=agents,
