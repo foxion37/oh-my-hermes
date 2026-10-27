@@ -1,0 +1,87 @@
+# OMH identity skin for Hermes Agent — titanium theme (fork q-design).
+#
+# Managed artifact: `omh setup` installs this file into $HERMES_HOME/skins/
+# and refreshes it on update; edits here are overwritten. Same OH-MY-HERMES
+# identity as `omh.yaml` — identical `branding`, spinner, and logo geometry —
+# recoloured with oh-my-pi's titanium-prompt-focus palette (electric blue on
+# brushed titanium). Select it with `omh theme use titanium`.
+name: omh-titanium
+description: OH-MY-HERMES — titanium blue (oh-my-pi palette)
+
+colors:
+  banner_border: "#0082B3"
+  banner_title: "#E8ECF4"
+  banner_accent: "#00B4FF"
+  banner_dim: "#9CA3B0"
+  banner_text: "#E8ECF4"
+  ui_accent: "#00B4FF"
+  ui_label: "#FFFFFF"
+  ui_ok: "#00FF88"
+  ui_error: "#FF4757"
+  ui_warn: "#FFB347"
+  ui_tool: "#00B4FF"
+  ui_thinking: "#9CA3B0"
+  prompt: "#E8ECF4"
+  input_rule: "#2A3038"
+  response_border: "#00B4FF"
+  status_bar_bg: "#151820"
+  status_bar_text: "#E8ECF4"
+  status_bar_strong: "#00B4FF"
+  status_bar_dim: "#6B7280"
+  status_bar_good: "#00FF88"
+  status_bar_warn: "#FFB347"
+  status_bar_bad: "#FFB347"
+  status_bar_critical: "#FF4757"
+  session_label: "#D4C090"
+  session_border: "#2A3038"
+  completion_menu_bg: "#151820"
+  completion_menu_current_bg: "#0082B3"
+  selection_bg: "#0082B3"
+  voice_status_bg: "#151820"
+  syntax_string: "#00FF88"
+  syntax_number: "#D4C090"
+  syntax_keyword: "#00B4FF"
+  syntax_comment: "#6B7280"
+  diff_removed: "#1A0F10"
+  diff_removed_word: "#FF4757"
+  diff_added: "#0F1A14"
+  diff_added_word: "#00FF88"
+spinner:
+  waiting_faces:
+    - "(◆)"
+    - "(≋)"
+    - "(∿)"
+    - "(◇)"
+  thinking_faces:
+    - "(◆)"
+    - "(◇)"
+    - "(≋)"
+    - "(⌁)"
+  thinking_verbs:
+    - "orchestrating"
+    - "routing skills"
+    - "weighing evidence"
+    - "preparing handoffs"
+    - "sequencing agents"
+    - "charting workflows"
+  wings:
+    - ["⟪◆", "◆⟫"]
+    - ["⟪≋", "≋⟫"]
+
+branding:
+  agent_name: "OH-MY-HERMES"
+  welcome: "Welcome to OH-MY-HERMES! Type your message or /help for commands."
+  goodbye: "Goodbye! ◆"
+  response_label: " ◆ OMH "
+  prompt_symbol: "❯"
+  help_header: "(◆) Commands"
+
+tool_prefix: "│"
+
+banner_logo: |-
+  [bold #E8ECF4] ██████╗ ██╗  ██╗      ███╗   ███╗██╗   ██╗      ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗[/]
+  [bold #B8E6FF]██╔═══██╗██║  ██║      ████╗ ████║╚██╗ ██╔╝      ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝[/]
+  [#5CCBFF]██║   ██║███████║█████╗██╔████╔██║ ╚████╔╝ █████╗███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗[/]
+  [#00B4FF]██║   ██║██╔══██║╚════╝██║╚██╔╝██║  ╚██╔╝  ╚════╝██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║[/]
+  [#0096D6]╚██████╔╝██║  ██║      ██║ ╚═╝ ██║   ██║         ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║[/]
+  [#0082B3] ╚═════╝ ╚═╝  ╚═╝      ╚═╝     ╚═╝   ╚═╝         ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝[/]
