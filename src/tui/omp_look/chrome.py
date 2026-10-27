@@ -13,9 +13,9 @@ so the caret moves `SIDE_CELLS` to the right.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from ..style import Line, Span
+from ..style import Line, Span, Style
 from ..theme import Theme
 from ..width import line_width, truncate_line
 from .segments import SEPARATOR, Segment
@@ -36,6 +36,7 @@ def _group(segments: Sequence[Segment], theme: Theme) -> tuple[Span, ...]:
 class PiChrome:
     left: tuple[Segment, ...] = ()
     right: tuple[Segment, ...] = ()
+    band: bool = False  # the composer's text sits on `Theme.input_band`, the look's bright band
 
     def top(self, width: int, theme: Theme) -> Line:
         if width < 2:
@@ -64,14 +65,24 @@ class PiChrome:
             return (Span("─" * max(width, 0), theme.rule),)
         return (Span("╰" + "─" * (width - 2) + "╯", theme.rule),)
 
-    def wrap(self, rows: Sequence[Line], width: int, theme: Theme) -> list[Line]:
-        """Each row between `│ ` and ` │`, padded to `width`; the rows were rendered at `inner_width(width)`."""
+    def wrap(self, rows: Sequence[Line], width: int, theme: Theme, band: Style | None = None) -> list[Line]:
+        """Each row between `│ ` and ` │`, padded to `width`; the rows were rendered at `inner_width(width)`.
+
+        `band` fills the row's background: each span keeps its colour and takes the band's behind it, and the padding
+        past the text is band too, so the band reaches both side cells.
+        """
         inner = inner_width(width)
         wrapped: list[Line] = []
         for row in rows:
             body = truncate_line(tuple(row), inner)
             pad = inner - line_width(body)
-            wrapped.append((Span("│ ", theme.rule), *body, Span(" " * pad), Span(" │", theme.rule)))
+            if band is None or band.bg is None:
+                wrapped.append((Span("│ ", theme.rule), *body, Span(" " * pad), Span(" │", theme.rule)))
+            else:
+                inked = tuple(
+                    Span(span.text, replace(span.style, bg=band.bg, fg=span.style.fg or band.fg)) for span in body
+                )
+                wrapped.append((Span("│ ", theme.rule), *inked, Span(" " * pad, band), Span(" │", theme.rule)))
         return wrapped
 
 
