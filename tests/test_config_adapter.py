@@ -109,6 +109,21 @@ class ConfigAdapterTests(unittest.TestCase):
                 self.assertIn("  external_dirs:\n    - /tmp/omh/skills\n", first.text)
                 self.assertNotIn(f"external_dirs: {value}", first.text)
 
+    def test_ensure_external_dir_accepts_a_key_indent_sequence_elsewhere_in_the_root(self) -> None:
+        # What PyYAML writes for a list under a key, and what Hermes' own config writer leaves behind.
+        original = "model: test\nfallback_providers:\n- provider: commandcode\n- provider: custom\nskills:\n  external_dirs:\n  - /keep\n"
+
+        self.assertEqual(external_dirs(original), ["/keep"])
+        change = ensure_external_dir(original, "/tmp/omh/skills")
+
+        self.assertTrue(change.changed)
+        self.assertEqual(external_dirs(change.text), ["/keep", "/tmp/omh/skills"])
+        self.assertIn("fallback_providers:\n- provider: commandcode\n", change.text)  # untouched
+
+    def test_mutations_still_reject_a_sequence_root(self) -> None:
+        with self.assertRaises(ValueError):
+            ensure_external_dir("- provider: commandcode\n", "/tmp/omh/skills")
+
     def test_ensure_external_dir_rejects_unsupported_scalar_shapes(self) -> None:
         for value in ("'null'", '"null"', "null # comment", "~ # comment", "/tmp/omh/skills"):
             with self.subTest(value=value):

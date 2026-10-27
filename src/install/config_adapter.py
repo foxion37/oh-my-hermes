@@ -1142,12 +1142,10 @@ def _contains_unsupported_yaml_node_syntax(line: str) -> bool:
 
 
 def _section_node_is_sequence(lines: list[str], section: str) -> bool:
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not line.startswith(" ") and stripped.startswith("-"):
-            return True
+    """Whether the root is a sequence, or `section`'s own node is one: a `skills:` whose first child is `- item`."""
+    meaningful = [line for line in lines if line.strip() and not line.strip().startswith("#")]
+    if meaningful and not meaningful[0].startswith(" ") and meaningful[0].strip().startswith("-"):
+        return True  # the document's root is a sequence
     section_indices = [index for index, line in enumerate(lines) if line == f"{section}:"]
     if len(section_indices) != 1:
         return False
@@ -1162,16 +1160,28 @@ def _section_node_is_sequence(lines: list[str], section: str) -> bool:
 
 
 def _root_is_plain_block_mapping(lines: list[str]) -> bool:
+    """Whether the root is a plain block mapping, whose keys and nested shapes write code can safely splice.
+
+    A key with no value may own a sequence at the key's own indent (`fallback_providers:\\n- provider: x`), which is
+    plain YAML and what a dumper writes by default; those `-` lines are items of that key, not a sequence root. A
+    sequence anywhere else, a flow collection, a document marker or a key the plain style cannot carry is not.
+    """
+    sequence_owner = False  # the last top-level line was a key with no value: `- item` lines belong to it
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or line.startswith(" "):
             continue
         if stripped in {"---", "..."} or stripped.startswith("%"):
             return False
-        if stripped.startswith(("{", "[", "-")):
+        if stripped.startswith("-"):
+            if not sequence_owner:
+                return False
+            continue
+        if stripped.startswith(("{", "[")):
             return False
         if re.match(r"^[^:#][^:]*:(?:\s|$)", stripped) is None:
             return False
+        sequence_owner = re.match(r"^[^:#][^:]*:\s*(?:#.*)?$", stripped) is not None
     return True
 
 
