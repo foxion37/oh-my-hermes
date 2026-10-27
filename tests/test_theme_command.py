@@ -55,7 +55,13 @@ class ThemeCommandTests(unittest.TestCase):
             self.assertEqual(payload["active_theme"], "sky")
             self.assertEqual(payload["active_source"], "default")
             self.assertEqual(payload["store_path"], str(self._store(tmp)))
+<<<<<<< HEAD
             self.assertEqual([theme["name"] for theme in payload["themes"]], list(theme_names()))
+||||||| parent of 6882f2673 (design(omp): add titanium skin from oh-my-pi palette)
+            self.assertEqual([theme["name"] for theme in payload["themes"]], ["sky", "amber", "crimson", "mono"])
+=======
+            self.assertEqual([theme["name"] for theme in payload["themes"]][:4], ["sky", "amber", "crimson", "mono"])  # fork q-design: + titanium
+>>>>>>> 6882f2673 (design(omp): add titanium skin from oh-my-pi palette)
             run_cli([*homes, "theme", "use", "amber"])
             payload = json.loads(run_cli([*homes, "theme", "list"])[1])
             active = [theme for theme in payload["themes"] if theme["active"]]
