@@ -152,21 +152,25 @@ def build_frame(
     base: tuple[Style, ...] = ()
     glint: tuple[Style, ...] = ()
     caret_line = caret_col = 0
+    # fork q-design: the OMP look's bright band behind the composer's text, whose roles are measured against it
+    band = theme.input_band if chrome is not None and chrome.band else None
+    ink = on_band(theme, band) if band is not None and band.bg is not None else theme
     if composer is not None:
-        mark = theme.kinds[KIND_FAMILIES.index("shell")] if mode == MODE_SHELL else theme.prompt
+        mark = ink.kinds[KIND_FAMILIES.index("shell")] if mode == MODE_SHELL else ink.prompt
         marks = slash_token_ranges(composer.text, known_slash) if known_slash and not composer.pastes else []
         glow = aura_ranges(composer.text) if theme.aura and not composer.pastes and not composer.masked else []
         base, glint = (tuple(replace(style, depth=aura_depth) for style in styles) if aura_depth != TRUECOLOR
                        else styles for styles in (theme.aura, theme.aura_glint))
         input_lines, (caret_line, caret_col) = composer.render(
-            cols if chrome is None else inner_width(cols), cap, prompt, mark, theme.muted, marks, theme.slash,
+            cols if chrome is None else inner_width(cols), cap, prompt, mark, ink.muted, marks, ink.slash,
             glow, lambda offset, length: aura_style(base, glint, offset, length, aura),
         )
         if placeholder and not composer.text and input_lines:
-            input_lines[0] = truncate_line((*input_lines[0], Span(placeholder, theme.hint)), cols)
+            input_lines[0] = truncate_line((*input_lines[0], Span(placeholder, ink.hint)), cols)
         composer_lines = input_lines
         if chrome is not None:  # fork q-design
-            composer_lines, caret_col = chrome.wrap(composer_lines, cols, theme), caret_col + SIDE_CELLS
+            composer_lines = chrome.wrap(composer_lines, cols, theme, band)
+            caret_col += SIDE_CELLS
     def fit(tail: Sequence[Line]) -> Budget:
         return allocate(
             rows,

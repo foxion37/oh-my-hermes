@@ -83,7 +83,7 @@ like any transcript row.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from functools import lru_cache
 
 from ..skin_pack import (
@@ -109,6 +109,10 @@ LIGHT_STAND_IN = WHITE
 # word band inside it.
 LIGHT_BAND_SHARE = 0.82
 LIGHT_WORD_BAND_SHARE = 0.62
+# The OMP look's composer band: on a dark background a bright surface (the share of white mixed into it), on a light
+# one a shade darker than the background, so the band shows on either.
+INPUT_BAND_DARK_SHARE = 0.86
+INPUT_BAND_LIGHT_SHARE = 0.10
 # A light background's status bar: the palette's status-bar colour moved this far toward the background.
 LIGHT_STATUS_SHARE = 0.85
 # An approval's highlighted choice: its tone moved this far toward the background for the band behind it (on a dark
@@ -333,6 +337,7 @@ class Theme:
     pick_ok: Style = Style()
     pick_warn: Style = Style()
     pick_muted: Style = Style()
+    input_band: Style = field(default_factory=Style)  # behind the composer's text, the OMP look's bright band
 
 
 def aura_moves(theme: Theme) -> bool:
@@ -496,6 +501,10 @@ def build_theme(skin: SkinTheme, background: str | None = None) -> Theme:
         error_band = Style(bg=_mix(c["diff_removed_word"], surface, LIGHT_BAND_SHARE))
     else:
         ok_band, error_band = Style(bg=c["diff_added"]), Style(bg=c["diff_removed"])
+    # The OMP look's composer band: bright on a dark background, a shade darker than a light one. Its ink is what
+    # the band's own luminance takes (black on a bright band), for the text that has no colour of its own.
+    band_bg = _mix(surface, BLACK, INPUT_BAND_LIGHT_SHARE) if light else _mix(surface, WHITE, INPUT_BAND_DARK_SHARE)
+    input_band = Style(fg=BLACK if is_light(band_bg) else c["banner_text"], bg=band_bg)
     if light:
         diff_add = Style(bg=_mix(c["diff_added_word"], surface, LIGHT_BAND_SHARE))
         diff_add_word = Style(bg=_mix(c["diff_added_word"], surface, LIGHT_WORD_BAND_SHARE), bold=True)
@@ -561,6 +570,7 @@ def build_theme(skin: SkinTheme, background: str | None = None) -> Theme:
         pick_ok=pick(c["ui_ok"], ink),
         pick_warn=pick(c["ui_warn"], ink),
         pick_muted=pick(NEUTRAL_GREYS["muted"][side], BLACK if light else WHITE),
+        input_band=input_band,
     )
     # The default launch look's roles; `with_launch_look` repaints them for the shown one.
     return with_launch_look(theme, skin, background, DEFAULT_LAUNCH)
