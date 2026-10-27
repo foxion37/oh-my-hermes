@@ -57,6 +57,8 @@ SKIN_THEMES: tuple[SkinTheme, ...] = (
     SkinTheme("crimson", "omh-crimson", "omh-crimson.yaml", "Ember red-orange on deep crimson."),
     SkinTheme("mono", "omh-mono", "omh-mono.yaml", "Neutral grayscale with white accents."),
     SkinTheme("kanagawa", "omh-kanagawa", "omh-kanagawa.yaml", "Kanagawa Wave: indigo, warm ivory, muted blue and violet."),
+    # fork q-design: oh-my-pi's titanium palette, last so the default stays sky.
+    SkinTheme("titanium", "omh-titanium", "omh-titanium.yaml", "Electric blue on brushed titanium (oh-my-pi)."),
 )
 
 # The short-name column of `omh theme`'s list and picker: the longest name, so every summary starts in one column.
