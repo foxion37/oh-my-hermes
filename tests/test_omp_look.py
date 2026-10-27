@@ -37,6 +37,14 @@ class ResolveLookTest(unittest.TestCase):
             path.write_text(json.dumps({"look": "omp"}))
             self.assertEqual(resolve_look({}, Path(home)), LOOK_OMP)
 
+    def test_only_the_given_environment_names_the_home(self):
+        with tempfile.TemporaryDirectory() as home:
+            path = Path(home) / ".omh" / "tui" / "look.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"look": "omp"}))
+            self.assertEqual(resolve_look({"HOME": home}), LOOK_OMP)
+        self.assertEqual(resolve_look({}), LOOK_DEFAULT)  # a bare environment never reads this machine's file
+
     def test_unknown_or_broken_falls_back(self):
         with tempfile.TemporaryDirectory() as home:
             self.assertEqual(resolve_look({"OMH_TUI_LOOK": "neon"}, Path(home)), LOOK_DEFAULT)
