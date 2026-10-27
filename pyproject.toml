@@ -63,6 +63,7 @@ packages = [
   "omh.skins",
   "omh.tui",
   "omh.tui.attach",
+  "omh.tui.omp_look",  # fork q-design
   "omh.profiles",
   "omh.quality",
   "omh.routing",
@@ -101,6 +102,7 @@ packages = [
 "omh.system" = "src/system"
 "omh.tui" = "src/tui"
 "omh.tui.attach" = "src/tui/attach"
+"omh.tui.omp_look" = "src/tui/omp_look"  # fork q-design
 "omh.workflows" = "src/workflows"
 "omh.workflows.repro_audit" = "src/workflows/repro_audit"
 "omh.wrapper" = "src/wrapper"
