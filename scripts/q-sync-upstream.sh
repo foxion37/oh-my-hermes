@@ -14,8 +14,8 @@ set -eu
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 FORK_ZIP=https://github.com/foxion37/oh-my-hermes/archive/refs/heads/q-design.zip
-TESTS="test_omp_look.py test_omp_look_skin.py test_skin_pack.py test_theme_command.py test_theme_picker.py \
-test_tui_cc_look.py test_tui_frame_invariant.py test_tui_composer.py test_tui_app.py test_hermes_display_release.py"
+TESTS="test_omp_look*.py test_skin_pack.py test_theme_command.py test_theme_picker.py test_hermes_display_release.py \
+test_model_chains_command.py test_delegation_view_color.py test_tui_*.py"
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "DIRTY: uncommitted changes in $(pwd); sync skipped"

@@ -16,18 +16,27 @@ LOOK_OMP = "omp"
 _LOOKS = frozenset({LOOK_DEFAULT, LOOK_OMP})
 
 
-def omh_home(environ: Mapping[str, str]) -> Path:
-    """Where OMH keeps its state: `OMH_HOME`, else `~/.omh`."""
+def omh_home(environ: Mapping[str, str]) -> Path | None:
+    """Where OMH keeps its state, from the environment the TUI was given: `OMH_HOME`, else `$HOME/.omh`, else None.
+
+    Only the given environment is read (never `Path.home()`), so an `App` built
+    with a bare environment, as the test suite builds it, never sees this
+    machine's look file.
+    """
     value = environ.get("OMH_HOME", "").strip()
-    return Path(value).expanduser() if value else Path.home() / ".omh"
+    if value:
+        return Path(value).expanduser()
+    home = environ.get("HOME", "").strip()
+    return Path(home) / ".omh" if home else None
 
 
 def resolve_look(environ: Mapping[str, str], home: Path | None = None) -> str:
     """The look to draw: the env var, else the look file, else the default; anything unknown is the default."""
     value = environ.get("OMH_TUI_LOOK", "").strip().lower()
-    if not value:
+    root = home or omh_home(environ)
+    if not value and root is not None:
         try:
-            payload = json.loads(((home or omh_home(environ)) / "tui" / "look.json").read_text(encoding="utf-8"))
+            payload = json.loads((root / "tui" / "look.json").read_text(encoding="utf-8"))
             value = str(payload.get("look", "")).strip().lower()
         except (OSError, ValueError, AttributeError):
             value = ""
