@@ -94,6 +94,19 @@ class PiChromeTest(unittest.TestCase):
         self.assertEqual(text(self.chrome.top(12, DEFAULT_THEME)), "╭─ opus ───╮")
         self.assertEqual(text(self.chrome.top(5, DEFAULT_THEME)), "╭───╮")
 
+    def test_segments_drop_one_at_a_time(self):
+        chrome = PiChrome(
+            left=(Segment("model", "opus", "brand"), Segment("mode", "normal", "muted")),
+            right=(Segment("ctx", "ctx 42%", "ok"), Segment("tok", "12.3k tok", "muted")),
+        )
+        top = chrome.top(40, DEFAULT_THEME)
+        self.assertEqual(line_width(top), 40)
+        self.assertTrue(text(top).startswith("╭─ opus │ normal ─"))
+        self.assertTrue(text(top).endswith("─ ctx 42% ─╮"))
+        self.assertNotIn("12.3k", text(top))
+        self.assertEqual(text(chrome.top(20, DEFAULT_THEME)), "╭─ opus │ normal ──╮")
+        self.assertEqual(text(chrome.top(12, DEFAULT_THEME)), "╭─ opus ───╮")
+
     def test_bottom_and_sides(self):
         self.assertEqual(text(self.chrome.bottom(6, DEFAULT_THEME)), "╰────╯")
         row = self.chrome.wrap([()], 10, DEFAULT_THEME)[0]
@@ -147,6 +160,34 @@ class WireTest(unittest.TestCase):
         for name in ("self.model", "self.session_title", "self.context_percent", "self.roster", "self.transcript",
                      "def _display_mode", "self.omp_usage", "self.omp_started_at", "self.omp_look"):
             self.assertTrue(name in source, f"upstream renamed or dropped {name}: update omp_look/wire.py")
+
+
+class AppLookTest(unittest.TestCase):
+    """The real `App`, drawn through the TUI test harness: the box only when the look is opted in."""
+
+    def _screen(self, environ):
+        from test_tui_modes import drawn, make_app, type_text
+
+        app, _ = make_app(environ=environ)
+        app.model = "opus-test"
+        app._take_usage({"total": 2048, "avg_tps": 33.0, "cache_hit_pct": 50.0, "context_used": 10, "context_max": 100})
+        type_text(app, "안녕")
+        return drawn(app)
+
+    def test_default_look_draws_no_box(self):
+        with tempfile.TemporaryDirectory() as home:
+            screen = self._screen({"OMH_HOME": home})
+        self.assertFalse(any(row.lstrip().startswith("╭") for row in screen), screen)
+
+    def test_omp_look_draws_the_status_box(self):
+        with tempfile.TemporaryDirectory() as home:
+            screen = self._screen({"OMH_HOME": home, "OMH_TUI_LOOK": "omp"})
+        top = next((row for row in screen if row.startswith("╭─ opus-test")), None)
+        self.assertIsNotNone(top, screen)
+        self.assertIn("ctx 10%", top or "")
+        self.assertIn("2.0k tok", top or "")
+        self.assertTrue(any(row.startswith("│ ") and "안녕" in row for row in screen), screen)
+        self.assertTrue(any(row.startswith("╰") for row in screen), screen)
 
 
 if __name__ == "__main__":
