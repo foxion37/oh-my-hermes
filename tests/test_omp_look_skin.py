@@ -14,7 +14,7 @@ class TitaniumSkinTest(unittest.TestCase):
     def test_titanium_palette(self):
         colors = {key: value.lower() for key, value in skin_colors("omh-titanium").items()}
         self.assertEqual(colors["ui_accent"], "#00b4ff")
-        self.assertEqual(colors["ui_ok"], "#00ff88")
+        self.assertEqual(colors["ui_ok"], "#00e67a")  # fork q-design: reads as a band on a light background
         self.assertEqual(colors["ui_error"], "#ff4757")
         self.assertEqual(colors["status_bar_bg"], "#151820")
 
