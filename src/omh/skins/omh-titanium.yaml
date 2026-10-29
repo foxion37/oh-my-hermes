@@ -16,7 +16,7 @@ colors:
   banner_text: "#E8ECF4"
   ui_accent: "#00B4FF"
   ui_label: "#FFFFFF"
-  ui_ok: "#00FF88"
+  ui_ok: "#00E67A"
   ui_error: "#FF4757"
   ui_warn: "#FFB347"
   ui_tool: "#00B4FF"
