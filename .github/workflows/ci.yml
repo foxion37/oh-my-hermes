@@ -29,7 +29,7 @@ jobs:
   # modules; syntax or unsupported dynamic discovery shapes fail here before
   # any shard runs. Identical inventory + timing history is byte-identical.
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'foxion37/oh-my-hermes' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name) && 'mac-mini-linux-arm64' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
@@ -81,7 +81,7 @@ jobs:
 
   test:
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'foxion37/oh-my-hermes' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name) && 'mac-mini-linux-arm64' || 'ubuntu-latest' }}
     strategy:
       matrix:
         # A pull request runs the 3.11 floor only; a main push (and a dispatch)
@@ -464,7 +464,7 @@ jobs:
   aggregate:
     needs: [test, test-windows]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'foxion37/oh-my-hermes' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name) && 'mac-mini-linux-arm64' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
@@ -522,7 +522,7 @@ jobs:
           key: test-sharding-timings-${{ github.run_id }}
 
   distribution:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.repository == 'foxion37/oh-my-hermes' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name) && matrix.os == 'ubuntu-latest' && 'mac-mini-linux-arm64' || matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
