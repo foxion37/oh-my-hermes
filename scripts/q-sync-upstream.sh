@@ -24,7 +24,12 @@ fi
 git fetch -q upstream main
 git fetch -q origin
 git switch -q main
-git merge -q --ff-only upstream/main
+# A fork commit on the published main (now merged) means main is no longer a
+# strict prefix of upstream/main, so merge instead of insisting on a
+# fast-forward; with main's tree kept at upstream's, the merge is upstream's.
+if ! git merge -q --ff-only upstream/main 2>/dev/null; then
+  git merge -q --no-edit upstream/main
+fi
 git push -q origin main
 git switch -q q-design
 
