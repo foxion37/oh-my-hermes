@@ -376,6 +376,7 @@ class AppTestCase(unittest.TestCase):
             # The main screen leaves the mouse to the terminal, the behaviour these replays pin byte for byte;
             # `tests/test_tui_main_mouse.py` turns it on.
             "OMH_TUI_MOUSE": "0",
+            "OMH_HOME": str(root),  # fork q-design: the tests draw the default look, never this machine's look file
             **(env or {}),
         }
         environ.pop("OMH_NO_TUI", None)
