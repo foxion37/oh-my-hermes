@@ -34,6 +34,7 @@ from ..awareness_delivery import claim_route_guidance_delivery, record_awareness
 from ..context_budget_plan import context_budget_continuation, render_context_budget
 from ..dag_define_gate import note_turn as note_dag_define_turn
 from ..dag_define_gate import starts_dag_run
+from ..dag_open_run_nudge import open_run_line
 from ..hermes_session_commands import host_command_turn, host_context_removed, person_request_text
 from ..host_context import record_active_main_agent_model
 from ..host_observation import observe_plugin_hook_call
@@ -41,6 +42,7 @@ from ..installed_skills import installed_skill_names
 from ..kanban_board_reader import conversation_session_ids, kanban_db_path, read_kanban_lanes
 from ..native_todo import held_native_write_note
 from ..omh_roles import extract_role_marker, role_context_payload
+from ..omh_identities import extract_identity_marker, identity_context_payload
 from ..dispatch_outcomes import unacknowledged_outcomes
 from ..runtime_reader import read_omh_activity, read_omh_hud, read_omh_status, read_omh_todo
 from ..skill_shortlist import claim_candidate_line, skill_candidate_line, skill_candidates_for_turn
@@ -818,6 +820,44 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
                 f"Unknown role '{marker}'. Available roles: {', '.join(role_payload['available_roles']) or '(none)'}."
             )
 
+    # An explicit `[omh-identity:<name>]` selects one of the user's identity
+    # profiles for this turn. The read is `request_message`, a notch tighter
+    # than the role marker's `person_text`: gateway-stripped quotes, relay
+    # prefixes and host frames never reach it, and a host-synthesized or
+    # host-command turn has no request at all, so host-written text cannot
+    # select an identity. A delegated child's own goal text IS its request,
+    # which is the structured-handoff channel the marker rides in on.
+    # Ordinary words never match; the prompt rides inside the shared fence --
+    # no second injection path -- and it is the ONLY place prompt text goes:
+    # nothing below or in `payload` copies it. The marker extract keeps the
+    # first marker only, so an identity lands exactly once.
+    identity_marker = extract_identity_marker(request_message)
+    if identity_marker:
+        identity_payload = identity_context_payload(identity_marker, omh_home=omh_home)
+        if identity_payload["status"] == "available":
+            context_parts.append(
+                "\n".join(
+                    [
+                        f"[OMH Identity: {identity_payload['identity']}]",
+                        str(identity_payload["context"]),
+                        str(identity_payload["claim_boundary"]),
+                    ]
+                )
+            )
+        else:
+            available = identity_payload.get("available_identities")
+            names = (
+                ", ".join(str(n) for n in available)
+                if isinstance(available, (list, tuple))
+                else ""
+            )
+            context_parts.append(
+                "[OMH Identity Warning] "
+                f"Unknown identity '{identity_marker}'. Available identities: "
+                + (names or "(none)")
+                + "."
+            )
+
     # An open plan is a state, not a phrasing: while one exists, every turn
     # carries the reconciliation line so a completion claim cannot part ways
     # with the HUD checklist unnoticed. Honors the caller's awareness opt-out.
@@ -929,6 +969,15 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
     )
     if failed_wait:
         context_parts.append(failed_wait)
+    # A dag-ulw run of this conversation that no running child will re-open,
+    # named once with the one `omh_dag` call that moves it
+    # (`dag_open_run_nudge`). Outside the awareness opt-out for the same
+    # reason as the line above: it is about this session's run stalling.
+    open_run = open_run_line(
+        session_id=session_id, omh_home=omh_home, hermes_home=hermes_home, delegated=delegated
+    )
+    if open_run:
+        context_parts.append(open_run)
 
     try:
         try:

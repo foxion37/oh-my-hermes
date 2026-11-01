@@ -301,6 +301,8 @@ def cmd_coding_delegate(args: argparse.Namespace) -> int:
             # prepared here scopes its evidence to a real provider and wire
             # model rather than to an empty route no snapshot could match.
             model_recommendation=resolved_hermes_model_recommendation(executor_target, paths),
+            requested_identity=getattr(args, "identity", None) or "",
+            identity_config=_declared_identity_config(paths, getattr(args, "identity", None)),
             input_representation=input_representation,
             transformation=transformation,
             handoff_contract=_handoff_contract_declaration(args),
@@ -1401,7 +1403,9 @@ def cmd_coding_model_route(args: argparse.Namespace) -> int:
         requested_domain=getattr(args, "domain", None) or "",
         requested_depth=getattr(args, "depth", None) or "",
         requested_category=getattr(args, "category", None) or "",
+        requested_identity=getattr(args, "identity", None) or "",
         category_config=category_config,
+        identity_config=_declared_identity_config(_paths(args), getattr(args, "identity", None)),
         local_catalog=local_catalog,
         active_models=active_models,
         recommendation_overrides=recommendation_overrides,
@@ -1598,6 +1602,41 @@ def _operator_category_config(paths) -> dict[str, object] | None:
     if isinstance(config, dict):
         for note in config.get("rejected", []):
             print(f"omh: category-maestro: ignored {note}", file=sys.stderr)
+    return config
+
+
+def _operator_identity_config(paths) -> dict[str, object] | None:
+    """Read the identity profiles document; the file's presence is the opt-in.
+
+    Same I/O boundary as `_operator_category_config`: the loader's `rejected`
+    notes are named on stderr so a dropped profile is visible during the
+    prepare/route/run that could not use it, while stdout keeps the JSON
+    contracts clean. Absent or validates-to-nothing returns None.
+    """
+    from ..coding.identity_profiles import read_identity_profiles_config
+
+    rejected: list[str] = []
+    config = read_identity_profiles_config(paths.omh_home, rejected_out=rejected)
+    for note in rejected:
+        print(f"omh: identities: ignored {note}", file=sys.stderr)
+    return config
+
+
+def _declared_identity_config(paths, identity: str | None) -> dict[str, object] | None:
+    """The identity document, refusing an `--identity` it does not hold.
+
+    Without this an unknown name (a typo, or a profile the loader dropped)
+    resolves to the executor's default model with exit 0, and the handoff
+    runs on a model nobody chose.
+    """
+    from ..coding.fanout import require_known_identity
+    from ..coding.fanout_contracts import FanoutContractError
+
+    config = _operator_identity_config(paths)
+    try:
+        require_known_identity(str(identity or ""), config, where="--identity")
+    except FanoutContractError as exc:
+        raise OmhError(str(exc)) from exc
     return config
 
 
@@ -1921,6 +1960,7 @@ def cmd_coding_fanout_prepare(args: argparse.Namespace) -> int:
             source_metadata=_explicit_source_metadata(args),
             local_catalogs=_local_model_catalogs() if needs_inventory else {},
             category_config=_operator_category_config(paths),
+            identity_config=_operator_identity_config(paths),
             capability_snapshots=capability_snapshots,
             spawn_plan=spawn_plan,
         )
@@ -3041,7 +3081,17 @@ def cmd_coding_run(args: argparse.Namespace) -> int:
         # table exactly like a fanout unit's `category` field; `--model` still
         # wins (requested > category chain head).
         "category": getattr(args, "category", None) or "",
+        # A declared `--identity` routes this unit through the same
+        # `omh_identity_profiles/v1` chain a fanout unit's `identity` field
+        # uses; `--model` still wins over the chain head.
+        "identity": getattr(args, "identity", None) or "",
     }
+    # The shorthand's only way to declare acceptance (#2461). Frozen through
+    # the same `verification_commands` field a fanout unit uses, so the
+    # freeze-time checks (count, length, no shell operators) apply unchanged.
+    verification_commands = list(getattr(args, "verification_command", None) or [])
+    if verification_commands:
+        unit["verification_commands"] = verification_commands
     needs_inventory = args.owner not in EXECUTOR_MODEL_OPTIONS
     try:
         capability_snapshots = {
@@ -3057,6 +3107,7 @@ def cmd_coding_run(args: argparse.Namespace) -> int:
             source_metadata=_explicit_source_metadata(args),
             local_catalogs=_local_model_catalogs() if needs_inventory else {},
             category_config=_operator_category_config(paths),
+            identity_config=_operator_identity_config(paths),
             capability_snapshots=capability_snapshots,
         )
     except (FanoutContractError, ExecutorCapabilitySnapshotError) as exc:
@@ -3098,7 +3149,9 @@ def cmd_coding_run(args: argparse.Namespace) -> int:
             max_retries=parallelism["max_retries"],
             timeout=args.timeout,
             dry_run=bool(args.dry_run),
-            run_verification=bool(args.run_verification),
+            # A check declared on this command line is a request to run it: a
+            # declared check left unrun would only end the unit `unverified`.
+            run_verification=bool(args.run_verification or verification_commands),
             allow_unconfined=bool(args.allow_unconfined),
             environment_policy=environment_policy,
             **_failure_recovery_kwargs(args),
@@ -3721,6 +3774,17 @@ def _add_coding_commands(sub) -> None:
         help="Run the unit's contract verification_commands in its worktree after the process exits 0.",
     )
     run_cmd.add_argument(
+        "--verification-command",
+        action="append",
+        default=None,
+        metavar="COMMAND",
+        help=(
+            "A check the dispatcher runs in the unit's worktree after the process exits 0 and its result "
+            "validates (repeatable, one command each, run without a shell; at most 8). Declaring one "
+            "implies --run-verification. Without any, the unit can end `unverified`, never `verified`."
+        ),
+    )
+    run_cmd.add_argument(
         "--allow-unconfined",
         action="store_true",
         help=(
@@ -3752,6 +3816,14 @@ def _add_coding_commands(sub) -> None:
             "category-maestro table when one is configured. --model still wins."
         ),
     )
+    run_cmd.add_argument(
+        "--identity",
+        default=None,
+        help=(
+            "Identity profile name from routing/identities.json; resolves the run's model "
+            "through that profile's declared chain. --model still wins over the chain head."
+        ),
+    )
     _add_failure_recovery_arguments(run_cmd)
     run_cmd.set_defaults(func=cmd_coding_run)
 
@@ -3771,6 +3843,14 @@ def _add_coding_commands(sub) -> None:
         help="Explicit model id; passes through unvalidated, except a `non_generative` model, which is refused.",
     )
     model_route.add_argument("--effort", default=None, help="Reasoning effort for profiles that support one.")
+    model_route.add_argument(
+        "--identity",
+        default=None,
+        help=(
+            "Identity profile name from routing/identities.json; resolves the route "
+            "through that profile's declared chain. --model still wins over the chain head."
+        ),
+    )
     model_route.add_argument("--role", default=None, help="Subagent role: brain, implementation, design_visual, review, docs, research.")
     model_route.add_argument(
         "--category",
@@ -4113,6 +4193,15 @@ def _add_coding_commands(sub) -> None:
         "--effort",
         default=None,
         help="Reasoning effort already chosen for this request; supersedes the recommended effort.",
+    )
+    delegate.add_argument(
+        "--identity",
+        default=None,
+        help=(
+            "Identity profile name from routing/identities.json; resolves a bounded "
+            "model_route for this handoff through that profile's declared chain. "
+            "--model still wins over the chain head."
+        ),
     )
     delegate.add_argument(
         "--input-representation",

@@ -277,7 +277,10 @@ The `pre_tool_call` hook enforces
 user-authored toolcall rules (a matching rule returns the host's block
 directive). An unknown `[omh-role:...]` marker in a delegate goal is warned in
 the child's own turn by `pre_llm_call`, since Hermes reads only `action` from a
-`pre_tool_call` result. The hook does not inject generic-tool checkpoint
+`pre_tool_call` result. A `[omh-identity:name]` marker in the person's request
+or a delegated child's goal adds that user-defined identity's prompt to the
+turn's fenced OMH context (an unknown name warns); host-written text never
+selects one. The hook does not inject generic-tool checkpoint
 metadata or raw tool input.
 `omh hud`
 exposes the same status-line payload for local operator smoke tests. The HUD
@@ -328,9 +331,11 @@ settings and compact summaries do not rely on an unnamed list-order convention.
 `workflows/memory.py` owns OMH project memory. It stores candidates, reviewed
 records, review decisions, and recall packs under `.omh/memory/` using local
 JSON files. Setup records `project_memory_policy/v1` with `off`,
-`review-first`, or `auto-safe` mode (`auto-safe` by default). The Hermes model
-writes through `omh_memory(action="capture")`, which runs the installed CLI's
-capture path, and the plugin's memory provider reads the store on every turn.
+`review-first`, or `auto-safe` mode (`auto-safe` by default). The memory provider
+exposes the always-visible `omh_remember` save/recall tool through
+`get_tool_schemas()`. Its save action and `omh_memory(action="capture")` use the
+same in-process admission path and session-lens gates; the provider reads the
+store on every turn.
 Coding handoffs can receive
 `project_memory_recall_pack/v1` when reviewed records are relevant. These packs are
 prepared context only; they are not execution, review, CI, merge, or Hermes
