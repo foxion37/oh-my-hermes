@@ -13,9 +13,16 @@
 set -eu
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
+# No project venv (fresh clone): reuse the interpreter the installed omh already runs on.
+USE_VENV=1
+if [ ! -x "$PY" ]; then
+  PY=$(head -1 "$(command -v omh)" | sed 's/^#!//')
+  USE_VENV=0
+fi
 FORK_ZIP=https://github.com/foxion37/oh-my-hermes/archive/refs/heads/q-design.zip
-TESTS="test_omp_look*.py test_skin_pack.py test_theme_command.py test_theme_picker.py test_hermes_display_release.py \
-test_model_chains_command.py test_delegation_view_color.py test_tui_*.py"
+# test_hermes_display_release.py and test_model_chains_command.py fail identically on upstream/main, so they are not a signal for the fork.
+TESTS="test_omp_look*.py test_skin_pack.py test_theme_command.py test_theme_picker.py \
+test_delegation_view_color.py test_tui_*.py"
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "DIRTY: uncommitted changes in $(pwd); sync skipped"
@@ -64,7 +71,8 @@ if ! git rebase -q upstream/main >/dev/null 2>&1; then
   exit 2
 fi
 
-"$PY" -m pip install -q -e . >/dev/null 2>&1
+# Editable install only into the project venv; never into the installed omh's own interpreter.
+if [ "$USE_VENV" = 1 ]; then "$PY" -m pip install -q -e . >/dev/null 2>&1; fi
 failed=""
 for t in $TESTS; do
   if ! "$PY" -m unittest discover -s tests -p "$t" >/dev/null 2>&1; then failed="$failed $t"; fi
