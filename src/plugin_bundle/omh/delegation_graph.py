@@ -72,6 +72,8 @@ from .dag_run import (
     FINISHED_STATES,
     HANDOFF_NOT_CHECKED,
     bound_children,
+    criteria_count,
+    criteria_view,
     derive,
     goal_verdict,
     handoff_unchecked,
@@ -93,6 +95,10 @@ from .subagent_graph import _roster_progress_fields as roster_progress_fields
 GRAPH_SCHEMA_VERSION: Final = "delegation_graph/v1"
 GRAPH_NODE_LIMIT: Final = 48
 GRAPH_BYTE_LIMIT: Final = 24_576
+# What the lanes of the layers a pane holds open may take: more than a glance, still well under the widget's budget.
+# ponytail: past these an open layer reads `+N more`; a lane-by-lane fetch is the step up if runs outgrow it.
+GRAPH_OPEN_NODE_LIMIT: Final = 192
+GRAPH_OPEN_BYTE_LIMIT: Final = 49_152
 # The `sessions` columns a lane's `usage` reads, in the order `_usage` takes them.
 USAGE_COLUMNS: Final = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "actual_cost_usd", "estimated_cost_usd")
 GRAPH_LINGER_SECONDS: Final = 15 * 60
@@ -824,11 +830,22 @@ def build_delegation_graph(
     scope: str = "session",
     linger: float | None = GRAPH_LINGER_SECONDS,
     segments: Sequence[str] | None = None,
+    dag_run: str = "",
+    keep_dag: bool = False,
+    open_layers: Sequence[int] = (),
+    layered: bool = False,
 ) -> dict[str, Any]:
     """The graph of one conversation's delegated work, or of the fanout passed in when it has none.
 
+    ``dag_run`` names the dag run to draw instead of the newest. A named run that exists is drawn alone (no team,
+    no plain delegations beside it) and does not lapse after ``linger``; one that does not is the newest, as ever.
+    ``layered`` asks for the Desktop pane's cut (`_layered`): lanes kept by layer around the frontier, each carrying
+    its layer, with what each layer lost counted; ``open_layers`` are the layers that pane holds open, drawn whole
+    before the rest. Every other reader (the TUI block, the chat end post) gets `_bounded`'s cut, as before.
+
     A graph whose lanes have all settled is inactive once ``linger`` seconds
-    have passed since its last change; ``None`` keeps it (the chat end post of
+    have passed since its last change; ``None`` keeps it, and ``keep_dag`` keeps a dag run's (the Desktop pane, which
+    draws a finished run for its node summaries and figures) (the chat end post of
     a run it opened, `delegation_snapshot.py`). ``segments`` is
     `graph_segments`' answer for ``session_id`` when the caller already read
     it. Never raises: an unreadable record or database leaves the graph
@@ -842,8 +859,9 @@ def build_delegation_graph(
         connection = _connect(Path(hermes_home)) if session_id else None
         if session_id and not segments:
             segments = _segments(connection, session_id)
+        # A kept run past its linger yields to a current fanout: live work outranks a finished run nobody picked.
         graph = _build(omh_home, hermes_home, session_id, moment, root_model, titles, scope, linger, segments or [],
-                       connection)
+                       connection, dag_run, keep_dag and not fanout)
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
         graph = inactive_graph(f"unreadable:{type(error).__name__}", scope=scope)
     finally:
@@ -854,7 +872,7 @@ def build_delegation_graph(
             graph = fanout_graph(fanout)
         except (ValueError, TypeError, KeyError) as error:
             graph = inactive_graph(f"unreadable_fanout:{type(error).__name__}", scope="global")
-    return _bounded(graph)
+    return _layered(graph, open_layers) if layered else _bounded(graph)
 
 
 def _build(
@@ -868,6 +886,8 @@ def _build(
     linger: float | None,
     segments: Sequence[str],
     connection: sqlite3.Connection | None,
+    dag_pick: str = "",
+    keep_dag: bool = False,
 ) -> dict[str, Any]:
     if not session_id:
         return inactive_graph("no_session", scope=scope)
@@ -875,8 +895,14 @@ def _build(
     teams = [found for found in (_team_record(Path(omh_home), segment) for segment in segments) if found is not None]
     team = max(teams, key=lambda found: found[1]) if teams else None
     children = [child for ledger in ledgers.values() if ledger for child in ledger["children"]]
-    dag = _dag_run(Path(omh_home), session_id, ledgers)
+    dag = _dag_run(Path(omh_home), session_id, ledgers, dag_pick)
     if dag is not None:
+        run = str(dag["record"]["run"])
+        # Another run's children are that run's nodes, not waves of this graph.
+        children = [child for child in children
+                    if not (isinstance(child.get("dag"), Mapping) and child["dag"].get("run") not in (None, run))]
+        if dag["picked"]:
+            children, team, linger = [], None, None
         known = {child["child_session_id"] for child in children}
         children += [child for child in dag["children"] if child["child_session_id"] not in known]
     if not children and team is None and dag is None:
@@ -1101,7 +1127,7 @@ def _build(
                  + [float(child["stop"]["observed_at"]) for child in children if isinstance(child.get("stop"), dict)]
                  + ([team[1]] if team is not None else [])
                  + ([float(dag["record"].get("updated_at") or 0.0)] if dag is not None else []))
-    if settled and linger is not None and now - newest > linger:
+    if settled and linger is not None and not (keep_dag and dag is not None) and now - newest > linger:
         return inactive_graph("settled", scope=scope)
     if dag is not None:
         name = dag_graph_name(dag["record"])
@@ -1123,6 +1149,9 @@ def _build(
         if dag["state"] in FINISHED_STATES:
             # A finished run's goal verdict, as `omh_dag` and `omh_run_summary` give it (the same states).
             graph["dag_verdict"] = goal_verdict(dag["record"], dag["derived"])[0]
+            criteria = criteria_view(dag["record"], dag["derived"])
+            if criteria is not None:
+                graph["dag_criteria"] = criteria_count(criteria)  # `2/3 criteria met`, shown beside the verdict
     return graph
 
 
@@ -1182,31 +1211,79 @@ def dag_origin(node: Mapping[str, Any]) -> tuple[str, str]:
     return kind, str(node.get("found_by") or "")
 
 
-def _dag_run(
+def _dag_runs(
     omh_home: Path, session_id: str, ledgers: Mapping[str, Mapping[str, Any] | None]
-) -> dict[str, Any] | None:
-    """The conversation's newest `omh_dag/v1` run with the ledger children bound to it, or None.
+) -> tuple[list[str], list[tuple[dict[str, Any], Path]]]:
+    """The segments a conversation's runs are read from, and those runs.
 
     The run is stored under the segment that defined it; when this segment
     holds none, the conversation's other segments are read (the keys of
     ``ledgers``, `graph_segments`), so a compacted parent still finds its run.
-    The caller derives the states once it has joined the stops.
     """
     segments = [session_id]
     runs = session_runs(omh_home, session_id)
     if not runs:
         segments = sorted(ledgers)
         runs = [item for segment in segments for item in session_runs(omh_home, segment)]
+    return segments, runs
+
+
+def _dag_run(
+    omh_home: Path, session_id: str, ledgers: Mapping[str, Mapping[str, Any] | None], pick: str = ""
+) -> dict[str, Any] | None:
+    """The conversation's newest `omh_dag/v1` run, or the one named ``pick`` (``picked``), with its ledger children.
+
+    The caller derives the states once it has joined the stops.
+    """
+    segments, runs = _dag_runs(omh_home, session_id, ledgers)
     if not runs:
         return None
-    record = max(runs, key=lambda item: float(item[0].get("updated_at") or 0.0))[0]
+    named = next((item[0] for item in runs if pick and str(item[0].get("run")) == pick), None)
+    record = named or max(runs, key=lambda item: float(item[0].get("updated_at") or 0.0))[0]
     run = str(record["run"])
     children = [
         child for segment in segments for child in ((ledgers.get(segment) or {}).get("children") or [])
         if isinstance(child.get("dag"), Mapping) and child["dag"].get("run") == run
     ]
-    return {"record": record, "children": children}
+    return {"record": record, "children": children, "picked": named is not None}
 
+
+def dag_run_choices(
+    omh_home: Path, hermes_home: Path, session_id: str, *, now: float | None = None
+) -> list[dict[str, Any]]:
+    """Every dag run of one conversation, newest change first: what a pane offers to switch between.
+
+    Each is ``run``, ``name``, ``state`` (as `dag_run.run_state` words it), the ``nodes`` it holds and when it last
+    changed (``updated_at``). Never raises: an unreadable store is no choices.
+    """
+    if not session_id:
+        return []
+    moment = time.time() if now is None else now
+    connection = None
+    try:
+        connection = _connect(Path(hermes_home))
+        ledgers = {segment: read_ledger(Path(omh_home), segment) for segment in _segments(connection, session_id)}
+        segments, runs = _dag_runs(Path(omh_home), session_id, ledgers)
+        choices = []
+        for record, _path in runs:
+            run = str(record["run"])
+            children = [
+                child for segment in segments for child in ((ledgers.get(segment) or {}).get("children") or [])
+                if isinstance(child.get("dag"), Mapping) and child["dag"].get("run") == run
+            ]
+            choices.append({
+                "run": run,
+                "name": dag_graph_name(record),
+                "state": run_state(record, derive(record, children, moment)),
+                "nodes": len(record["nodes"]),
+                "updated_at": float(record.get("updated_at") or 0.0),
+            })
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        return []
+    finally:
+        if connection is not None:
+            connection.close()
+    return sorted(choices, key=lambda choice: choice["updated_at"], reverse=True)
 
 
 def _dag_nodes(
@@ -1473,8 +1550,11 @@ def _layers(nodes: Sequence[Mapping[str, Any]], edges: Sequence[Mapping[str, str
             incoming[edge["to"]] += 1
     layer = {node_id: 0 for node_id in ids}
     ready = [node_id for node_id in ids if incoming[node_id] == 0]
-    while ready:
-        current = ready.pop(0)
+    # Walked by index, not popped from the front, and bucketed in one pass: a 5000-deep chain stays linear.
+    at = 0
+    while at < len(ready):
+        current = ready[at]
+        at += 1
         for lower in successors[current]:
             layer[lower] = max(layer[lower], layer[current] + 1)
             incoming[lower] -= 1
@@ -1483,7 +1563,10 @@ def _layers(nodes: Sequence[Mapping[str, Any]], edges: Sequence[Mapping[str, str
     if any(count for count in incoming.values()):
         return []
     depth = max(layer.values(), default=-1) + 1
-    return [[node_id for node_id in ids if layer[node_id] == index] for index in range(depth)]
+    buckets: list[list[str]] = [[] for _ in range(depth)]
+    for node_id in ids:
+        buckets[layer[node_id]].append(node_id)
+    return buckets
 
 
 def _finish(
@@ -1569,4 +1652,163 @@ def _cut(graph: dict[str, Any], keep: int) -> dict[str, Any]:
         "hidden_by_group": hidden_by_group,
         "hidden_by_state": hidden_by_state,
         "group_order": group_order,
+    }
+
+
+# The Desktop pane's cut. A lane in hand (running, or returned to be checked) is kept before any other, then a
+# lane that stopped short (failed, blocked, stuck, interrupted), then the rest by their layer's distance from the
+# frontier: a running or failed lane is never cut while a finished one is kept.
+_IN_HAND_STATES: Final = frozenset({"running", "dispatched"})
+_STOPPED_STATES: Final = frozenset({"failed", "stuck", "interrupted"})
+# The states a layer holds work in hand by; the pane's `ACTIVE_STATES` reads the same.
+_ACTIVE_STATES: Final = frozenset({"running", "stuck", "failed", "dispatched", "interrupted"})
+
+
+def _layered(graph: dict[str, Any], open_layers: Sequence[int] = ()) -> dict[str, Any]:
+    """The pane's cut: at most `GRAPH_NODE_LIMIT` nodes and `GRAPH_BYTE_LIMIT` bytes, kept by layer.
+
+    ``open_layers`` are the layers the pane has open: their lanes come after the lanes in hand and the stopped ones
+    and before the rest, under the larger `GRAPH_OPEN_NODE_LIMIT` and `GRAPH_OPEN_BYTE_LIMIT`. Every kept lane
+    carries its ``layer``; ``layer_count`` is how many the run has, and ``layer_hidden`` counts, for each layer that
+    lost any, the lanes it lost by state. A kept lane whose parent was cut hangs from its nearest kept ancestor by an
+    ``elided`` edge, so it is never drawn under the wrong parent. With ``open_layers`` named the cut is sent even
+    when nothing was left out, so the pane's ask stays the same. A run whose layer rows alone overrun the bytes is
+    sent as its counts by state (``counts_only``), which the pane draws as one line.
+    """
+    nodes = graph.get("nodes") or []
+    if graph.get("status") != "active":
+        return graph
+    lanes = [node for node in nodes if node.get("kind") != "root"]
+    edges = graph.get("edges") or []
+    layer_ids = _layers(lanes, edges) or [[str(node["id"]) for node in lanes]]
+    layer_of = {node_id: at for at, ids in enumerate(layer_ids) for node_id in ids}
+    # The pane's frontier: the furthest layer with work in hand, else the first unsettled one, else the last.
+    states: list[set[str]] = [set() for _ in layer_ids]
+    for node in lanes:
+        states[layer_of[str(node["id"])]].add(str(node.get("state") or "unknown"))
+    active = [at for at, held in enumerate(states) if held & _ACTIVE_STATES]
+    unsettled = [at for at, held in enumerate(states) if held - {"done"}]
+    frontier = active[-1] if active else unsettled[0] if unsettled else len(layer_ids) - 1
+    wanted = {at for at in open_layers if 0 <= at < len(layer_ids)}
+
+    def rank(node: Mapping[str, Any]) -> tuple[Any, ...]:
+        state = str(node.get("state") or "")
+        at = layer_of[str(node["id"])]
+        tier = 0 if state in _IN_HAND_STATES else 1 if state in _STOPPED_STATES else 2
+        return (tier, at not in wanted, abs(at - frontier), at < frontier, _KEEP_ORDER.get(state, 5),
+                -int(node.get("order") or 0))
+
+    ranked = sorted(lanes, key=rank)
+    node_limit, byte_limit = (GRAPH_OPEN_NODE_LIMIT, GRAPH_OPEN_BYTE_LIMIT) if wanted else (GRAPH_NODE_LIMIT, GRAPH_BYTE_LIMIT)
+    roots = len(nodes) - len(lanes)
+    # Each lane's parents, and the nodes in the order a parent comes before its child (roots first, then by layer).
+    parents: dict[str, list[tuple[str, str]]] = {}
+    for edge in edges:
+        parents.setdefault(str(edge["to"]), []).append((str(edge["from"]), str(edge.get("kind") or "")))
+    walk = [str(node["id"]) for node in nodes if node.get("kind") == "root"] + [i for ids in layer_ids for i in ids]
+
+    def cut(keep: int) -> dict[str, Any]:
+        return _layered_cut(graph, {str(node["id"]) for node in ranked[:keep]}, layer_ids, layer_of, parents, walk)
+
+    def size(candidate: Mapping[str, Any]) -> int:
+        return len(json.dumps(candidate, sort_keys=True, default=str).encode("utf-8"))
+
+    whole = cut(len(ranked))
+    if len(nodes) <= node_limit and size(whole) <= byte_limit:
+        return whole if open_layers else graph
+    # Every kept lane adds its bytes, so what fits is (near enough) a prefix of the ranking: search its length.
+    low, high = 0, max(0, min(len(ranked), node_limit - roots))
+    while low < high:
+        middle = (low + high + 1) // 2
+        low, high = (middle, high) if size(cut(middle)) <= byte_limit else (low, middle - 1)
+    best = cut(low)
+    return best if size(best) <= byte_limit else _counts_only(graph, lanes, len(layer_ids))
+
+
+def _layered_cut(
+    graph: dict[str, Any],
+    kept_lanes: set[str],
+    layer_ids: list[list[str]],
+    layer_of: Mapping[str, int],
+    parents: Mapping[str, Sequence[tuple[str, str]]],
+    walk: Sequence[str],
+) -> dict[str, Any]:
+    nodes = graph["nodes"]
+    kept_ids = kept_lanes | {str(node["id"]) for node in nodes if node.get("kind") == "root"}
+    kept = [node if node.get("kind") == "root" else {**node, "layer": layer_of[str(node["id"])]}
+            for node in nodes if str(node["id"]) in kept_ids]
+    drawn = [edge for edge in graph["edges"] if str(edge["from"]) in kept_ids and str(edge["to"]) in kept_ids]
+    # For every cut node, its nearest kept ancestors, walked parents first; a kept lane under a cut parent takes an
+    # `elided` edge from each of them, which the pane draws as implied.
+    above: dict[str, dict[str, str]] = {}
+    for node_id in walk:
+        if node_id in kept_ids:
+            continue
+        reach: dict[str, str] = {}
+        for parent, kind in parents.get(node_id, ()):
+            for ancestor, first in ({parent: kind} if parent in kept_ids else above.get(parent, {})).items():
+                reach.setdefault(ancestor, first)
+        above[node_id] = reach
+    taken = {(str(edge["from"]), str(edge["to"])) for edge in drawn}
+    for node_id in walk:
+        if node_id not in kept_lanes:
+            continue
+        for parent, kind in parents.get(node_id, ()):
+            if parent in kept_ids:
+                continue
+            for ancestor in above.get(parent, {}):
+                if (ancestor, node_id) not in taken:
+                    taken.add((ancestor, node_id))
+                    drawn.append({"from": ancestor, "to": node_id, "kind": kind, "elided": True})
+    # Only the layers that lost lanes have a row; `layer_count` says how many there are in all.
+    rows: dict[int, dict[str, Any]] = {}
+    hidden_by_state: dict[str, int] = {}
+    for node in nodes:
+        if node.get("kind") == "root" or str(node["id"]) in kept_ids:
+            continue
+        state = str(node.get("state") or "unknown")
+        hidden_by_state[state] = hidden_by_state.get(state, 0) + 1
+        at = layer_of[str(node["id"])]
+        row = rows.setdefault(at, {"layer": at, "count": 0, "states": {}})
+        row["count"] += 1
+        row["states"][state] = row["states"].get(state, 0) + 1
+    out = {key: value for key, value in graph.items() if key not in ("layers", "hidden_by_group", "group_order")}
+    topology = graph.get("dag_topology")
+    if isinstance(topology, Mapping):
+        # The path and the bottlenecks name lanes by title; only a kept lane's can be drawn.
+        titles = {str(node.get("title") or "") for node in kept}
+        out["dag_topology"] = {
+            **topology,
+            "critical_path": [title for title in topology.get("critical_path") or [] if str(title) in titles],
+            "bottlenecks": [row for row in topology.get("bottlenecks") or []
+                            if isinstance(row, Sequence) and row and str(row[0]) in titles],
+        }
+    return {
+        **out,
+        "nodes": kept,
+        "edges": drawn,
+        "hidden_nodes": len(nodes) - len(kept),
+        "hidden_by_state": hidden_by_state,
+        "layer_count": len(layer_ids),
+        "layer_hidden": [rows[at] for at in sorted(rows)],
+    }
+
+
+def _counts_only(graph: Mapping[str, Any], lanes: Sequence[Mapping[str, Any]], layer_count: int) -> dict[str, Any]:
+    """A run too deep for even its layer rows: no lanes, only what it holds by state."""
+    hidden_by_state: dict[str, int] = {}
+    for node in lanes:
+        state = str(node.get("state") or "unknown")
+        hidden_by_state[state] = hidden_by_state.get(state, 0) + 1
+    out = {key: value for key, value in graph.items()
+           if key not in ("layers", "hidden_by_group", "group_order", "dag_topology")}
+    return {
+        **out,
+        "nodes": [node for node in graph.get("nodes") or [] if node.get("kind") == "root"],
+        "edges": [],
+        "hidden_nodes": len(lanes),
+        "hidden_by_state": hidden_by_state,
+        "layer_count": layer_count,
+        "layer_hidden": [],
+        "counts_only": True,
     }

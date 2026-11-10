@@ -1,5 +1,5 @@
-// Main column for a SESSIONS entry: a header (agent mark, folder, status, the Terminal toggle and the model
-// button) above either the chat (the bot chat's own Timeline and Composer, fed by the agent's structured
+// Main column for a SESSIONS entry: a header (agent mark, the session's name, the agent and folder, status, the
+// Terminal toggle and the model button) above either the chat (the bot chat's own Timeline and Composer, fed by the agent's structured
 // mode) or the agent's terminal.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ITheme } from "@xterm/xterm";
@@ -9,12 +9,14 @@ import { Timeline } from "../chat/parts/Timeline";
 import { Composer } from "../chat/parts/Composer";
 import { CheckIcon } from "../chat/model/CheckIcon";
 import "../chat/model/model.css";
-import { ChevronDown, ModelIcon, Popover } from "../ui";
+import { ChatIcon, ChevronDown, ModelIcon, Popover, TerminalIcon } from "../ui";
 import type { Bot } from "../lib/protocol";
 import { AgentMark } from "./AgentMark";
 import { SessionFace } from "./SessionFace";
-import { agentDef, terminalNote, tildePath, type SessionRec } from "./agents";
+import { agentDef, folderName, terminalNote, tildePath, type SessionRec } from "./agents";
+import { pickTitle } from "./titles";
 import { getSessions, useSessions, type ModelOption } from "./sessions";
+import { t } from "../i18n";
 
 // Matched to omher's tokens (--bg, --body, --ink) so the terminal reads as part of the page.
 const DARK: ITheme = {
@@ -106,18 +108,36 @@ function ChatPane({ rec, chatKey }: { rec: SessionRec; chatKey: string }) {
     running: !!chat?.turn,
   };
   const ended = rec.status === "exited" || rec.status === "failed";
-  const offlineText =
-    rec.status === "failed" ? `${label} could not start` : rec.status === "starting" ? `Starting ${label}…` : `${label} has ended`;
+  const offlineText = rec.paused
+    ? `${label} is paused`
+    : rec.status === "failed"
+      ? `${label} could not start`
+      : rec.status === "starting"
+        ? `Starting ${label}…`
+        : `${label} has ended`;
   const why = rec.error ? rec.error.trim().split("\n").pop() : "";
   // one element per chat: the bubbles are memoized on it
   const face = useMemo(() => <SessionFace chatKey={chatKey} size={28} />, [chatKey]);
   return (
     <div className="pane ss-chat" data-pane={chatKey} data-testid="session-chat">
       <Timeline bot={bot} face={face} />
-      {ended && (
+      {rec.paused ? (
+        <Paused rec={rec} />
+      ) : ended && (
         <div className="ss-ended" role="status" data-testid="session-ended">
-          {rec.status === "failed" ? "Could not start" : "Ended"}
-          {why ? ` · ${why}` : ""}
+          <span className="ss-ended-t" title={why || undefined}>
+            {rec.status === "failed" ? "Could not start" : "Ended"}
+            {why ? ` · ${why}` : ""}
+          </span>
+          <button
+            type="button"
+            className="ss-restart"
+            onClick={() => void getSessions().restart(rec.id)}
+            title={rec.agent === "claude" || rec.agent === "codex" ? `Start ${label} again, continuing this conversation` : `Start ${label} again in this folder`}
+            data-testid="session-restart"
+          >
+            Restart
+          </button>
         </div>
       )}
       <Composer
@@ -130,6 +150,37 @@ function ChatPane({ rec, chatKey }: { rec: SessionRec; chatKey: string }) {
         onSend={(t) => void getSessions().send(rec.id, t)}
         onStop={() => void getSessions().interrupt(rec.id)}
       />
+    </div>
+  );
+}
+
+/** A session that was running when omher restarted and does not continue by itself: one line and Resume, which
+ *  starts it again in the same folder (and account). */
+function Paused({ rec }: { rec: SessionRec }) {
+  const label = agentDef(rec.agent).label;
+  return (
+    <div className="ss-ended" role="status" data-testid="session-paused">
+      <span className="ss-ended-t">{t("resume.paused")}</span>
+      <button
+        type="button"
+        className="ss-restart"
+        onClick={() => void getSessions().resume(rec.id)}
+        title={t("resume.resumeTip", { agent: label })}
+        data-testid="session-resume"
+      >
+        {t("resume.resume")}
+      </button>
+    </div>
+  );
+}
+
+/** A restored terminal session that is not running: no terminal is started until the person asks. */
+function TerminalIdle({ rec }: { rec: SessionRec }) {
+  const label = agentDef(rec.agent).label;
+  return (
+    <div className="pane ss-chat ss-idle" data-testid="session-idle">
+      <div className="chat-empty">{rec.paused ? null : `${label} ended`}</div>
+      {rec.paused && <Paused rec={rec} />}
     </div>
   );
 }
@@ -218,6 +269,7 @@ export function SessionView() {
     );
   }
   const def = agentDef(rec.agent);
+  const name = pickTitle(rec, folderName(rec.cwd)).title;
   const chatKey = getSessions().chatKey(rec.id);
   const mode = ss.agents?.find((a) => a.id === rec.agent)?.mode ?? def.mode;
   const canToggle = mode !== "terminal";
@@ -226,8 +278,9 @@ export function SessionView() {
   const turn = !!c?.turn;
   // an approval or question of this chat is still open (the Needs-you model: answered, expired or its turn over closes it)
   const needs = !!chatKey && selectAsks(s).some((a) => a.bot === chatKey);
-  const status =
-    rec.view === "terminal" && canToggle
+  const status = rec.paused
+    ? t("resume.pausedShort")
+    : rec.view === "terminal" && canToggle
       ? "Terminal view"
       : rec.status === "exited" && rec.exitCode
         ? `Ended · exit ${rec.exitCode}`
@@ -244,11 +297,14 @@ export function SessionView() {
         <span className="ss-head-mark">
           <AgentMark agent={rec.agent} size={18} />
         </span>
-        <span className="head-title" data-testid="session-title">
-          {def.label}
+        <span className="head-title" data-testid="session-title" title={name}>
+          {name}
         </span>
-        <span className="ss-head-path" title={rec.cwd} data-testid="session-cwd">
-          {tildePath(rec.cwd, ss.home)}
+        {/* the same order as the row's second line: where, then which agent */}
+        <span className="ss-head-path" title={rec.cwd}>
+          <span data-testid="session-cwd">{tildePath(rec.cwd, ss.home)}</span>
+          {" · "}
+          <span data-testid="session-agent">{def.label}</span>
         </span>
         <span
           className={`ss-head-st ${rec.view === "terminal" && canToggle ? "mode" : rec.status}${showChat && !turn ? " idle" : ""}${showChat && needs ? " needs" : ""}`}
@@ -262,17 +318,25 @@ export function SessionView() {
               type="button"
               className={`ss-toggle${rec.view === "terminal" ? " on" : ""}`}
               aria-pressed={rec.view === "terminal"}
-              title={rec.view === "terminal" ? "Back to the chat" : terminalNote(rec.agent)}
+              aria-label={rec.view === "terminal" ? "Back to the chat" : "Open in Terminal"}
+              title={rec.view === "terminal" ? "Back to the chat" : "Open in Terminal"}
+              aria-description={rec.view === "terminal" ? undefined : terminalNote(rec.agent)}
               onClick={() => void getSessions().setView(rec.id, rec.view === "terminal" ? "chat" : "terminal")}
               data-testid="session-terminal-toggle"
             >
-              {rec.view === "terminal" ? "Chat" : "Terminal"}
+              {rec.view === "terminal" ? <ChatIcon /> : <TerminalIcon />}
             </button>
             {showChat && <SessionModel rec={rec} options={ss.models[rec.id]} note={ss.notes[rec.id]} />}
           </div>
         )}
       </header>
-      {showChat ? <ChatPane rec={rec} chatKey={chatKey!} /> : <TerminalPane key={`${rec.id}-term`} rec={rec} />}
+      {showChat ? (
+        <ChatPane rec={rec} chatKey={chatKey!} />
+      ) : rec.paused || ((rec.status === "exited" || rec.status === "failed") && !getSessions().hasTerm(rec.id)) ? (
+        <TerminalIdle rec={rec} />
+      ) : (
+        <TerminalPane key={`${rec.id}-term`} rec={rec} />
+      )}
     </>
   );
 }

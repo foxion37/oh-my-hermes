@@ -182,8 +182,11 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
             # Merged with the plain-words branch: release-cut's required inputs say "every file that carries
             # the version" instead of a version surface (+14); 542186 -> 542200. That branch's pin was
             # 628aade6...6717, and main's was 8f6fb238...69fa8.
-            (skill_capabilities, 542200, FULL_ROW_DELTA_CAP,
-             '935a86d224a044e9eb6f03b93b39da7000fa97a15b275818e14e00bbab0ca5b7',
+            # 542200 -> 542510 and the digest re-derived: the dag-ulw row's split quality bar says to split for work
+            # that can run side by side and keep a small follow-on step in the node it follows (+310, at
+            # FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT); no other row moved, and the pin before it was 935a86d2...a5b7.
+            (skill_capabilities, 542510, FULL_ROW_DELTA_CAP,
+             'd09dd42e0005c7d3db4f02e745284225b2030ada33466aac495cfd7901cd786f',
              release.FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT),
             (standalone_skill_capability_items, 145483, STANDALONE_ROW_DELTA_CAP,
              '57ef3e89e97c4ed9dc45338c18f01ce384842bad7cfa16b37fb9a4e5a7d0794e',
@@ -472,7 +475,28 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         # Merged with the plain-words branch: build-failure-triage, code-review, commit-pr-authoring and
         # release-cut read verdicts and labels in plain words; that branch's pin was d76164cd...91a7, and
         # main's was 4713baa9...5447.
-        self.assertEqual(_digest(legacy_hashes), '60cd6ed24438d8f549e70755eb063feb4198c476e1109cc01d4b03afc328a81b')
+        # dag-ulw's goal criteria: First Steps passes each checkable outcome as `criteria`, the verify and completion
+        # bars name the CRITERION line and the plain-words count, and run-loop gains a Goal criteria section; only
+        # dag-ulw moves. Merged with main after #2697: main's pin was 60cd6ed2...a81b, and this branch's was
+        # cc3217f7...8447.
+        # dag-ulw's criteria then keep the request's own condition (First Steps, run-loop), the completion bar states
+        # the result in plain words with the record words named, and run-loop says a failed or blocked check still
+        # counts the criteria; only dag-ulw moves, and the pin before it was f04f3355...5f6b.
+        # Its settle step then says when a verify node with criteria is accepted, failed or blocked, and run-loop
+        # reads ids in lower case and tells unmet from unobserved; only dag-ulw moves, and the pin before it was
+        # 4bae7a24...46bb.
+        # A criterion then names the state the person asked for, not that a check ran or was reported (First Steps,
+        # run-loop), and the completion bar names a criterion by what it says, not its id; only dag-ulw moves, and the
+        # pin before it was 823b8374...bc51.
+        # model-setup's chain sentence then names Fable 5.2 in every Fable 5.1 slot and lists Fable 5.1 among
+        # the superseded generations; only model-setup moves, and the pin before it was 60cd6ed2...a81b (main after the plain-words merge).
+        # Merged with main after #2718 (Fable 5.2): main's pin was 36307b12...69c2, and this branch's was
+        # 9f18a8fc...c7db.
+        # dag-ulw's split quality bar then splits for work that can run side by side and keeps a small follow-on step
+        # in the node it follows; only dag-ulw moves, and the pin before it was 1f3c01fa...fbf4.
+        # model-setup's chain sentence then names Fable 5.2 ahead of Opus 5.5 in visual-engineering; only
+        # model-setup moves, and the pin before it was 5518142e...68d0.
+        self.assertEqual(_digest(legacy_hashes), '3a23f50656c683878e5b27ebcffeeafa71d8edbc43a5ae8e9446a7a3fc0127cf')
         legacy = _skill_context_cost_profile('full', legacy_templates, refs)
         current = _skill_context_cost_profile('full', templates, refs)
         # Main's search guidance adds 305; repro-audit's mandatory rails 1,943.
@@ -522,7 +546,7 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         from omh.maintenance.drift import budget_metrics
         expected = {
             'skill_index_line_max_chars': 100,
-            'plugin_tool_schema_chars': 72566,  # Parked DAG waits (+429), delegation backends (+245), six routing-recipe categories (+213), opt-in omh-lsp tools (+2187), opt-in lsp_diagnostics (+396), identity argument (+143), dag node role (+85), dag node owner (+70), dag node local (+37) less the route fallback sentence (-1), then the ultrabrain head in the route example (+5).
+            'plugin_tool_schema_chars': 72895,  # Parked DAG waits (+429), delegation backends (+245), six routing-recipe categories (+213), opt-in omh-lsp tools (+2187), opt-in lsp_diagnostics (+396), identity argument (+143), dag node role (+85), dag node owner (+70), dag node local (+37) less the route fallback sentence (-1), then the ultrabrain head in the route example (+5), then omh_dag goal criteria (+226), then the criteria parameter's keep-the-condition description (+95), said in the positive form (+8).
             'pre_llm_call_context_chars_max': 5977,  # The pi-family runtime rename (+6), the route-hint dedup (-154), then the console choices line (+409).
             'pre_llm_call_context_fallback_chars_max': 7529,  # The same rename (+6), the human-voice primer sentence (+116), the route-hint dedup (-154), then the console choices line (+409).
             'awareness_primer_markdown_chars': 4051,  # Human-voice reply sentence (+110), full skill names in the checkpoint (+55), then loadable labels there (+49), on the card and cue lines (+239) and in the lane keys (+78).

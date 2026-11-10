@@ -27,7 +27,9 @@ export interface SessionHost {
   /** Native folder picker; null when the person cancels. */
   pickFolder(defaultPath: string): Promise<string | null>;
   /** Start `agent` in `cwd` in a terminal. Only the agent id goes to the shell: never a command line.
-   *  `resume` is a Claude Code session id (the terminal view of a chat); the shell checks it is one. */
+   *  `resume` is a Claude Code session id (the terminal view of a chat); the shell checks it is one. `account`
+   *  names the Settings › Accounts login it runs as (the one it ran with, after a restart); none = the one picked
+   *  for new sessions. */
   start(
     agent: AgentId,
     cwd: string,
@@ -36,12 +38,14 @@ export interface SessionHost {
     onData: (data: Uint8Array | string) => void,
     onExit: (code: number | null) => void,
     resume?: string,
+    account?: string,
   ): Promise<number>;
   write(id: number, data: string): Promise<void>;
   resize(id: number, cols: number, rows: number): Promise<void>;
   close(id: number): Promise<void>;
-  /** Start `agent` in its chat mode in `cwd` (`resume`: a Claude Code session id to continue). */
-  chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string): Promise<number>;
+  /** Start `agent` in its chat mode in `cwd` (`resume`: a Claude Code session id or a Codex thread id to continue;
+   *  `account`: as for `start`). */
+  chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string, account?: string): Promise<number>;
   chatInput(id: number, input: ChatInput): Promise<void>;
   chatClose(id: number): Promise<void>;
 }
@@ -70,19 +74,19 @@ export class TauriHost implements SessionHost {
     const r = await open({ directory: true, multiple: false, defaultPath, title: "Choose a folder for the session" });
     return typeof r === "string" ? r : null;
   }
-  async start(agent: AgentId, cwd: string, cols: number, rows: number, onData: (d: Uint8Array) => void, onExit: (c: number | null) => void, resume?: string) {
+  async start(agent: AgentId, cwd: string, cols: number, rows: number, onData: (d: Uint8Array) => void, onExit: (c: number | null) => void, resume?: string, account?: string) {
     const { invoke, Channel } = await this.core();
     const data = new Channel<ArrayBuffer>();
     data.onmessage = (b) => onData(new Uint8Array(b));
     const exit = new Channel<number | null>();
     exit.onmessage = (c) => onExit(c);
-    return invoke<number>("session_start", { agent, cwd, resume: resume ?? null, cols, rows, onData: data, onExit: exit });
+    return invoke<number>("session_start", { agent, cwd, resume: resume ?? null, account: account ?? null, cols, rows, onData: data, onExit: exit });
   }
-  async chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string) {
+  async chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string, account?: string) {
     const { invoke, Channel } = await this.core();
     const ch = new Channel<ChatEvent>();
     ch.onmessage = (ev) => onEvent(ev);
-    return invoke<number>("chat_start", { agent, cwd, resume: resume ?? null, onEvent: ch });
+    return invoke<number>("chat_start", { agent, cwd, resume: resume ?? null, account: account ?? null, onEvent: ch });
   }
   async chatInput(id: number, input: ChatInput) {
     const { invoke } = await this.core();
@@ -117,6 +121,7 @@ export interface MockCall {
   cols?: number;
   rows?: number;
   resume?: string;
+  account?: string;
   input?: ChatInput;
 }
 
@@ -159,9 +164,9 @@ export class MockHost implements SessionHost {
     const v = this.g.__omherPickFolder;
     return v === undefined ? defaultPath : v;
   }
-  async start(agent: AgentId, cwd: string, cols: number, rows: number, onData: (d: string) => void, onExit: (c: number | null) => void, resume?: string) {
+  async start(agent: AgentId, cwd: string, cols: number, rows: number, onData: (d: string) => void, onExit: (c: number | null) => void, resume?: string, account?: string) {
     const id = ++this.next;
-    this.log({ op: "start", id, agent, cwd, cols, rows, ...(resume ? { resume } : {}) });
+    this.log({ op: "start", id, agent, cwd, cols, rows, ...(resume ? { resume } : {}), ...(account ? { account } : {}) });
     this.live.set(id, { line: "", out: onData, exit: onExit });
     setTimeout(() => {
       onData(`${BANNER[agent]}\r\n\x1b[2m  ${agentDef(agent).program} in ${cwd}\x1b[0m\r\n\r\n${PROMPT}`);
@@ -211,10 +216,10 @@ export class MockHost implements SessionHost {
 
   // ---- chat: a scripted agent with the same events the Rust adapters emit -------------------
   private chats = new Map<number, MockChat>();
-  async chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string) {
+  async chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string, account?: string) {
     const id = ++this.next;
-    this.log({ op: "chat.start", id, agent, cwd, ...(resume ? { resume } : {}) });
-    const c = new MockChat(agent, onEvent, resume);
+    this.log({ op: "chat.start", id, agent, cwd, ...(resume ? { resume } : {}), ...(account ? { account } : {}) });
+    const c = new MockChat(agent, onEvent, resume, cwd);
     this.chats.set(id, c);
     c.boot();
     return id;
@@ -239,15 +244,16 @@ const MOCK_MODELS: Record<string, { id: string; label: string }[]> = {
     { id: "haiku", label: "Haiku 5.5" },
   ],
   codex: [
-    { id: "gpt-5.5-codex", label: "GPT-5.5 Codex" },
-    { id: "gpt-5.5", label: "GPT-5.5" },
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    { id: "gpt-6.1-terra", label: "GPT-6.1 Terra" },
   ],
   pi: [{ id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5" }],
   omp: [{ id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5" }],
 };
 
 /** One mock chat agent. `/approve` asks to run `rm -rf ./build`; `/slow` streams long enough to stop with
- *  Esc; `/exit` ends the program; anything else gets a short answer after one tool step. */
+ *  Esc; `/exit` ends the program; `/title <name>` names the conversation as the agent; anything else gets a
+ *  short answer after one tool step. */
 class MockChat {
   private timers: ReturnType<typeof setTimeout>[] = [];
   private turn = false;
@@ -255,7 +261,7 @@ class MockChat {
   private waiting: string | null = null;
   private model: string;
   private session: string;
-  constructor(private agent: AgentId, private emit: (ev: ChatEvent) => void, resume?: string) {
+  constructor(private agent: AgentId, private emit: (ev: ChatEvent) => void, resume?: string, private cwd = "") {
     this.model = MOCK_MODELS[agent]?.[0]?.label ?? agentDef(agent).label;
     this.session = resume ?? `${agent}-mock-${Math.random().toString(16).slice(2, 10)}-0000-0000-000000000000`;
     if (agent === "claude" && !resume) this.session = "11111111-2222-4333-8444-555555555555";
@@ -273,7 +279,7 @@ class MockChat {
     this.timers.forEach(clearTimeout);
     this.timers = [];
   }
-  private end(outcome: "done" | "interrupted" | "error", error?: string) {
+  private end(outcome: "done" | "interrupted" | "ended" | "error", error?: string) {
     if (!this.turn) return;
     this.stop();
     this.turn = false;
@@ -295,7 +301,8 @@ class MockChat {
       const text = i.text.trim();
       if (text === "/exit") {
         this.at(30, () => {
-          this.end("error", "the agent stopped");
+          // a clean exit mid-turn, as the Rust watcher reports it (exit_turn_end)
+          this.end("ended");
           this.emit({ event: "exit", code: 0, error: "" });
         });
         return;
@@ -305,8 +312,36 @@ class MockChat {
         this.at(60, () => this.emit({ event: "tool.start", tool_id: "t-rm", name: "terminal", detail: "rm -rf ./build" }));
         this.at(140, () => {
           this.waiting = rid;
-          this.emit({ event: "approval.request", request_id: rid, title: "Run this command?", command: "rm -rf ./build", choices: ["deny", "once", "session"] });
+          this.emit({ event: "approval.request", request_id: rid, title: "Run this command?", command: "rm -rf ./build", cwd: this.cwd, choices: ["deny", "once", "session"] });
         });
+        return;
+      }
+      if (text.startsWith("/ask")) {
+        // the shapes the adapters emit for a question (Claude Code AskUserQuestion, a Codex question) and a file edit
+        const rid = `ask-${++this.seq}`;
+        this.at(60, () => {
+          this.waiting = rid;
+          this.emit({ event: "clarify.request", request_id: rid, question: "Which greeting should go in greet.txt?", choices: ["hello", "hi"] });
+        });
+        return;
+      }
+      if (text.startsWith("/bad")) {
+        this.at(60, () => this.emit({ event: "tool.start", tool_id: "t-bad", name: "terminal", detail: "definitely-not-a-command-xyz --flag" }));
+        this.at(140, () => this.emit({ event: "tool.end", tool_id: "t-bad", name: "", ok: false, ms: 20 }));
+        this.say("Exit code: 127.", 200);
+        this.at(600, () => this.end("done"));
+        return;
+      }
+      if (text.startsWith("/title ")) {
+        // the agent names the conversation (Claude Code session_title_changed, Codex thread/name/updated)
+        const name = text.slice(7).trim();
+        this.at(40, () => this.emit({ event: "session.info", title: name }));
+        this.say("Named it.", 80);
+        this.at(400, () => this.end("done"));
+        return;
+      }
+      if (text.startsWith("/signedout")) {
+        this.at(60, () => this.end("error", `${agentDef(this.agent).label} is not signed in. Sign in from Settings › Accounts, then Restart.`));
         return;
       }
       if (text.startsWith("/slow")) {
@@ -337,8 +372,16 @@ class MockChat {
       if (!m) throw new Error(`unknown model ${i.model}`);
       this.model = m.label;
       this.at(20, () => this.emit({ event: "session.info", model: this.model }));
+    } else if (i.kind === "clarify") {
+      if (i.request_id !== this.waiting) throw new Error("no question is open");
+      this.waiting = null;
+      const answer = typeof i.answer === "string" ? i.answer : Object.values(i.answer).filter(Boolean).join(", ");
+      this.at(40, () => this.emit({ event: "tool.start", tool_id: "t-w", name: "patch", detail: "greet.txt +1" }));
+      this.at(120, () => this.emit({ event: "tool.end", tool_id: "t-w", name: "", ok: true, ms: 60 }));
+      this.say(`Wrote ${answer} to greet.txt.`, 160);
+      this.at(600, () => this.end("done"));
     } else {
-      throw new Error("no question is open");
+      throw new Error("unknown input");
     }
   }
 }

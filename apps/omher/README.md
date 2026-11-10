@@ -87,12 +87,19 @@ UI (React in a Tauri window)  ⇄  bridge (Python, loopback WebSocket)  ⇄  the
   refuses anything else and never takes a command line or arguments. Closing a session or quitting the app stops
   the program. In a plain browser (dev, e2e) a mock host echoes what you type instead. A chat session's approvals
   and questions are asks like a bot's: they join the Needs-you strip and ⌘J (named by folder and agent), and the
-  session row rings while a turn runs and shows the amber dot while it asks.
+  session row rings while a turn runs and shows the amber dot while it asks. A row's first line is the session's
+  name: the one you gave it (double-click or right-click › Rename), else the title the agent gave the conversation
+  (`session_title_changed` from Claude Code, `thread/name/updated` from Codex, `session.title` from Hermes, or the
+  bridge's `cli.title` read of their own session files), else a summary of your first message made in the UI
+  (`src/sessions/titles.ts`, no model call), else the folder. The second line is the folder and the agent.
 
 Rules the code keeps:
 
 - **Read-only elsewhere.** `chat.send` reaches only the bot's main chat (the session titled `Bot Chat`). Other
   sessions are listed and their history read, never resumed, answered, interrupted or written to.
+- **Files go the same way.** The composer's + (or a drop, or a paste) stages each file with `chat.attach`, which
+  calls Hermes' own `image.attach_bytes`, `pdf.attach` or `file.attach` in the main chat, then `chat.send` sends the
+  text. 20 files, 100 MB each; if one attach fails, nothing is sent.
 - **Loopback only.** The bridge listens on 127.0.0.1 and talks to the gateway Hermes itself runs on this machine.
 - **No model calls of its own.** Every model call is Hermes'. omher has no API key and no HTTP client.
 - **Sessions run only allow-listed agents.** Only when you start one, only `claude`, `codex`, `omh`, `pi`, `omp` or `grok`,
@@ -124,3 +131,16 @@ Bump `version` in `src-tauri/tauri.conf.json` (and `src-tauri/Cargo.toml`, `pack
 tag `omher-v<version>`. `.github/workflows/omher-release.yml` builds the macOS (arm64, x64) and Windows (x64)
 installers, writes `SHA256SUMS.txt` and attaches everything to a GitHub Release of that tag. No Apple Developer
 or Windows signing certificate is involved: macOS builds use an ad-hoc signature (`signingIdentity: "-"`).
+
+## Credits
+
+Agent and CLI marks in `src/assets/agents/` are the projects' own marks, unedited:
+
+- [Lobe Icons](https://github.com/lobehub/lobe-icons) (MIT): Claude Code, Codex, OpenAI, Gemini, Gemini CLI, Grok,
+  Grok Bot, Cursor, opencode, Amp, Cline, GitHub Copilot, Goose, Kilo Code, Junie, Qwen, Windsurf, TRAE, Roo Code.
+  The model marks in `src/ui/modelMarks.ts` come from the same set.
+- pi: `logo-auto.svg` from [pi.dev](https://pi.dev) ([pi-mono](https://github.com/badlogic/pi-mono), MIT).
+- omp: the official mark from [omp.sh](https://omp.sh).
+- OMH: the oh-my-hermes kami mark from this repository.
+
+Each mark belongs to its owner and is used only to name that tool in the app.

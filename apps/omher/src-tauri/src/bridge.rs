@@ -5,6 +5,7 @@
 //! open for the life of the app: the bridge runs with `--exit-on-stdin-eof`, so it also stops if this
 //! process dies without cleaning up. The app makes no model or network call of its own.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -16,6 +17,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 pub const READY_PREFIX: &str = "OMHER_BRIDGE_READY ";
+/// The bridge prints `OMHER_MEDIA_SERVED {"path": "/abs/file"}` each time `media.read` serves a file the
+/// bot named. Those paths, and only those, may be opened by `open_media`.
+pub const MEDIA_PREFIX: &str = "OMHER_MEDIA_SERVED ";
+const MEDIA_REMEMBERED: usize = 2000;
 pub const READY_TIMEOUT: Duration = Duration::from_secs(20);
 pub const HERMES_NOT_FOUND: &str = "Hermes not found: install Hermes Agent first";
 const STDERR_TAIL_LINES: usize = 6;
@@ -34,6 +39,17 @@ pub fn parse_ready_line(line: &str) -> Option<u16> {
     } else {
         None
     }
+}
+
+/// `OMHER_MEDIA_SERVED {"path": "/a/b.png"}` -> `Some("/a/b.png")`. Anything else -> `None`.
+pub fn parse_media_line(line: &str) -> Option<String> {
+    let rest = line.trim_end().strip_prefix(MEDIA_PREFIX)?;
+    let v: serde_json::Value = serde_json::from_str(rest.trim()).ok()?;
+    let path = v.get("path")?.as_str()?;
+    if path.is_empty() || path.contains('\0') || !Path::new(path).is_absolute() {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 /// Lower-case hex of `bytes`.
@@ -105,9 +121,12 @@ fn hermes_homes<E: Fn(&str) -> Option<String>>(env: &E, os: Os) -> Vec<PathBuf> 
     homes
 }
 
-/// Where Hermes' Python lives, in the order the person would expect: `OMHER_HERMES_PYTHON`, then each
-/// Hermes home's `hermes-agent/venv`, then `hermes-agent/.venv` (`bin/python`, or `Scripts\python.exe`
-/// on Windows). `env` and `exists` are injected so tests never touch the real machine.
+/// Where Hermes' Python lives, in the order the person would expect: `OMHER_HERMES_PYTHON`, then (Unix) the
+/// interpreter each Hermes home's PM launcher `hermes-agent/.hermes/bin/hermes` execs, then each home's
+/// `hermes-agent/venv`, then `hermes-agent/.venv` (`bin/python`, or `Scripts\python.exe` on Windows).
+/// The launcher goes first because it is the Python `hermes` itself runs on: an install upgraded to the
+/// unified package manager keeps its old venv, whose older Python cannot load the committed dependency
+/// generation the bridge activates. `env` and `exists` are injected so tests never touch the real machine.
 pub fn discover_python<E, X>(env: E, exists: X) -> Result<PathBuf, String>
 where
     E: Fn(&str) -> Option<String>,
@@ -121,6 +140,60 @@ where
     E: Fn(&str) -> Option<String>,
     X: Fn(&Path) -> bool,
 {
+    discover_python_in(env, exists, |p| std::fs::read_to_string(p).ok(), os)
+}
+
+/// The interpreter a PM launcher script `exec`s: `exec /abs/python3 -I -c '...'`. Hermes writes that line
+/// with `shlex.join`, so a path with a space arrives as `'/a b/python3'` and an apostrophe as `'"'"'`; read
+/// the first word the way sh does, as Hermes' own `_launchers` reader does.
+fn launcher_python(script: &str) -> Option<PathBuf> {
+    let line = script.lines().find_map(|l| l.strip_prefix("exec "))?;
+    let exe = first_sh_word(line)?;
+    // A sh launcher names a POSIX path; `Path::is_absolute` would also need a drive letter on Windows,
+    // where these parse tests run in CI.
+    exe.starts_with('/').then(|| PathBuf::from(exe))
+}
+
+/// The first word of a POSIX sh command line: quotes removed, adjacent quoted parts joined. `None` when
+/// the line is empty or a quote is left open within that word.
+fn first_sh_word(line: &str) -> Option<String> {
+    let mut chars = line.trim_start().chars();
+    let mut word = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => break,
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => word.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => word.push(c),
+                        c => {
+                            word.push('\\');
+                            word.push(c);
+                        }
+                    },
+                    c => word.push(c),
+                }
+            },
+            '\\' => word.push(chars.next()?),
+            c => word.push(c),
+        }
+    }
+    (!word.is_empty()).then_some(word)
+}
+
+pub fn discover_python_in<E, X, R>(env: E, exists: X, read: R, os: Os) -> Result<PathBuf, String>
+where
+    E: Fn(&str) -> Option<String>,
+    X: Fn(&Path) -> bool,
+    R: Fn(&Path) -> Option<String>,
+{
     if let Some(p) = env("OMHER_HERMES_PYTHON").filter(|p| !p.trim().is_empty()) {
         let p = PathBuf::from(p.trim());
         if exists(&p) {
@@ -133,6 +206,14 @@ where
     };
     for home in hermes_homes(&env, os) {
         let agent = home.join("hermes-agent");
+        if os == Os::Unix {
+            let launcher = agent.join(".hermes").join("bin").join("hermes");
+            if let Some(p) = exists(&launcher).then(|| read(&launcher)).flatten().as_deref().and_then(launcher_python) {
+                if exists(&p) {
+                    return Ok(p);
+                }
+            }
+        }
         for dir in ["venv", ".venv"] {
             let p = exe.iter().fold(agent.join(dir), |p, part| p.join(part));
             if exists(&p) {
@@ -231,6 +312,8 @@ impl BridgeStatus {
 pub struct Bridge {
     inner: Mutex<Inner>,
     changed: Condvar,
+    /// Files `media.read` served this launch (from the bridge's stdout).
+    served: Mutex<HashSet<String>>,
 }
 
 impl Bridge {
@@ -244,6 +327,7 @@ impl Bridge {
                 generation: 0,
             }),
             changed: Condvar::new(),
+            served: Mutex::new(HashSet::new()),
         })
     }
 
@@ -316,6 +400,7 @@ impl Bridge {
         });
 
         let (tx, rx) = mpsc::channel::<Result<u16, ()>>();
+        let me = Arc::clone(self);
         thread::spawn(move || {
             let mut sent = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -324,6 +409,8 @@ impl Bridge {
                         sent = true;
                         let _ = tx.send(Ok(port));
                     }
+                } else if let Some(path) = parse_media_line(&line) {
+                    me.remember_media(path);
                 }
             }
             if !sent {
@@ -384,6 +471,19 @@ impl Bridge {
         }
         drop(g);
         self.changed.notify_all();
+    }
+
+    pub fn remember_media(&self, path: String) {
+        let mut set = self.served.lock().unwrap();
+        if set.len() >= MEDIA_REMEMBERED && !set.contains(&path) {
+            set.clear();
+        }
+        set.insert(path);
+    }
+
+    /// True only for a file the bridge served through `media.read` since the app started.
+    pub fn served_media(&self, path: &str) -> bool {
+        self.served.lock().unwrap().contains(path)
     }
 
     pub fn status(&self) -> BridgeStatus {
@@ -486,6 +586,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn media_line_names_one_absolute_file() {
+        let abs = if cfg!(windows) { r"C:\w\a.png" } else { "/w/a.png" };
+        let line = format!("OMHER_MEDIA_SERVED {}", serde_json::json!({ "path": abs }));
+        assert_eq!(parse_media_line(&line), Some(abs.to_string()));
+        for bad in [
+            "",
+            "OMHER_MEDIA_SERVED",
+            "OMHER_MEDIA_SERVED {}",
+            "OMHER_MEDIA_SERVED {\"path\": \"\"}",
+            "OMHER_MEDIA_SERVED {\"path\": \"rel/a.png\"}",
+            "OMHER_MEDIA_SERVED {\"path\": 3}",
+            "WARN OMHER_MEDIA_SERVED {\"path\": \"/w/a.png\"}",
+        ] {
+            assert_eq!(parse_media_line(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_served_media_is_known() {
+        let b = Bridge::new();
+        assert!(!b.served_media("/w/a.png"));
+        b.remember_media("/w/a.png".into());
+        assert!(b.served_media("/w/a.png"));
+        assert!(!b.served_media("/w/b.png"));
+        assert!(!b.served_media("/w"));
+    }
+
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let m: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         move |k| m.get(k).cloned()
@@ -562,6 +690,43 @@ mod tests {
         assert_eq!(discover_python(env, fs_of(&[DOTVENV])), Ok(PathBuf::from(DOTVENV)));
         let blank = env_of(&[("OMHER_HERMES_PYTHON", "  "), ("HOME", "/h")]);
         assert_eq!(discover_python(blank, fs_of(&[VENV])), Ok(PathBuf::from(VENV)));
+    }
+
+    #[test]
+    fn python_falls_back_to_the_pm_launcher_interpreter() {
+        const LAUNCHER: &str = "/h/.hermes/hermes-agent/.hermes/bin/hermes";
+        const PM_PY: &str = "/h/.hermes/tools/python-3.14.9/bin/python3";
+        let script = format!("#!/bin/sh\nexec {PM_PY} -I -c 'import os'\n");
+        let read = |p: &Path| (p == Path::new(LAUNCHER)).then(|| script.clone());
+        let env = env_of(&[("HOME", "/h")]);
+        assert_eq!(discover_python_in(&env, fs_of(&[LAUNCHER, PM_PY]), read, Os::Unix), Ok(PathBuf::from(PM_PY)));
+        // An install upgraded to PM keeps its old venv; `hermes` runs on the launcher's Python, so omher does too.
+        assert_eq!(discover_python_in(&env, fs_of(&[LAUNCHER, PM_PY, VENV]), read, Os::Unix), Ok(PathBuf::from(PM_PY)));
+        // A launcher whose interpreter is gone (a pruned tool) falls back to the venv, then to "not found".
+        assert_eq!(discover_python_in(&env, fs_of(&[LAUNCHER, VENV]), read, Os::Unix), Ok(PathBuf::from(VENV)));
+        let gone = discover_python_in(&env, fs_of(&[LAUNCHER]), read, Os::Unix).unwrap_err();
+        assert_eq!(gone, HERMES_NOT_FOUND);
+        // The override still wins over the launcher.
+        let pinned = env_of(&[("HOME", "/h"), ("OMHER_HERMES_PYTHON", "/opt/py")]);
+        assert_eq!(discover_python_in(&pinned, fs_of(&[LAUNCHER, PM_PY, "/opt/py"]), read, Os::Unix), Ok(PathBuf::from("/opt/py")));
+    }
+
+    #[test]
+    fn launcher_python_reads_the_shlex_joined_exec_word() {
+        // hermes_cli/_launchers.py writes `exec {shlex.join(command)} "$@"`.
+        let spaced = "#!/bin/sh\nexec '/Users/k k/.hermes/tools/python-3.14.9/bin/python3' -I -c 'import os\nx'\n";
+        assert_eq!(launcher_python(spaced), Some(PathBuf::from("/Users/k k/.hermes/tools/python-3.14.9/bin/python3")));
+        let apostrophe = "#!/bin/sh\nexec '/Users/o'\"'\"'neil/py' -I\n";
+        assert_eq!(launcher_python(apostrophe), Some(PathBuf::from("/Users/o'neil/py")));
+        assert_eq!(launcher_python("#!/bin/sh\nexec /p/py -I -c 'a b'\n"), Some(PathBuf::from("/p/py")));
+        assert_eq!(launcher_python("#!/bin/sh\nexec '/p/unterminated\n"), None);
+    }
+
+    #[test]
+    fn launcher_python_needs_an_absolute_exec_target() {
+        assert_eq!(launcher_python("#!/bin/sh\nexec \"/p/py\" -I\n"), Some(PathBuf::from("/p/py")));
+        assert_eq!(launcher_python("#!/bin/sh\nexec python3 -I\n"), None);
+        assert_eq!(launcher_python("echo hi\n"), None);
     }
 
     #[test]

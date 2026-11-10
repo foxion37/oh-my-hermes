@@ -2,7 +2,7 @@
 // build has no Tauri shell, so the MockHost echoes), switching between a bot chat and a session, closing.
 // Grok is the agent that opens as a terminal (the others open as chats: e2e/sessions-chat.spec.ts), so
 // these tests install it in the mock host.
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -11,7 +11,7 @@ const SHOTS = process.env.OMHER_SHOTS || "";
 
 test.use({ colorScheme: "dark" });
 
-async function mock(op: string): Promise<void> {
+async function mock(op: string, params: Record<string, unknown> = {}): Promise<void> {
   const ws = new WebSocket(`ws://127.0.0.1:${MOCK}/?token=e2e`);
   await new Promise<void>((res, rej) => {
     ws.onopen = () => res();
@@ -19,7 +19,7 @@ async function mock(op: string): Promise<void> {
   });
   await new Promise<void>((res) => {
     ws.onmessage = () => res();
-    ws.send(JSON.stringify({ id: "x1", op }));
+    ws.send(JSON.stringify({ id: "x1", op, ...params }));
   });
   ws.close();
 }
@@ -49,6 +49,7 @@ const calls = (page: Page) =>
 async function startSession(page: Page, agent: string) {
   await page.getByTestId("session-new").click();
   await page.getByTestId(`session-agent-${agent}`).click();
+  await page.getByTestId("session-choose").click();
   await expect(page.getByTestId("terminal")).toBeVisible();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
 }
@@ -57,22 +58,74 @@ test.beforeEach(async () => {
   await mock("mock.reset");
 });
 
-test("bots and sessions split the sidebar about half and half", async ({ page }) => {
+test("bots and sessions each take the room their rows need and share what is left", async ({ page }) => {
   await open(page);
   const bots = await page.getByTestId("side-bots").boundingBox();
   const sess = await page.getByTestId("side-sessions").boundingBox();
   expect(bots && sess).toBeTruthy();
   expect(sess!.y).toBeGreaterThan(bots!.y + bots!.height - 1); // SESSIONS sits under BOTS
-  const ratio = bots!.height / sess!.height;
-  expect(ratio).toBeGreaterThan(0.85);
-  expect(ratio).toBeLessThan(1.18);
+  // three bots and no session: neither list needs to scroll, and the spare room is shared equally between them
+  const need = await page.evaluate(() => {
+    const h = (id: string, list: string) => {
+      const sec = document.querySelector(`[data-testid=${id}]`)!;
+      const l = sec.querySelector(list) as HTMLElement | null;
+      return { box: sec.getBoundingClientRect().height, spare: l ? l.clientHeight - l.scrollHeight : 0, scrolls: l ? l.scrollHeight > l.clientHeight + 1 : false };
+    };
+    return { bots: h("side-bots", ".bot-list"), sess: h("side-sessions", ".ss-none") };
+  });
+  expect(need.bots.scrolls).toBe(false);
+  expect(bots!.height).toBeGreaterThan(sess!.height); // three rows need more than the empty SESSIONS
   await expect(page.getByTestId("side-sessions")).toContainText("Sessions");
   await expect(page.getByTestId("session-none")).toBeVisible();
   // the top + is still "Add a bot"; the sessions + is its own button
   await expect(page.getByRole("button", { name: "Add a bot" })).toBeVisible();
   await expect(page.getByTestId("session-new")).toHaveAttribute("aria-label", "New session");
-  // each half scrolls on its own
+  // each list scrolls on its own
   expect(await page.locator("[data-testid=side-bots] .bot-list").evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");
+});
+
+test("thirteen bots beside an empty SESSIONS use the room: the list does not stop at five with a blank half under it", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // the mock's four bots plus nine more
+  await page.routeWebSocket(/127\.0\.0\.1/, (ws) => {
+    const server = ws.connectToServer();
+    const ops = new Map<string, string>();
+    ws.onMessage((raw) => {
+      const msg = JSON.parse(String(raw));
+      ops.set(msg.id, msg.op);
+      server.send(raw);
+    });
+    server.onMessage((raw) => {
+      const msg = JSON.parse(String(raw));
+      if (ops.get(msg.id) === "bots.list" && msg.ok) {
+        const base = msg.result.bots[msg.result.bots.length - 1];
+        for (let i = 0; i < 9; i++) msg.result.bots.push({ ...base, name: `extra${i}`, display_name: `Extra bot number ${i} with a long name`, is_default: false, running: false });
+        ws.send(JSON.stringify(msg));
+        return;
+      }
+      ws.send(raw);
+    });
+  });
+  await open(page);
+  await expect(page.locator("[data-testid=side-bots] .bot")).toHaveCount(13);
+  const geo = await page.evaluate(() => {
+    const list = document.querySelector("[data-testid=side-bots] .bot-list")!.getBoundingClientRect();
+    const rows = [...document.querySelectorAll("[data-testid=side-bots] .bot")].map((e) => e.getBoundingClientRect());
+    const none = document.querySelector("[data-testid=session-none]")!.getBoundingClientRect();
+    const sess = document.querySelector("[data-testid=side-sessions]")!.getBoundingClientRect();
+    const foot = document.querySelector(".side-foot")!.getBoundingClientRect();
+    return { whole: rows.filter((r) => r.top >= list.top - 0.5 && r.bottom <= list.bottom + 0.5).length, noneBottom: none.bottom, sessBottom: sess.bottom, footTop: foot.top, sessH: sess.height };
+  });
+  expect(geo.whole).toBeGreaterThanOrEqual(8); // it was 5
+  // SESSIONS keeps its header, its button and its line of agents, whole, and no more than that
+  expect(geo.noneBottom).toBeLessThanOrEqual(geo.sessBottom + 0.5);
+  expect(geo.sessBottom).toBeLessThanOrEqual(geo.footTop + 0.5);
+  expect(geo.sessH).toBeLessThan(140);
+  // a name too long for the row is cut with an ellipsis, on one line
+  const name = await page.locator('[data-testid="bot-extra0"] .bot-n').evaluate((e) => [getComputedStyle(e).textOverflow, e.scrollWidth > e.clientWidth, Math.round(e.getBoundingClientRect().height)]);
+  expect(name[0]).toBe("ellipsis");
+  expect(name[1]).toBe(true);
+  expect(name[2]).toBeLessThanOrEqual(20);
 });
 
 test("+ lists the agent CLIs with their marks; missing ones are disabled", async ({ page }) => {
@@ -96,6 +149,66 @@ test("+ lists the agent CLIs with their marks; missing ones are disabled", async
   }
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
+});
+
+test("the menu says which account a new session uses; This computer says nothing", async ({ page }) => {
+  // Claude: a second account signed in as work@example.com, chosen for new sessions. Codex: its "Work" account.
+  await mock("accounts.add", { cli: "claude", label: "" });
+  await mock("mock.accounts", { cli: "claude", signed_in: { id: "account-2", email: "work@example.com" } });
+  await mock("accounts.set_active", { cli: "claude", account: "account-2" });
+  await mock("accounts.set_active", { cli: "codex", account: "work" });
+  await open(page);
+  await page.getByTestId("session-new").click();
+  const menu = page.getByTestId("session-menu");
+  // the masked email when the account has no name, else its name
+  await expect(menu.getByTestId("session-account-claude")).toHaveText("as work@…");
+  await expect(menu.getByTestId("session-agent-claude")).toContainText(/Claude Code\s*as work@…/);
+  await expect(menu.getByTestId("session-account-claude")).not.toContainText("example.com");
+  await expect(menu.getByTestId("session-account-codex")).toHaveText("as Work");
+  // the menu stays 8px inside both sidebar edges, so the account sits on its own muted line under the agent;
+  // both are whole at the default sidebar width, and the row's tooltip names both
+  const side = (await page.getByTestId("sidebar").boundingBox())!;
+  const pop = (await menu.locator("..").boundingBox())!;
+  expect(Math.round(pop.x - side.x)).toBe(8);
+  expect(Math.round(side.x + side.width - (pop.x + pop.width))).toBe(8);
+  for (const a of ["claude", "codex"]) {
+    const fits = await menu.getByTestId(`session-agent-${a}`).evaluate((row) => {
+      const as = row.querySelector(".ss-as")!;
+      const r = as.getBoundingClientRect();
+      const box = row.querySelector(".ss-n")!.getBoundingClientRect();
+      const label = row.querySelector(".ss-l")!;
+      const l = label.getBoundingClientRect();
+      const cmd = row.querySelector(".ss-cmd")!.getBoundingClientRect();
+      return {
+        whole: as.scrollWidth <= as.clientWidth && r.right <= box.right + 0.5 && r.width > 0,
+        label: label.scrollWidth <= label.clientWidth,
+        under: r.top >= l.bottom - 1 && Math.abs(r.left - l.left) < 1,
+        gap: Math.round(cmd.left - Math.max(r.right, l.right)),
+        muted: getComputedStyle(as).color === getComputedStyle(row.querySelector(".ss-cmd")!).color,
+        inRow: r.bottom <= row.getBoundingClientRect().bottom,
+      };
+    });
+    expect(fits.whole, `${a} account cut off`).toBe(true);
+    expect(fits.label, `${a} label cut off`).toBe(true);
+    expect(fits.under, `${a} account on its own line`).toBe(true);
+    expect(fits.gap, `${a} gap to the command`).toBeGreaterThanOrEqual(8);
+    expect(fits.muted, `${a} account in --muted`).toBe(true);
+    expect(fits.inRow, `${a} account inside its row`).toBe(true);
+  }
+  await expect(menu.getByTestId("session-agent-claude").locator(".ss-n")).toHaveAttribute("title", "Claude Code as work@…");
+  // omh has no login; pi has one but its sessions do not take an account yet
+  for (const a of ["omh", "pi", "omp", "grok"]) await expect(menu.getByTestId(`session-account-${a}`)).toHaveCount(0);
+  if (SHOTS) {
+    mkdirSync(SHOTS, { recursive: true });
+    await page.mouse.move(900, 780);
+    await page.waitForTimeout(350);
+    await menu.screenshot({ path: join(SHOTS, "session-menu-account.png"), animations: "disabled" });
+  }
+  // back to This computer: the suffix goes (read-only: the menu itself never switches)
+  await mock("accounts.set_active", { cli: "claude", account: "default" });
+  await expect(menu.getByTestId("session-account-claude")).toHaveCount(0);
+  await expect(menu.getByTestId("session-account-codex")).toHaveText("as Work");
+  await page.keyboard.press("Escape");
 });
 
 /** WCAG contrast of each selector's text colour on `bg` (an rgb() string). */
@@ -123,7 +236,7 @@ async function contrast(page: Page, sels: string[], bg: string) {
 }
 
 for (const theme of ["dark", "light"] as const) {
-  test(`empty SESSIONS: one New session button over the installed agents, the menu inset 8px (${theme})`, async ({ page }) => {
+  test(`empty SESSIONS: one quiet New session row in the nav rows' look, the menu inset 8px (${theme})`, async ({ page }) => {
     await page.addInitScript((t) => localStorage.setItem("omher.theme", t), theme);
     await open(page, undefined, ["claude", "codex", "omh", "pi", "omp"]);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
@@ -131,14 +244,42 @@ for (const theme of ["dark", "light"] as const) {
     const start = none.getByTestId("session-start");
     await expect(start).toHaveText("New session");
     await expect(start.locator("svg")).toHaveCount(1); // the + icon
-    // the official marks of up to 4 installed agents; the first two carry their names, every name in the tooltip
-    const ag = none.getByTestId("session-start-agents");
-    expect(await ag.locator("[data-mark]").evaluateAll((els) => els.map((e) => e.getAttribute("data-mark")))).toEqual(["claude", "openai", "omh", "pi"]);
-    await expect(ag).toHaveText(/^Claude Code\s*·\s*Codex/);
-    await expect(ag).toHaveAttribute("title", "Claude Code · Codex · oh-my-hermes · pi");
-    // no long hint: at most 2 lines tall (button + agent line), so BOTS and SESSIONS stay balanced
-    expect((await none.boundingBox())!.height).toBeLessThanOrEqual(60);
-    await expect(none).not.toContainText("Start Claude Code");
+    // one row and nothing else: no hint line, no agent strip; the installed coding agents (not omh) in its tooltip
+    await expect(none).toHaveText("New session");
+    await expect(page.getByTestId("session-start-agents")).toHaveCount(0);
+    await expect(start).toHaveAttribute("title", "Run a coding agent in a folder, as a chat. Claude Code, Codex, pi, oh-my-pi");
+    expect((await none.boundingBox())!.height).toBeLessThanOrEqual(32);
+    // built like the Settings row: same height, icon column, text column and --muted; no border, no fill, not centred
+    const row = (l: Locator) =>
+      l.evaluate((e) => {
+        const cs = getComputedStyle(e);
+        const r = document.createRange();
+        r.selectNodeContents([...e.childNodes].find((n) => n.nodeType === 3 && n.textContent!.trim())!);
+        const ic = e.querySelector("svg")!.getBoundingClientRect();
+        return {
+          h: e.getBoundingClientRect().height,
+          text: Math.round(r.getBoundingClientRect().x),
+          icon: Math.round(ic.x + ic.width / 2),
+          color: cs.color,
+          bg: cs.backgroundColor,
+          border: cs.borderTopWidth,
+          justify: cs.justifyContent,
+          align: cs.textAlign,
+        };
+      });
+    const [mine, settings] = [await row(start), await row(page.getByTestId("nav-settings"))];
+    expect(mine.h).toBe(settings.h);
+    expect(mine.text).toBe(settings.text);
+    expect(mine.icon).toBe(settings.icon);
+    expect(mine.color).toBe(settings.color);
+    expect(mine.bg).toBe("rgba(0, 0, 0, 0)");
+    expect(mine.border).toBe("0px");
+    expect(mine.justify).not.toBe("center");
+    expect(mine.align).toBe("left");
+    expect(await start.evaluate((e) => getComputedStyle(e).fontSize)).toBe("12.5px");
+    await start.hover();
+    await expect.poll(() => start.evaluate((e) => getComputedStyle(e).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    await page.mouse.move(900, 780);
 
     // the header: the BOTS label colour, a --muted + with a 24px target and a gray hover fill
     const head = page.locator("[data-testid=side-sessions] .side-sh");
@@ -164,7 +305,7 @@ for (const theme of ["dark", "light"] as const) {
 
     const side = (await page.getByTestId("sidebar").boundingBox())!;
     const sideBg = await page.getByTestId("sidebar").evaluate((e) => getComputedStyle(e).backgroundColor);
-    for (const [sel, r] of await contrast(page, ["[data-testid=side-sessions] .side-sh", "[data-testid=session-new]", ".ss-start-n"], sideBg))
+    for (const [sel, r] of await contrast(page, ["[data-testid=side-sessions] .side-sh", "[data-testid=session-new]", "[data-testid=session-start]"], sideBg))
       expect(r, sel).toBeGreaterThanOrEqual(4.5);
 
     // the button opens the same menu, 8px in from both sidebar edges; its secondary labels meet 4.5:1
@@ -193,17 +334,20 @@ for (const theme of ["dark", "light"] as const) {
   });
 }
 
-test("the empty section shows no agent line when no agent is installed", async ({ page }) => {
-  await open(page, undefined, []);
-  await expect(page.getByTestId("session-start")).toBeVisible();
-  await expect(page.getByTestId("session-start-agents")).toHaveCount(0);
+test("the empty section's tooltip names no agent when no coding agent is installed (omh alone is not one)", async ({ page }) => {
+  await open(page, undefined, ["omh"]);
+  await expect(page.getByTestId("session-start")).toHaveAttribute("title", "Run a coding agent in a folder, as a chat.");
+  // omh still starts from the + menu
+  await page.getByTestId("session-start").click();
+  await expect(page.getByTestId("session-agent-omh")).toBeEnabled();
 });
 
 test("start a mock terminal session, type, see the echo, then switch to a bot chat and back", async ({ page }) => {
   await open(page);
   await startSession(page, "grok");
   const header = page.getByTestId("header");
-  await expect(page.getByTestId("session-title")).toHaveText("Grok");
+  await expect(page.getByTestId("session-title")).toHaveText("oh-my-hermes");
+  await expect(page.getByTestId("session-agent")).toHaveText("Grok");
   await expect(page.getByTestId("session-cwd")).toHaveText("~/code/oh-my-hermes");
   await expect(header.locator("button")).toHaveCount(0); // no extra header icons
   const row = page.locator("[data-testid=session-list] .ss-row").first();
@@ -250,10 +394,12 @@ test("a second session, recent folders, and exit ends a session", async ({ page 
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText("api");
   await expect(rows.first()).toContainText("Grok");
-  await expect(page.getByTestId("session-title")).toHaveText("Grok");
+  await expect(page.getByTestId("session-title")).toHaveText("api");
 
-  // the + menu opens inside the sidebar, and offers the recent agent+folder pairs
+  // the + menu opens inside the sidebar; after the agent it offers the recent folders
   await page.getByTestId("session-new").click();
+  await expect(page.getByTestId("session-recent")).toHaveCount(0);
+  await page.getByTestId("session-agent-grok").click();
   await expect(page.getByTestId("session-recent")).toHaveCount(2);
   const pop = (await page.getByTestId("session-menu").locator("..").boundingBox())!;
   const side = (await page.getByTestId("sidebar").boundingBox())!;
@@ -328,8 +474,9 @@ test("closing a running session asks first and stops the program", async ({ page
   await expect(row).toBeVisible();
   expect((await calls(page)).some((c) => c.op === "close")).toBe(false);
 
-  // right-click is the other way to close
+  // right-click › Close session is the other way to close
   await row.click({ button: "right" });
+  await page.getByTestId("session-row-menu").getByTestId("session-menu-close").click();
   await page.getByTestId("session-stop").click();
   await expect(page.locator("[data-testid=session-list] .ss-row")).toHaveCount(0);
   await expect.poll(async () => (await calls(page)).filter((c) => c.op === "close").length).toBe(1);

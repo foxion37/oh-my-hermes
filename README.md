@@ -1,16 +1,12 @@
 <div align="center">
 
-### omher, the desktop app
+### OMHER Desktop
 
-<img src="assets/omher-hero.webp" alt="The omher desktop app in dark mode: bots Kami, Friren, Juno and Pip and five SESSIONS on Claude Code, Codex, oh-my-pi, pi and Grok in the sidebar; Kami plans a checkout redesign in 3 layers, 7 parts, shows the new cart step and runs pnpm test while a Slack #design thread answers in the chat; the Runs panel shows the plan card and the live dag-ulw graph with Claude, Codex and Grok marks on its nodes" width="900">
+<img src="assets/omher-hero.webp" alt="The omher desktop app in dark mode: bots Kami, Friren and Juno and SESSIONS on Claude Code, Codex and oh-my-pi in the sidebar; Kami's chat holds the ask to add dark mode to the docs and open a PR, planned with dag-ulw in 6 parts: 3 Hermes subagents on GLM, Kimi and DeepSeek, plus Claude Code, Codex and omp lanes; the Plans panel draws that plan as a graph of rounded boxes, each with its model's logo and model, effort and category (GLM-5.3 · medium · quick, Kimi K3 · high · visual-engineering, Opus 5.5 · high via Claude, GPT-6.1 Sol · medium via Codex, DeepSeek V4.1 · high · review, Sonnet 5.5 · high via omp), two done, two running and two waiting, with the full dependency list under it" width="900">
 
-Your Hermes bots, coding sessions and `dag-ulw` runs, in one window.
+Your Hermes bots and coding agents, in one window.
 
 [macOS (Apple silicon)](https://omher.app/#omher) · [macOS (Intel)](https://omher.app/#omher) · [Windows](https://omher.app/#omher) · [All releases →](https://github.com/rlaope/oh-my-hermes/releases?q=omher&expanded=true)
-
-```sh
-curl -fsSL https://omher.app/omher | sh
-```
 
 </div>
 
@@ -50,7 +46,7 @@ It never patches or replaces Hermes, and it never reports planned work as done.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh
+curl -fsSL https://omher.app/install | sh
 omh setup
 ```
 
@@ -108,6 +104,15 @@ A separate node verifies the goal before you get the report.
   <img src="assets/omh-dag-ulw-tui.gif" alt="The OMH TUI running /dag-ulw: the prompt is typed, the box graph of seven lanes is defined, the lanes run layer by layer on Claude Opus 5.5, GPT-6.1 Sol, DeepSeek V4.1 Flash, GLM 5.3 and Kimi K3.1 Pro, and every lane ends accepted" width="900">
 </p>
 
+> **Built on**
+>
+> <table>
+> <tr><td width="88" align="center"><a href="https://github.com/NousResearch/hermes-agent"><img src="assets/hermes-agent-icon.png" alt="Hermes Agent" width="56"></a></td>
+> <td><b><a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a></b> by <a href="https://nousresearch.com">Nous Research</a><br>The agent OMH runs on. OMH is an independent, unofficial layer on top.</td></tr>
+> <tr><td width="88" align="center"><a href="https://github.com/code-yeongyu/oh-my-openagent"><img src="https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/a05f240727d985e574404430d8d40c80eb912bc2/.github/assets/omo-icon-light.svg" alt="OmO" width="64"></a></td>
+> <td><b><a href="https://github.com/code-yeongyu/oh-my-openagent">OmO</a></b> by <a href="https://github.com/code-yeongyu">@code-yeongyu</a><br>Where the ultrawork concept comes from. OMH brings it to Hermes.</td></tr>
+> </table>
+
 > [!TIP]
 > Be with us!
 >
@@ -155,13 +160,13 @@ A separate node verifies the goal before you get the report.
 **macOS / Linux:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh
+curl -fsSL https://omher.app/install | sh
 ```
 
 **Windows (PowerShell 5.1+):**
 
 ```powershell
-irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1 | iex
+irm https://omher.app/install.ps1 | iex
 ```
 
 **Or paste this into your AI agent:**

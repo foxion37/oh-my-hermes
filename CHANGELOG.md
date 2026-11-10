@@ -4,6 +4,163 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **omher: `@name` of a bot in a chat opens that bot's chat.** A bot that
+  writes `@hermes`, `@omh-tui` or `@kami` now draws the name in ink at medium
+  weight, and clicking it (or Enter or Space on it) switches to that bot's chat
+  with the sidebar selection; it never sends anything. Names resolve by profile
+  slug, by display name, or `hermes` for the default profile, case-insensitive;
+  unknown names, code, links, emails and `@file:` refs stay text, and the open
+  chat's own bot is not a link. It works in bot bubbles, your own bubbles and a
+  run node's handoff.
+- **The Desktop pane stays on the focused chat and folds large DAGs by
+  layer.** The yolo chip follows the focused chat instead of whichever
+  session's hook ticked last (a subagent or a cron run); where OMH holds no
+  observation of that chat while some session of the gateway was observed ON
+  within the ledger's freshness window, the chip still shows. In its DAG section, a pane that names its chat no
+  longer draws a fanout whose record names another chat as its origin; one
+  with no recorded origin, which includes any fanout still running, is drawn
+  as before.
+  The pane always draws the same five sections in one order, USAGE, CATCHES,
+  PLAN, DAG and AGENTS, each with an empty line when it has nothing to say;
+  the subagent list and the routes are one AGENTS section, and a plan that
+  Hermes' `todo_list` holds gets a short PLAN block saying where its steps
+  are. DAG cards fold by layer,
+  with Auto, Focus, Unfold all and Fold all on a bar over the cards and a
+  layer's chip to open or fold it by hand; the fold mode and the View menu's
+  choices are kept in the app's local storage. A graph too large for the
+  pane comes as a bounded layer view that counts what each layer left out by
+  state: running and returned lanes are kept first, then failed, blocked and
+  stuck ones, so neither is cut while a finished lane is shown, and a lane
+  whose parent was cut hangs from its nearest shown ancestor by a dotted
+  edge. A run too deep for even its layer rows reads as its counts by state
+  instead of "No DAG". Layers held open are asked for again within a larger
+  bound, and a layer bigger than that still comes back cut. USAGE reads the
+  gateway's `session.stats` counters where they count more than the chat's
+  recorded row, and done DAG work is drawn green. The TUI's DAG block and the chat's end
+  post get the same graph as before. Thanks @yqm-307. (#2745)
+
+- **Claude Fable 5.2 now leads the `visual-engineering` chain.** Frontend and
+  visual lanes routed through Hermes try Fable 5.2 first, then Claude Opus
+  5.5, Gemini 4 Argon and Kimi K3.1 Pro, all at `high` (before, Opus 5.5 came
+  first). A child on Fable 5.2 at `high` with no route record is labelled
+  `visual-engineering`, as before; a child on Opus 5.5 at `high` is still
+  labelled `deep`. The Maestro lane's chain is unchanged. The setup examples
+  in the installation guide now name Fable 5.2 instead of Fable 5.1, so no
+  shipped recommendation names Fable 5.1 any more. A chain you set yourself
+  in `~/.omh/routing/model-chains.json` is not touched.
+
+- **dag-ulw plans fewer, larger nodes.** It splits where work can run side by
+  side and keeps a small follow-on step in the node it follows, so a run starts
+  fewer children; a job with nothing to run side by side still runs as a graph.
+
+- **dag-ulw stops telling a parallel plan to split further.** Its advice to
+  split a run into parallel lanes now looks only at the build nodes: it comes
+  when at least 80% of two or more build nodes sit on one chain, in a run of
+  five or more nodes, and it now also says a small step that only follows
+  another can be folded into the node it follows. A run whose only chain is its
+  baseline, review and verify steps no longer gets it, nor does a chain of three
+  builds beside one other build (3 of 4).
+
+- **dag-ulw checks each part of the goal, not only the goal as a whole.** The
+  model splits the goal into the outcomes it can check separately (you type
+  nothing new), and the verify node marks each one met, not met or not
+  checked, with what it ran. A check that leaves one not met or not checked
+  is not accepted, and the run counts as verified only when every outcome was
+  met; the status line, the end of the run and the TUI say how many were met
+  (`2/3 criteria met`). A run defined without them works as before.
+
+- **dag-ulw's handoff checks on a Docker or SSH terminal ignore shell aliases
+  and functions.** The commands that check a node's handoff file and read its
+  goal-criteria lines now run past any alias or function in your shell that
+  shares a tool's name (an `alias grep='grep --color=always'`, a function
+  named `echo` or `[`), so they read the file as it is. When the criteria
+  search finds no line, that is a read with nothing in it; any other failed
+  step leaves the handoff not checked.
+
+- **`omh_jev_ask` can reach a self-hosted Jev-compatible server over local
+  HTTP.** With `{"local_http_endpoint": true}` in `<omh_home>/jev/settings.json`,
+  `TYPESAFE_BASE_URL` may be a plain-HTTP root on `localhost` or a loopback,
+  RFC 1918, ULA, or link-local IP literal, and `"typesafe_model"` names the
+  model that endpoint serves (an Ollama, vLLM or llama.cpp server exposing
+  `/v1/systemone`). The local ranges are named exactly, so documentation,
+  reserved, Teredo, 6to4 and NAT64 addresses and an IP with a trailing dot are
+  refused; a plain-HTTP ask never goes through `HTTP_PROXY`, so the key is not
+  sent in clear to a proxy; and `typesafe_model` never applies to TypeSafe's
+  own host however it is spelled. Thanks @brentkearney. (#2716)
+- **omher: each plan part shows the pull request it opened.** A node's
+  status line ends with GitHub's own pull request mark in GitHub's colour
+  (open green, merged purple, closed red, draft gray) and the number, `#2746`,
+  in the muted text colour; the part's detail says `#2746 · Merged`. A click on
+  the number opens the PR in the browser and does not select the node. omher
+  finds the number in the part's reasons, summary or handoff, and asks the
+  person's own GitHub CLI for the state (`gh pr view`, kept 5 minutes, 3 s at
+  most), apart from the plan, so the graph never waits on GitHub. Without
+  `gh`, a login or the network the number shows with no state colour.
+  BOUNDARY rule 21 states this one read.
+- **omher 0.2.2.** Codex from the ChatGPT app counts as installed, and an
+  empty SESSIONS section is one quiet row.
+  - **Codex.** On macOS, the Codex CLI inside the ChatGPT or Codex desktop app
+    (under `/Applications` or `~/Applications`) is found after PATH and every
+    install folder, so a Mac whose only Codex is the app's copy no longer shows
+    it as not installed. An npm or Homebrew install still wins.
+  - **New session.** An empty SESSIONS section is one muted New session row
+    with a `+`, like the Automations and Settings rows; the hint and the
+    installed agents are in its tooltip. The first-run card's two buttons share
+    one outlined look.
+- **omher 0.2.1.** The plan graph looks like part of a desktop app, and the
+  first launch says what bots and sessions are.
+  - **Plans.** Each part shows its model's logo and name (`Opus 5.5 · high`)
+    in the app's own font, with rounded boxes, small status icons and curved
+    lines; several lines into one part no longer pile up on one arrowhead.
+    The plan's title leads its header, with a quieter status line under it.
+  - **First run.** Two small cards over an empty chat explain Bots (coworkers
+    you hand work to) and Sessions (a coding agent working with you in one
+    folder), each with one button. One × hides them for good.
+  - **Sessions.** The Terminal button is a plain icon with a tooltip, so it no
+    longer looks like the model button. A session whose agent exits cleanly
+    reads Ended, not Failed. Two folders of the same name show their parent
+    folder. "Not installed" says how to install that CLI.
+  - **Needs you.** The collapsed strip names who is asking and their first
+    words.
+- **omher 0.2.0.** Your bots, coding sessions and plans in one window.
+  - **Plans.** A dag-ulw run and a coding agent's sub-runs open as a plan. Its
+    graph shows each part with the model, effort and category it ran on, the
+    parts it waits on, and the latest lines of the one you pick. There is a
+    full view (⌘⇧G).
+  - **SESSIONS.** Claude Code, Codex, pi and oh-my-pi sessions read their real
+    command, approval and question events. Approvals go Deny, Allow once,
+    Allow for session. Stop works, and an ended session can Restart. A new
+    session asks for its folder and offers the five recent ones.
+  - **Accounts and usage.** Settings › Accounts lists the coding-CLI logins
+    on this computer, adds one through the CLI's own sign-in and switches
+    between them. The sidebar shows each CLI's usage.
+  - **Files.** You can attach files to a message, and files a bot sends show
+    as images, video, audio or file cards.
+  - **More.** A `./` skill picker in the composer, official agent marks, and
+    four short sounds (Settings › Sounds).
+  - **Updating.** From this version, later releases arrive through the
+    sidebar's Update button.
+- **omher updates itself.** When a new omher release is out, an "Update to
+  0.1.x" button appears at the bottom left of the sidebar; one click
+  downloads it, checks its signature and restarts omher on the new version.
+  The app looks once at launch and every 6 hours. People on omher 0.1.1 or
+  earlier have no button yet: install the next version once from the
+  Releases page (or the `omher@beta` one-liner), and every release after
+  that arrives through the button.
+
+- **The OMH TUI queues what you send during a turn, commands too.** Enter
+  during a turn now always waits for the turn's end, whatever Hermes'
+  `display.busy_input_mode` says, so a config set to `interrupt` no longer
+  stops the turn and the `ctrl+enter to send now · ↑ to edit` row shows
+  under a queued prompt. A slash command typed during a turn waits in the same
+  queue and runs in order when the turn ends (a prompt after a `/compress`
+  goes once Hermes has answered it); only `/stop`, `/steer`, `/queue`, `/btw`,
+  `/bg`, `/gateway`, `/quit` and the commands about this terminal run at once.
+  Interrupting is Esc or `/stop`, never Enter, and the send-now key never sends
+  a queued command into the turn. One Esc now stops a running turn even with a
+  draft typed, as in Claude Code, and the draft stays in the composer (vim
+  mode keeps Esc Esc; Ctrl+C still clears the draft first).
+
 - **omher 0.1.1.** The app shows SESSIONS: Claude Code, Codex, pi, omp and
   Grok open as chats in a folder you pick (or as a terminal), and their
   questions and approvals join the bots' asks in a "needs you" strip that ⌘J
@@ -13,6 +170,22 @@ All notable changes will be documented here.
   itself. The side panel has tabs, the model picker has search, and the chat
   keeps one face per run of bot bubbles. (#2695, #2702, #2704, #2706, #2708,
   #2709, #2710)
+- **Claude Fable 5.2 takes every Claude Fable 5.1 slot, and heads
+  `ultrabrain`** (owner decision, 2026-11-10). The `ultrabrain` chain is now
+  Claude Fable 5.2, GPT-6 Astra, then Claude Opus 5.5, all at `xhigh`. Fable
+  5.2 also replaces Fable 5.1 in `architect`, `visual-engineering`,
+  `artistry`, `capable`, the Hermes `main` suggestion, and the Claude Code
+  chain (`claude-opus-5-5` -> `claude-fable-5-2` -> `opus`), each at the effort
+  5.1 had. Claude Code needs version 2.1.290 or newer to run Fable 5.2 (seen on
+  one machine, not stated by Anthropic). `omh coding model-contract --model
+  claude-fable-5-2` prints its record from Anthropic's pages: thinking is always
+  on, so a request for `off` or `minimal` is raised to `low`. It lists at $8 /
+  $40 per million tokens, against $10 / $50 for Fable 5.1, and cost estimates
+  use that price. Fable 5.1 left the shipped chains but stays recognized,
+  priced and routable, so a chain you set yourself can still name it. Claude
+  Mythos 5.2, the same model for organizations Anthropic has verified, is
+  recognized and priced but in no shipped chain. The calibration text a
+  Claude model receives is unchanged.
 
 - **One command installs Hermes, OMH and the omher desktop app (beta).**
   `curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh -s -- omher@beta`
@@ -79,6 +252,113 @@ All notable changes will be documented here.
   when no node decides the run). Repair and extend rounds do not raise it,
   and the reply leaves it out when the user's `model_map` options have no
   `ultrabrain` option. Like all lint it never refuses a run.
+- **omher.app shows the real GitHub star count.** The header used to show a
+  `4.9k` baked into the page on 2026-10-31 whenever the visitor's own,
+  unauthenticated GitHub API call was rate-limited. The Pages deploy now
+  stamps the current count into the page (`tools/stamp_site_counts.py`, with
+  the workflow's token; a failed call keeps the committed value and never
+  fails the deploy), and a schedule rebuilds the site every 6 hours so it
+  stays current without a merge. In the browser, one code path in `app.js`
+  updates the count, and a cached or fetched count can only raise the baked
+  one, never lower it.
+- **The Desktop pane keeps a finished DAG and lets you switch between a
+  conversation's DAGs.** With two or more dag runs in one chat, a menu in the
+  DAG header picks which one to draw (the newest by default); a picked run is
+  drawn alone, without another run's children. A finished run keeps its
+  cards, node summaries and figures under its run line instead of
+  collapsing to one line (under the pane's Auto fold, a run of nine lanes or
+  more shows them as folded layer chips); the chat end post and the TUI keep their linger.
+  Edges are routed by the rows the cards actually wrap to, implied
+  dependency edges are hidden unless Implied edges is on in the DAG's View
+  menu, and repair/extend edges are drawn faint. USAGE is a token ring with
+  the total and the cache hit as a percent in its middle, and can add
+  the drawn graph's subagent lanes; a sum with any unpriced part, the chat
+  included, shows as a lower bound (`≥$`). Thanks @yqm-307. (#2690)
+- **A short install command: `curl -fsSL https://omher.app/install | sh`.** omher.app now serves
+  `install` and `install.ps1`, small wrappers that download `install.sh` (or `install.ps1`) from main and
+  run it with only the arguments you pass, so the short form installs exactly what the long
+  `raw.githubusercontent.com/.../install.sh | sh` one-liner does; on Windows,
+  `irm https://omher.app/install.ps1 | iex`. The README, its translations, the website and
+  docs/INSTALLATION.md show the short form; the install guide keeps the long one as "same as".
+
+- **OMH TUI settings changes say what they did, and do what they say.**
+  `/yolo` and `/reasoning <level>` went to Hermes' `slash.exec`, which runs
+  them in a worker apart from the live agent: `/reasoning high` said it was
+  set and changed nothing, and `/yolo` said approvals were off while Hermes
+  kept asking, then left a flag that turned them off at the next resume. Both
+  now go through the TUI's own per-session calls (Ctrl+T's and Shift+Tab's),
+  and say the outcome under the command; `/reasoning` with anything but a
+  level still goes to Hermes as typed. Typed during a turn, `/yolo`,
+  `/effort` and `/reasoning <level>` run at once, as Shift+Tab and Ctrl+T do;
+  bare `/reasoning` and its other forms wait for the turn's end. Shift+Tab presses made while Hermes
+  has not answered the last one are kept and shown at once, dimmed with `…`,
+  so two quick presses end in plan mode instead of in accept all; Ctrl+T's
+  level shows the same way until Hermes confirms it. `/model <name>` and the
+  picker show `switching to <model>…` under the command until Hermes
+  answers, say when Hermes also made the model the default for new sessions,
+  and a switch held for the next turn that Hermes drops as that turn starts
+  is now a lasting transcript row naming it. Bare `/model` opens its picker
+  at once: what is typed while the list loads filters it, Enter waits for the
+  list, and Esc cancels it; picking the current row switches nothing, and the
+  echo names the model without the flags sent. A typed `/effort <level>`
+  says the level set. The info line keeps the model's name beside the mode
+  label at 120 columns (the context goes first), and the launch look's file
+  is named as `~/…`.
+
+- **omher finds Hermes installed by its package manager.** Hermes installs
+  made with the unified package manager have no `venv`, so omher said Hermes
+  was not on the computer. omher now starts its bridge on the Python the
+  `hermes` command itself runs on (read from `hermes-agent/.hermes/bin/hermes`,
+  including paths with spaces) and loads Hermes' installed dependencies before
+  it starts, so the bridge no longer stops on `No module named 'websockets'`.
+  An install upgraded from a venv uses the same Python as `hermes`, not the old
+  venv. Thanks to @sykuang (#2740).
+- **omher shows links as small service chips.** A bare link in a chat bubble,
+  a session chat or a plan handoff now reads as the service's mark and a short
+  label instead of a long URL: `rlaope/oh-my-hermes#2657`, `#2604`, a commit,
+  release, CI run or file line on GitHub; a Slack or Discord thread named by
+  its channel (`#docs-harness`) when the bot has been in that channel, else
+  "Slack message"; Google Docs, Sheets, Slides, Drive, Calendar, Meet, Forms,
+  Gmail and Maps; X and Twitter posts and profiles; LinkedIn; YouTube with its
+  start time (`YouTube · video · 1:23`); Notion, Linear, Figma and npm. The full
+  URL is in the tooltip, and a click opens it in your browser or the app. A
+  link with its own words keeps them, with the mark in front; any other site,
+  and a lookalike such as `github.com.evil.io`, stays a plain link showing its
+  real address. A plan node's drawer lists its links as a Links block, its own
+  pull request with GitHub's state mark like the node's badge. omher
+  reads all of this from the address and the bot's own channel names; it
+  fetches nothing from the link.
+
+- **omher asks before it updates, and picks up where you left off after a
+  restart.** The sidebar's Update button opens a small confirm first:
+  "Update to 0.2.3?", one line saying omher will restart and your chats,
+  panels and sessions come back, and, when sessions are running, which ones
+  and how they come back. Cancel or Esc leaves everything as it was; install
+  starts only on "Update and restart". After any restart (the update, a quit
+  and reopen, a crash) omher reopens the bot or session you had open, the side
+  panel and its tab, the Plans full view, and every composer's unsent text,
+  from one `omher.resume` snapshot saved as you go. The SESSIONS list comes
+  back too: a Claude Code or Codex chat that was running continues its own
+  conversation in the same folder and with the same account, pi, oh-my-pi,
+  Grok and oh-my-hermes sessions come back paused with a one-click Resume, and
+  ended ones stay ended. A snapshot that is malformed, from another version or
+  names a bot that is gone is ignored, and nothing starts twice.
+
+- **omher names coding sessions by what they are about.** A SESSIONS row
+  used to show only its folder, so three sessions in `web-app` looked the
+  same. The first line is now the session's name and the second line is the
+  folder and the agent (`web-app · Claude Code`). The name is the one you
+  gave the session, else the title the agent gave the conversation (Claude
+  Code's own title, a Codex thread name, the title Hermes gives an
+  oh-my-hermes chat), else a short summary of your first message made on
+  this computer: no `/command`, `@file`, code block or link, the first
+  sentence, at most 40 characters cut at a word. omher asks no model for it.
+  The agent's title replaces the summary as soon as it arrives. To rename a
+  session, double-click its name or right-click › Rename: Enter saves, Esc
+  cancels, and an empty name goes back to the automatic one. The name is
+  kept on this computer with the agent's conversation and comes back when
+  you resume that conversation or omher restarts. The session header shows
+  the name too, with the folder and the agent after it.
 
 ## 4.0.7 - 2026-11-09
 

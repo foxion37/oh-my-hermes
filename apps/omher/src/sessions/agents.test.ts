@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { AGENTS, folderName, isAgentId, parentPath, parseRecent, pushRecent, RECENT_MAX, rowModel, terminalNote, tildePath, type SessionRec } from "./agents";
+import {
+  AGENTS,
+  folderName,
+  INSTALL,
+  isAgentId,
+  missingNote,
+  parentPath,
+  parseRecent,
+  pushRecent,
+  RECENT_MAX,
+  recentFolders,
+  rowModel,
+  terminalNote,
+  tildePath,
+  type Recent,
+  type SessionRec,
+} from "./agents";
 import { MockHost } from "./host";
 
 describe("session agents", () => {
@@ -46,7 +62,7 @@ describe("session agents", () => {
 
   it("row model: folder as the title, agent and state below, live while running", () => {
     const base: SessionRec = { id: "s1", agent: "claude", cwd: "/Users/k/app", startedAt: 1_700_000_000_000, status: "running", view: "terminal" };
-    expect(rowModel(base)).toEqual({ title: "app", sub: "Claude Code", live: true, needsYou: false, ts: 1_700_000_000 });
+    expect(rowModel(base)).toEqual({ title: "app", titleSource: "folder", folder: "app", sub: "Claude Code", live: true, needsYou: false, ts: 1_700_000_000 });
     expect(rowModel({ ...base, status: "starting" })).toMatchObject({ sub: "Claude Code · Starting…", live: true });
     expect(rowModel({ ...base, status: "exited", exitCode: 0 })).toMatchObject({ sub: "Claude Code · Ended", live: false });
     expect(rowModel({ ...base, status: "exited", exitCode: null }).sub).toBe("Claude Code · Ended");
@@ -54,28 +70,87 @@ describe("session agents", () => {
     expect(rowModel({ ...base, agent: "omp", status: "failed" }).sub).toBe("oh-my-pi · Could not start");
   });
 
-  it("row model of a chat: live only while a turn runs, Needs you while an approval waits", () => {
+  it("row model: two folders of the same name show their parent, a unique name stays alone", () => {
+    const at = (id: string, cwd: string): SessionRec => ({ id, agent: "claude", cwd, startedAt: 1, status: "running", view: "chat" });
+    const cwds = ["/Users/k/work/web-app", "/Users/k/oss/web-app", "/Users/k/notes", "/Users/k/work/web-app"];
+    const ctx = { cwds, home: "/Users/k" };
+    expect(rowModel(at("a", cwds[0]), undefined, ctx)).toMatchObject({ title: "web-app", where: "~/work" });
+    expect(rowModel(at("b", cwds[1]), undefined, ctx)).toMatchObject({ title: "web-app", where: "~/oss" });
+    expect(rowModel(at("c", cwds[2]), undefined, ctx).where).toBeUndefined();
+    // two sessions in the very same folder are not a clash of names
+    expect(rowModel(at("d", "/Users/k/notes"), undefined, { cwds: ["/Users/k/notes", "/Users/k/notes"], home: "/Users/k" }).where).toBeUndefined();
+    expect(rowModel(at("e", "C:\\a\\api"), undefined, { cwds: ["C:\\a\\api", "C:\\b\\api"], home: null }).where).toBe("C:\\a");
+    expect(rowModel(at("f", cwds[0])).where).toBeUndefined();
+  });
+
+  it("row model: a named session shows its name on line 1 and the folder before the agent on line 2", () => {
+    const base: SessionRec = { id: "s1", agent: "claude", cwd: "/Users/k/web-app", startedAt: 1, status: "running", view: "chat" };
+    // first message summary
+    expect(rowModel({ ...base, promptTitle: "Fix the login redirect" })).toMatchObject({
+      title: "Fix the login redirect",
+      titleSource: "prompt",
+      folder: "web-app",
+      sub: "web-app · Claude Code",
+    });
+    // the agent's own title wins over the summary, the person's name over both
+    expect(rowModel({ ...base, promptTitle: "Fix the login redirect", agentTitle: "OAuth redirect loop" }).title).toBe("OAuth redirect loop");
+    expect(rowModel({ ...base, promptTitle: "a", agentTitle: "b", title: "Mine" })).toMatchObject({ title: "Mine", titleSource: "person" });
+    // blank names do not count
+    expect(rowModel({ ...base, title: "  ", agentTitle: "", promptTitle: "x" })).toMatchObject({ title: "x", titleSource: "prompt" });
+    // the state follows the agent
+    expect(rowModel({ ...base, promptTitle: "Fix it", status: "exited", exitCode: 0 }).sub).toBe("web-app · Claude Code · Ended");
+    expect(rowModel({ ...base, agentTitle: "t", status: "starting" }).sub).toBe("web-app · Claude Code · Starting…");
+    // a clash of folder names: the parent goes with the folder on line 2, not after the name
+    const ctx = { cwds: ["/Users/k/work/web-app", "/Users/k/oss/web-app"], home: "/Users/k" };
+    const named = rowModel({ ...base, cwd: "/Users/k/work/web-app", agentTitle: "OAuth fix" }, undefined, ctx);
+    expect(named).toMatchObject({ title: "OAuth fix", sub: "web-app · ~/work · Claude Code" });
+    expect(named.where).toBeUndefined();
+    // while the name is still the folder, the parent stays after it and line 2 is the agent alone
+    expect(rowModel({ ...base, cwd: "/Users/k/oss/web-app" }, undefined, ctx)).toMatchObject({ title: "web-app", where: "~/oss", sub: "Claude Code" });
+  });
+
+  it("a missing agent's tooltip carries its install line, as text", () => {
+    expect(missingNote("claude")).toBe("claude was not found on this computer · install: npm i -g @anthropic-ai/claude-code");
+    expect(missingNote("codex")).toContain("npm i -g @openai/codex");
+    expect(missingNote("codex")).toContain("bundled in the ChatGPT app is found too");
+    expect(missingNote("pi")).toContain("npm i -g @mariozechner/pi-coding-agent");
+    expect(missingNote("omp")).toContain("npm i -g @oh-my-pi/pi-coding-agent");
+    expect(missingNote("grok")).toBe("grok was not found on this computer · see grok docs");
+    expect(Object.keys(INSTALL).sort()).toEqual(AGENTS.map((a) => a.id).sort());
+  });
+
+  it("row model of a chat: live only while a turn runs, needsYou while an approval waits (the line stays the agent)", () => {
     const chat: SessionRec = { id: "s2", agent: "codex", cwd: "/w/api", startedAt: 1, status: "running", view: "chat" };
     expect(rowModel(chat, { turn: false, needsYou: false })).toMatchObject({ live: false, needsYou: false, sub: "Codex" });
     expect(rowModel(chat, { turn: true, needsYou: false })).toMatchObject({ live: true, sub: "Codex" });
-    expect(rowModel(chat, { turn: true, needsYou: true })).toMatchObject({ live: true, needsYou: true, sub: "Codex · Needs you" });
+    expect(rowModel(chat, { turn: true, needsYou: true })).toMatchObject({ live: true, needsYou: true, sub: "Codex" });
     // an ended session never asks for anything
     expect(rowModel({ ...chat, status: "exited", exitCode: 0 }, { turn: true, needsYou: true })).toMatchObject({ live: false, needsYou: false, sub: "Codex · Ended" });
   });
 
-  it("recent launches: newest first, deduped, capped, malformed entries dropped", () => {
+  it("recent launches: newest first, one entry per folder, capped, malformed entries dropped", () => {
     let r = pushRecent([], { agent: "claude", cwd: "/a", at: 1 });
-    r = pushRecent(r, { agent: "codex", cwd: "/a", at: 2 });
-    r = pushRecent(r, { agent: "claude", cwd: "/a", at: 3 });
-    expect(r.map((x) => `${x.agent}:${x.cwd}:${x.at}`)).toEqual(["claude:/a:3", "codex:/a:2"]);
+    r = pushRecent(r, { agent: "codex", cwd: "/b", at: 2 });
+    r = pushRecent(r, { agent: "codex", cwd: "/a", at: 3 });
+    expect(r.map((x) => `${x.agent}:${x.cwd}:${x.at}`)).toEqual(["codex:/a:3", "codex:/b:2"]);
     for (let i = 0; i < 10; i += 1) r = pushRecent(r, { agent: "omh", cwd: `/f${i}`, at: 10 + i });
     expect(r).toHaveLength(RECENT_MAX);
+    expect(RECENT_MAX).toBe(5);
     expect(parseRecent(JSON.stringify(r))).toEqual(r);
     expect(parseRecent("not json")).toEqual([]);
     expect(parseRecent(JSON.stringify({ agent: "claude" }))).toEqual([]);
     expect(parseRecent(JSON.stringify([{ agent: "sh", cwd: "/", at: 1 }, { agent: "pi", cwd: "", at: 1 }, { agent: "pi", cwd: "/x", at: 2 }]))).toEqual([
       { agent: "pi", cwd: "/x", at: 2 },
     ]);
+  });
+
+  it("recent folders for the menu: distinct, newest first, at most 5, whichever agent used them", () => {
+    const at = (cwd: string, t: number, agent: Recent["agent"] = "claude"): Recent => ({ agent, cwd, at: t });
+    expect(recentFolders([])).toEqual([]);
+    // a list saved by an older build: the same folder under two agents, not in time order
+    expect(recentFolders([at("/a", 1), at("/b", 3, "codex"), at("/a", 2, "grok")])).toEqual(["/b", "/a"]);
+    const many = Array.from({ length: 8 }, (_, i) => at(`/f${i}`, i));
+    expect(recentFolders(many)).toEqual(["/f7", "/f6", "/f5", "/f4", "/f3"]);
   });
 });
 

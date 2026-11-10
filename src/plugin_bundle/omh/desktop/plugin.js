@@ -9,26 +9,26 @@
 //
 // The pane reads top to bottom: one line of state (`OMH  2 running`), the
 // scope it covers (`this session` or `all sessions`), the few findings worth
-// a badge, then its sections in a fixed order, each drawn only when it has
-// something to say: CATCHES (the mistakes OMH caught in this session, worded
-// as the TUI words them), PLAN, DELEGATION (the delegation graph while one is
-// active), ROUTES (the Maestro and Kanban lanes OMH dispatched) and the
-// fanout DAG. While a delegation graph runs, DELEGATION shows it as the box
-// drawing the TUI prints into its transcript, made by the backend with the
-// TUI's own renderer (`delegation_view`) at the pane's width in cells, which
-// the pane measures and sends as `cols`; the backend draws the tree where
-// the boxes do not fit. The drawing is the one place set in monospace art:
-// a preformatted block in a card, scrolling sideways and never wrapping,
-// each segment coloured by the state its renderer role carries.
-// Hermes Desktop lists every delegate_task child in its own
-// Agents panel and in the composer's status stack, so a row per native
-// subagent here was a second copy of that list; the pane keeps one summary
-// line for them and names that panel in its tooltip. Maestro and Kanban rows
-// stay, because nothing in Desktop draws the routes OMH chose.
+// a badge, then five sections, always the same five in the same order (the
+// owner's call of 2026-11-10: a block that comes and goes with the data reads
+// as the pane changing its mind). USAGE is the focused chat's own figures;
+// CATCHES what OMH caught earlier in the session, a history; PLAN the plan as
+// it stands now; DAG the session's one graph, whatever made it, drawn as
+// cards folded by layer; AGENTS the subagents and the routes OMH dispatched.
+// A section with nothing to say draws its empty line; until this chat's poll
+// lands it reads as pending, and where the reader cannot answer it says that
+// instead of showing another chat's answer. Each section folds, and the
+// folds and the DAG view's options are kept in the app's local storage.
+// Hermes Desktop lists every delegate_task child in its own Agents panel and
+// in the composer's status stack, so a row per native subagent here was a
+// second copy of that list; AGENTS keeps one summary line for them and names
+// that panel in its tooltip. Maestro and Kanban rows stay, because nothing in
+// Desktop draws the routes OMH chose.
 //
 // Each colour has one meaning, through theme tokens only: the accent for
 // what is running, yellow for waiting, blocked or a warning, red for failed
-// (and for yolo, shown only while it is on), and the text greys for done,
+// (and for yolo, shown only while it is on), green for done DAG work (the
+// owner's call of 2026-11-10), and the text greys for other done words,
 // skipped and everything neutral. Monospace is kept for ids, model and route
 // names and figures, and the drawing; words are set in the app's sans. Every
 // word the pane colours reads at 4.5:1 or better on Desktop's light and dark
@@ -67,7 +67,6 @@ import {
   Badge,
   GlyphSpinner,
   host,
-  PanelEmpty,
   PANES_AREA,
   Skeleton,
   STATUSBAR_AREAS,
@@ -91,48 +90,17 @@ export const PANE_WIDTH = '320px'
 // The TUI's plan window: eight items anchored just before the first
 // unfinished one, the rest folded into earlier/later counts.
 export const PLAN_WINDOW_ROWS = 8
-export const GRAPH_NODE_LIMIT = 8
-export const LANE_LIMIT = 8
-// The drawing's width in cells before the pane has measured itself: the
-// default 320 px pane, less the card's insets, in 11 px JetBrains Mono.
-export const DEFAULT_DRAWING_CELLS = 41
-// The px the drawing's card takes off the body's width before its first
-// cell: the section block's two side paddings, then the card's two borders
-// and two paddings (PANE_CSS).
-export const DRAWING_INSET_PX = 46
-// The longest drawing the pane keeps, in lines and in segments per line.
-export const DRAWING_LINE_LIMIT = 160
-const DRAWING_SEGMENT_LIMIT = 64
+// Every pane section is drawn on every poll, in one order; one with nothing to
+// say draws its empty line, never nothing. Which ones the person folded, and
+// how the DAG view is set, persist in the app's local storage.
+export const SECTION_ORDER = ['usage', 'catches', 'plan', 'dag', 'agents']
+const FOLD_STORE = 'omh-pane-folds'
+const DAG_VIEW_STORE = 'omh-pane-dag-view'
 
 // Bound in register(); ctx.rest is scoped to this plugin's namespace.
 let rest = null
 // Bound in register() when the host offers ctx.i18n; the local table otherwise.
 let pluginI18n = null
-
-// The drawing's width in cells, measured by the pane and read by every
-// `useHud`, so the status item and the pane keep asking one query.
-let drawingCells = DEFAULT_DRAWING_CELLS
-const cellListeners = new Set()
-
-export function setDrawingCells(cells) {
-  if (!Number.isInteger(cells) || exceeds(8, cells) || cells === drawingCells) return
-  drawingCells = cells
-  cellListeners.forEach(function (listener) {
-    listener(cells)
-  })
-}
-
-function useDrawingCells() {
-  const [cells, setCells] = useState(drawingCells)
-  useEffect(function () {
-    cellListeners.add(setCells)
-    setCells(drawingCells)
-    return function () {
-      cellListeners.delete(setCells)
-    }
-  }, [])
-  return cells
-}
 
 // Every comparison in the file goes through these two, so neither angle
 // bracket appears in it. NaN answers false, as the operators would.
@@ -161,20 +129,40 @@ function countOf(list, predicate) {
   return list.filter(predicate).length
 }
 
-// `cols` asks the backend to draw an active delegation graph that many
-// cells wide; without it the payload carries no drawing.
-export function hudPath(sessionId, cols) {
+// `dagRun` names the dag run to draw in place of the newest one; `dagOpen`, the
+// layers the pane holds open (`1,4`), which the reader sends whole.
+export function hudPath(sessionId, dagRun, dagOpen) {
   const query = []
   if (sessionId) query.push(`session=${encodeURIComponent(sessionId)}`)
-  if (Number.isInteger(cols) && exceeds(cols, 0)) query.push(`cols=${cols}`)
+  if (dagRun) query.push(`dag_run=${encodeURIComponent(dagRun)}`)
+  if (dagOpen) query.push(`dag_open=${encodeURIComponent(dagOpen)}`)
   return query.length ? `/hud?${query.join('&')}` : '/hud'
 }
 
-function fetchHud(sessionId, cols) {
+function fetchHud(sessionId, dagRun, dagOpen) {
   if (!rest) {
     return Promise.reject(new Error('omh plugin context is not registered'))
   }
-  return rest(hudPath(sessionId, cols))
+  return rest(hudPath(sessionId, dagRun, dagOpen))
+}
+
+// A small JSON record in the app's local storage; an empty one where storage
+// is missing (the node harness) or holds something unreadable.
+export function readStore(key) {
+  try {
+    const value = JSON.parse(globalThis.localStorage.getItem(key) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch (error) {
+    return {}
+  }
+}
+
+function writeStore(key, value) {
+  try {
+    globalThis.localStorage.setItem(key, JSON.stringify(value))
+  } catch (error) {
+    // No storage: the choice lasts this window only.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -222,8 +210,6 @@ export const EN = {
   chipShotAgo: 'parallel shot ×{count} ({age} ago)',
   sectionCatches: 'CATCHES',
   sectionPlan: 'PLAN',
-  sectionDelegation: 'DELEGATION',
-  sectionRoutes: 'ROUTES',
   sectionDag: 'DAG',
   catchLoop: 'stopped a loop of {laps} identical calls',
   catchCycle: 'stopped a loop of {period} calls repeated {laps} times',
@@ -255,11 +241,12 @@ export const EN = {
   subagentsTip: "Each subagent is listed in Hermes Desktop's Agents panel.",
   dagDefaultName: 'delegation',
   dagDone: 'done {done}/{total}',
+  dagPickLabel: 'Show another DAG of this session',
+  dagPickOption: '{name} · {state} · {count} nodes',
+  dagPickLatest: ' · latest',
   dagStateCount: '{count} {state}',
   dagUnchecked: '{count} handoff not checked',
-  graphTitle: function (vars) {
-    return `${vars.ready} ready · ${plural(vars.edges, 'edge')}`
-  },
+  graphRuntimeName: 'runtime graph',
   graphMore: '+{count} more',
   graphWaitingOn: 'waiting on {nodes}',
   graphSinceOutput: '{age} since new output',
@@ -331,18 +318,16 @@ export const EN = {
   routeUnassigned: 'unassigned',
   dgTokens: 'Tokens',
   dgTokensSub: '↓{out} out · {prompt} in',
-  dgTokensTip: 'All nodes: uncached input + cache read + cache write + output',
+  dgTokensTip: 'Nodes that reported usage: uncached input + cache read + cache write + output',
   dgCacheHit: 'Cache hit',
   dgCacheHitSub: '{read} of {prompt} prompt',
   dgCacheHitTip: 'cache read ÷ (uncached input + cache read + cache write)',
   dgCost: 'Cost',
-  dgCostSub: '{priced}/{counted} nodes priced',
+  dgCostSub: '{priced}/{total} nodes priced',
   dgCostNone: 'no usage yet',
   dgCostTip: 'Only cost Hermes recorded; unpriced tokens are not converted',
   dgNodeTime: 'Node time',
-  dgNodeTimeSub: function (vars) {
-    return `sum of ${plural(vars.count, 'node')}`
-  },
+  dgNodeTimeSub: '{count}/{total} nodes timed',
   dgNodeTimeTip: 'Sum of node run time; parallel lanes make it larger than the wall clock',
   dgWaitsOn: function (vars) {
     return `Waits on ${plural(vars.count, 'lane')}`
@@ -396,7 +381,53 @@ export const EN = {
   ubTtftSub: 'send → first token',
   ubTtftAvg: 'avg {avg} · {count} turns',
   ubTtftTip: 'Time from send to the first streamed token of the last turn, as this window saw it; tool time before that token counts',
-  ubParts: 'Prompt composition'
+  ubFree: 'Free window',
+  ubCacheLine: 'cache {cache}',
+  ubScope: 'Usage scope',
+  ubMain: 'Main',
+  ubWithSubs: '+ subagents ({count})',
+  ubParts: 'Prompt composition',
+  ubPartsPending: 'Read between turns, once the chat has called the model',
+  ubSourceGateway: 'live',
+  ubSourceRecorded: 'recorded',
+  ubSourceStream: 'stream',
+  ubSourceTip: 'live: the gateway agent counters · recorded: what Hermes stored for this chat · stream: the status-bar feed',
+  ubEmpty: 'Nothing recorded for this chat yet',
+  ubNoChat: 'Open a chat to see its usage',
+  sectionAgents: 'AGENTS',
+  agentsEmpty: 'No subagents or routes in this session',
+  catchesTitle: 'earlier in this session',
+  catchesEmpty: 'Nothing caught in this session',
+  planNativeHeld: 'Steps are in the Hermes todos above the composer',
+  dagEmptyTitle: 'No DAG in this session',
+  dagEmptyDescription: 'A delegated workflow draws its graph here.',
+  dagEmptyRuns: 'Earlier runs are in the menu.',
+  dagCountsOnly: function (vars) {
+    return `${plural(vars.total, 'node')} in ${plural(vars.layers, 'layer')}: too many to draw here`
+  },
+  sectionPending: 'reading…',
+  sectionUnavailable: 'Not available: the OMH backend did not answer',
+  foldToggle: 'Fold or unfold',
+  dgLayerFold: function (vars) {
+    return `layer ${vars.layer} · ${plural(vars.count, 'node')}`
+  },
+  dgLayerTip: 'Click to fold or unfold this layer',
+  dgView: 'View',
+  dgViewLabel: 'DAG view options',
+  dgFoldMode: 'Layers',
+  dgFoldAuto: 'Auto',
+  dgFoldActive: 'Focus',
+  dgFoldOpen: 'Unfold all',
+  dgFoldClosed: 'Fold all',
+  dgFoldAutoTip: 'Fold finished and far-off layers',
+  dgFoldActiveTip: 'Open the running layers and the layers just before and after them',
+  dgFoldOpenTip: 'Open every layer',
+  dgFoldClosedTip: 'Fold every layer but the running and returned work',
+  dgShowLabel: 'Show',
+  dgShowFigures: 'Figures',
+  dgShowStats: 'Stats',
+  dgShowImplied: 'Implied edges',
+  dgShowCompact: 'Compact cards'
 }
 
 export const KO = {
@@ -434,8 +465,6 @@ export const KO = {
   chipShotAgo: '병렬 호출 ×{count} ({age} 전)',
   sectionCatches: '잡아낸 실수',
   sectionPlan: '계획',
-  sectionDelegation: '위임',
-  sectionRoutes: '경로',
   sectionDag: 'DAG',
   catchLoop: '같은 호출 {laps}번 반복을 멈춤',
   catchCycle: '호출 {period}개가 {laps}번 반복된 루프를 멈춤',
@@ -459,9 +488,12 @@ export const KO = {
   subagentsTip: '각 하위 에이전트는 Hermes Desktop의 에이전트 패널에 표시됩니다.',
   dagDefaultName: '위임',
   dagDone: '완료 {done}/{total}',
+  dagPickLabel: '이 세션의 다른 DAG 보기',
+  dagPickOption: '{name} · {state} · 노드 {count}개',
+  dagPickLatest: ' · 최신',
   dagStateCount: '{count} {state}',
   dagUnchecked: '핸드오프 {count}개 확인 안 됨',
-  graphTitle: '준비 {ready}개 · 간선 {edges}개',
+  graphRuntimeName: '런타임 그래프',
   graphMore: '+{count}개 더',
   graphWaitingOn: '{nodes} 대기 중',
   graphSinceOutput: '새 출력 후 {age}',
@@ -531,16 +563,16 @@ export const KO = {
   routeUnassigned: '미배정',
   dgTokens: '토큰',
   dgTokensSub: '↓{out} 출력 · {prompt} 입력',
-  dgTokensTip: '모든 노드: 캐시 미사용 입력 + 캐시 읽기 + 캐시 쓰기 + 출력',
+  dgTokensTip: '사용량을 보고한 노드: 캐시 미사용 입력 + 캐시 읽기 + 캐시 쓰기 + 출력',
   dgCacheHit: '캐시 적중',
   dgCacheHitSub: '프롬프트 {prompt} 중 {read}',
   dgCacheHitTip: '캐시 읽기 ÷ (캐시 미사용 입력 + 캐시 읽기 + 캐시 쓰기)',
   dgCost: '비용',
-  dgCostSub: '{counted}개 노드 중 {priced}개 과금',
+  dgCostSub: '노드 {total}개 중 {priced}개 과금',
   dgCostNone: '아직 사용량 없음',
   dgCostTip: 'Hermes가 기록한 비용만 표시하며, 과금되지 않은 토큰은 환산하지 않습니다',
   dgNodeTime: '노드 시간',
-  dgNodeTimeSub: '노드 {count}개 합계',
+  dgNodeTimeSub: '노드 {total}개 중 {count}개 시간 기록',
   dgNodeTimeTip: '노드 실행 시간의 합계로, 병렬 레인 때문에 실제 경과 시간보다 클 수 있습니다',
   dgWaitsOn: '레인 {count}개 대기 중',
   dgStart: '시작 노드',
@@ -588,7 +620,49 @@ export const KO = {
   ubTtftSub: '전송 → 첫 토큰',
   ubTtftAvg: '평균 {avg} · {count}턴',
   ubTtftTip: '전송부터 마지막 턴의 첫 스트리밍 토큰까지의 시간으로, 이 창에서 관측한 값입니다. 첫 토큰 전의 도구 시간도 포함됩니다',
-  ubParts: '프롬프트 구성'
+  ubFree: '남은 창',
+  ubCacheLine: '캐시 {cache}',
+  ubScope: '집계 범위',
+  ubMain: '메인',
+  ubWithSubs: '+ 서브에이전트 ({count})',
+  ubParts: '프롬프트 구성',
+  ubPartsPending: '채팅이 모델을 호출한 뒤, 턴 사이에 읽습니다',
+  ubSourceGateway: '실시간',
+  ubSourceRecorded: '기록',
+  ubSourceStream: '스트림',
+  ubSourceTip: '실시간: 게이트웨이 에이전트 카운터 · 기록: Hermes가 이 채팅에 저장한 값 · 스트림: 상태 표시줄 피드',
+  ubEmpty: '이 채팅에 기록된 사용량이 아직 없습니다',
+  ubNoChat: '채팅을 열면 사용량이 표시됩니다',
+  sectionAgents: '에이전트',
+  agentsEmpty: '이 세션에 하위 에이전트나 경로가 없습니다',
+  catchesTitle: '이 세션의 이전 기록',
+  catchesEmpty: '이 세션에서 잡아낸 실수가 없습니다',
+  planNativeHeld: '단계는 입력창 위 Hermes 할 일에 있습니다',
+  dagEmptyTitle: '이 세션에 DAG 없음',
+  dagEmptyDescription: '위임된 워크플로의 그래프가 여기에 표시됩니다.',
+  dagEmptyRuns: '이전 실행은 메뉴에 있습니다.',
+  dagCountsOnly: '노드 {total}개, {layers}층: 여기 그리기에는 너무 많습니다',
+  sectionPending: '읽는 중…',
+  sectionUnavailable: '사용할 수 없음: OMH 백엔드가 응답하지 않았습니다',
+  foldToggle: '접기 또는 펼치기',
+  dgLayerFold: '{layer}층 · 노드 {count}개',
+  dgLayerTip: '클릭하면 이 층을 접거나 펼칩니다',
+  dgView: '보기',
+  dgViewLabel: 'DAG 보기 옵션',
+  dgFoldMode: '층',
+  dgFoldAuto: '자동',
+  dgFoldActive: '집중',
+  dgFoldOpen: '모두 펼치기',
+  dgFoldClosed: '모두 접기',
+  dgFoldAutoTip: '끝난 층과 먼 층 접기',
+  dgFoldActiveTip: '실행 중인 층과 그 앞뒤 층만 펼치기',
+  dgFoldOpenTip: '모든 층 펼치기',
+  dgFoldClosedTip: '실행 중이거나 돌아온 작업만 남기고 모두 접기',
+  dgShowLabel: '표시',
+  dgShowFigures: '수치',
+  dgShowStats: '통계',
+  dgShowImplied: '생략 간선',
+  dgShowCompact: '간단한 카드'
 }
 
 const TABLES = { en: EN, ko: KO }
@@ -1246,43 +1320,18 @@ export function dagRunSummary(graph) {
   return [t('sectionDag'), safeText(graph.name) || t('dagDefaultName')].concat(said).join(' · ')
 }
 
-// How deep a lane sits under main: the longest chain of lanes above it,
-// capped at three steps of indent; a loop in the edges stops the walk.
-function laneDepth(id, parents, roots, memo, seen) {
-  if (memo.has(id)) return memo.get(id)
-  let depth = 0
-  for (const up of parents.get(id) || []) {
-    if (roots.has(up) || seen.has(up)) continue
-    depth = Math.max(depth, 1 + laneDepth(up, parents, roots, memo, new Set(seen).add(up)))
-  }
-  memo.set(id, Math.min(depth, 3))
-  return memo.get(id)
-}
-
 export function laneMark(state) {
-  return { glyph: own(LANE_GLYPHS, state) ? LANE_GLYPHS[state] : '○', tone: wordTone(state) }
+  return { glyph: own(LANE_GLYPHS, state) ? LANE_GLYPHS[state] : '○', tone: state === 'done' ? 'ok' : wordTone(state) }
 }
 
+// The DAG section's one line: the run's name and its counts while it runs, the
+// TUI's settled summary once every lane has settled. Null without an active graph.
 export function delegationView(payload) {
   const graph = payload && payload.delegation_graph
   if (!graph || graph.status !== 'active') return null
+  if (graph.counts_only) return countsOnlyView(graph)
   const lanes = lanesOf(graph)
   if (!lanes.length) return null
-  const roots = new Set(
-    rows(graph.nodes)
-      .filter(function (node) {
-        return node.kind === 'root'
-      })
-      .map(function (node) {
-        return safeText(node.id)
-      })
-  )
-  const parents = new Map()
-  for (const edge of rows(graph.edges)) {
-    const to = safeText(edge.to)
-    parents.set(to, (parents.get(to) || []).concat([safeText(edge.from)]))
-  }
-  const memo = new Map()
   const settled = dagRunSummary(graph)
   const tally = LANE_STATE_ORDER.map(function (state) {
     return [
@@ -1299,33 +1348,66 @@ export function delegationView(payload) {
       return t('dagStateCount', { count: entry[1], state: stateWord(entry[0]) })
     })
   return {
-    summary: settled || [safeText(graph.name) || t('dagDefaultName')].concat(tally).join(' · '),
+    // The section is already labelled DAG, so the line opens with the run's name.
+    summary: settled ? settled.replace(`${t('sectionDag')} · `, '') : [safeText(graph.name) || t('dagDefaultName')].concat(tally).join(' · '),
     settled: !!settled,
-    lanes: lanes.slice(0, LANE_LIMIT).map(function (node) {
-      const id = safeText(node.id)
-      const model = safeText(node.model).split('/').pop()
-      const state = humanState(node.state) || 'unknown'
-      const mark = laneMark(state)
-      return {
-        title: safeText(node.title) || id,
-        model: model === '?' ? '' : model,
-        state: stateWord(state),
-        depth: laneDepth(id, parents, roots, memo, new Set([id])),
-        glyph: mark.glyph,
-        tone: mark.tone
-      }
+    done: countOf(lanes, function (node) {
+      return node.state === 'done'
     }),
-    hidden: Math.max(0, lanes.length - LANE_LIMIT) + (Number(graph.hidden_nodes) || 0)
+    total: lanes.length
+  }
+}
+
+// A run too deep for the reader to send even its layers (`counts_only`): its name and its lanes counted by state.
+function countsOnlyView(graph) {
+  const states = graph.hidden_by_state && typeof graph.hidden_by_state === 'object' ? graph.hidden_by_state : {}
+  const count = function (state) {
+    return Object.keys(states).reduce(function (sum, raw) {
+      return (humanState(raw) || 'unknown') === state ? sum + (Number(states[raw]) || 0) : sum
+    }, 0)
+  }
+  const tally = LANE_STATE_ORDER.filter(count).map(function (state) {
+    return t('dagStateCount', { count: count(state), state: stateWord(state) })
+  })
+  const total = Number(graph.hidden_nodes) || 0
+  return {
+    summary: [safeText(graph.name) || t('dagDefaultName')].concat(tally).join(' · '),
+    settled: false,
+    done: count('done'),
+    total,
+    note: t('dagCountsOnly', { total, layers: Number(graph.layer_count) || 0 })
+  }
+}
+
+// The session's dag runs to switch between, newest first, or null where there is nothing to choose (fewer than two).
+// `picked` is the run the person switched to; one the backend no longer lists is the newest, which is what it draws.
+// `newest` is the run the pane follows when nothing is picked.
+export function dagRunChoices(payload, picked) {
+  const runs = rows(payload && payload.dag_runs).filter(function (item) {
+    return safeText(item.run)
+  })
+  if (!exceeds(runs.length, 1)) return null
+  const newest = safeText(runs[0].run)
+  const current = runs.some(function (item) {
+    return safeText(item.run) === picked
+  })
+    ? picked
+    : newest
+  return {
+    newest,
+    current,
+    options: runs.map(function (item, index) {
+      const run = safeText(item.run)
+      const label = t('dagPickOption', { name: safeText(item.name) || run, state: stateWord(item.state) || '?', count: Number(item.nodes) || 0 })
+      return { run, label: index ? label : label + t('dagPickLatest') }
+    })
   }
 }
 
 // ---------------------------------------------------------------------------
-// The drawing: the backend's `delegation_drawing`, the TUI's own boxes or
-// tree as lines of `{text, role}` segments. The pane never lays a cell out
-// again; it only colours each segment by the state its role carries, with
-// the TUI's meaning (`panels.dag_style`): a box's border, glyph, title and
-// status words in its node's state colour, edges and the frontier label as
-// quiet marks, an edge into a running frontier in the accent.
+// State tones, in the TUI's meaning (`panels.dag_style`): a card's border,
+// glyph, title and status words in its node's state colour, edges as quiet
+// marks, an edge into a running node in the accent.
 // ---------------------------------------------------------------------------
 
 const DRAWING_STATE_TONES = {
@@ -1335,8 +1417,9 @@ const DRAWING_STATE_TONES = {
   stuck: 'warn',
   failed: 'error',
   interrupted: 'error',
-  done: 'tertiary',
-  dispatched: 'tertiary',
+  // Done is green on the pane, where the TUI draws it in the accent: a settled run should read settled at a glance.
+  done: 'ok',
+  dispatched: 'warn',
   waiting: 'muted',
   unknown: 'muted'
 }
@@ -1355,8 +1438,8 @@ const DRAWING_KIND_TONES = {
 }
 const DRAWING_STATE_KINDS = new Set(['node', 'node-title', 'node-word', 'glyph', 'status'])
 
-// The tone a drawing segment is painted in, from its renderer role
-// (`node:running`, `edge`, `header`); a role the pane does not know is plain.
+// The tone a role is painted in (`node:running`, `status:failed`, `edge`), as
+// the TUI's renderer names them; a role the pane does not know is plain.
 export function segmentTone(role) {
   const text = String(role || '')
   const colon = text.indexOf(':')
@@ -1371,46 +1454,16 @@ export function segmentTone(role) {
   return own(DRAWING_KIND_TONES, kind) ? DRAWING_KIND_TONES[kind] : ''
 }
 
-// The drawing's text keeps every box-drawing cell; only escapes and control
-// characters are taken out, as `sanitizeText` takes them.
-function drawingText(value) {
-  return String(value ?? '')
-    .replace(ESCAPE_SEQUENCE, '')
-    .replace(/\p{Cc}/gu, '')
-}
-
-// The lines to show, or null where the backend sent no usable drawing (no
-// `cols` asked, an error record, a payload from before the drawing).
-export function drawingLines(payload) {
-  const drawing = payload && payload.delegation_drawing
-  if (!drawing || drawing.error || !Array.isArray(drawing.lines) || !drawing.lines.length) return null
-  return drawing.lines.slice(0, DRAWING_LINE_LIMIT).map(function (line) {
-    return rows(line)
-      .slice(0, DRAWING_SEGMENT_LIMIT)
-      .map(function (segment) {
-        const role = safeText(segment.role)
-        // The renderer's width for a segment holding a wide character: the pane holds it to that many cells.
-        const cells = Number.isInteger(segment.cells) && exceeds(segment.cells, 0) ? Math.min(segment.cells, 4 * DRAWING_SEGMENT_LIMIT) : 0
-        return { text: drawingText(segment.text), role, tone: segmentTone(role), title: role.startsWith('node-title') || role === 'title', cells }
-      })
-      .filter(function (segment) {
-        return segment.text
-      })
-  })
-}
-
 // ---------------------------------------------------------------------------
-// The DAG view. A dag-ulw run's graph (the one carrying `dag_topology`) is
-// drawn as cards a pointer or a finger can open, in place of the backend's
-// box drawing: a card per lane in the row of its layer, an edge per
-// dependency, a strip of figures, the open lane's detail and the run's stats.
-// Every figure is one the reader sent: tokens and cost are added up here, and
-// the critical path and the bottlenecks are the backend's. Past DAG_CARD_LIMIT
-// lanes the cards give way to the drawing, which has a tree for a big run;
-// the figures and the stats stay.
+// The DAG view. Every graph the pane draws -- a dag-ulw run (the one carrying
+// `dag_topology`), a verified fanout, the native delegation tree, the runtime
+// graph -- is drawn the same way: cards a pointer or a finger can open, a row
+// per layer, an edge per dependency, a strip of figures, the open lane's
+// detail and the run's stats. A big run folds by layer instead of changing
+// its look. Every figure is one the reader sent: tokens and cost are added up
+// here, and the critical path and the bottlenecks are the backend's (only a
+// dag-ulw run has them).
 // ---------------------------------------------------------------------------
-
-export const DAG_CARD_LIMIT = 16
 
 function positive(value) {
   return Number.isFinite(value) && exceeds(value, 0) ? value : 0
@@ -1550,41 +1603,105 @@ export function speedText(tps) {
   return exceeds(tps, 0) ? `${tps.toFixed(exceeds(10, tps) ? 1 : 0)} t/s` : '—'
 }
 
-// `live` is the host's streamed usage of the focused chat, `saved` the chat's
-// recorded row as the reader sent it, `stored` the focused chat's stored id,
-// `breakdown` the host's context breakdown and `turns` the first-token waits
-// (ms) this window timed. Recorded counts win where there are any (they are
-// exact and carry the cache split); the stream stands in before the first row
-// is written. The row counts only for the chat it was read for: across a chat
-// switch the last poll's answer stays on screen until the next lands, and a
-// failed read (`error`) is no row. Null where nothing is known.
+// The gateway's `session.stats` counters in the board's split, or null where
+// the agent has not called the model (a gateway restart leaves it at zero).
+export function gatewayUsage(stats) {
+  if (!stats || typeof stats !== 'object' || !exceeds(positive(stats.api_calls), 0)) return null
+  return {
+    input: positive(stats.input_tokens),
+    read: positive(stats.cache_read_tokens),
+    write: positive(stats.cache_write_tokens),
+    output: positive(stats.output_tokens)
+  }
+}
+
+// The stream's figures in the board's split: its prompt total split by its
+// cache hit rate, the share it reports, where it reports one.
+function streamUsage(live) {
+  const prompt = positive(live.prompt) || positive(live.input)
+  const output = positive(live.output)
+  if (!exceeds(prompt + output, 0)) return null
+  const hit = Number.isFinite(live.cache_hit_pct) ? Math.max(0, Math.min(100, live.cache_hit_pct)) / 100 : 0
+  const read = Math.round(prompt * hit)
+  return { input: prompt - read, read, write: 0, output }
+}
+
+// `live` is the host's streamed usage of the focused chat, `stats` the
+// gateway's `session.stats` answer for it, `saved` the chat's recorded row as
+// the reader sent it, `stored` the focused chat's stored id, `breakdown` the
+// host's context breakdown and `turns` the first-token waits (ms) this window
+// timed. The tokens come from the most complete count: the recorded row (it
+// spans every segment of the chat), or the gateway's counters where they run
+// ahead of it (they count the turn in flight), else the stream. The row counts
+// only for the chat it was read for, and a failed read (`error`) is no row.
+// The board is never null: with nothing known it says so (`empty`).
 export function usageBoard(input) {
   const live = input.live && typeof input.live === 'object' ? input.live : {}
+  const stats = input.stats && typeof input.stats === 'object' ? input.stats : {}
   const sent = input.saved && typeof input.saved === 'object' ? input.saved : null
   const saved = sent && !sent.error && !!input.stored && sent.session_id === input.stored ? sent : {}
   const crumbs = input.breakdown && typeof input.breakdown === 'object' ? input.breakdown : {}
   const turns = Array.isArray(input.turns) ? input.turns : []
+  const subs = input.withSubs && input.subs && exceeds(input.subs.lanes, 0) ? input.subs : null
   const recorded = {
     input: positive(saved.input),
     read: positive(saved.cache_read),
     write: positive(saved.cache_write),
     output: positive(saved.output)
   }
-  const hasRecord = exceeds(allTokens(recorded), 0)
-  const prompt = hasRecord ? promptTokens(recorded) : positive(live.prompt) || positive(live.input)
-  const output = hasRecord ? recorded.output : positive(live.output)
-  const hit = hasRecord ? cacheHit(recorded) : Number.isFinite(live.cache_hit_pct) ? live.cache_hit_pct / 100 : null
+  const fromGateway = gatewayUsage(input.stats)
+  const fromStream = streamUsage(live)
+  let source = ''
+  let main = null
+  if (exceeds(allTokens(recorded), 0)) {
+    source = 'recorded'
+    main = recorded
+  }
+  if (fromGateway && exceeds(allTokens(fromGateway), main ? allTokens(main) : 0)) {
+    source = 'gateway'
+    main = fromGateway
+  }
+  if (!main && fromStream) {
+    source = 'stream'
+    main = fromStream
+  }
+  // A live stream is still a counted main chat when its persisted row has not landed yet.
+  const mainCounted = !!main
+  const split = main ? { ...main } : { input: 0, read: 0, write: 0, output: 0 }
+  // With the subagents: their lanes' figures join the chat's own.
+  if (subs) {
+    split.input += subs.input
+    split.read += subs.read
+    split.write += subs.write
+    split.output += subs.output
+  }
+  const prompt = promptTokens(split)
+  const output = split.output
+  const counted = prompt + output
+  const hit = exceeds(prompt, 0) ? split.read / prompt : null
   // The stream may carry a cost, but does not say whether Hermes priced it, so it keeps the approximate mark.
   const recordedCost = Number.isFinite(saved.cost_usd)
   const streamedCost = !recordedCost && exceeds(positive(live.cost_usd), 0)
   const cost = recordedCost ? saved.cost_usd : streamedCost ? live.cost_usd : null
-  const counted = prompt + output
-  const used = positive(live.context_used) || positive(crumbs.context_used)
-  const max = positive(live.context_max) || positive(crumbs.context_max)
-  const guess = positive(live.context_used) ? live.context_estimated === true : crumbs.context_estimated === true
+  const costAll = subs && (cost !== null || subs.cost !== null) ? (cost || 0) + (subs.cost || 0) : cost
+  const costGuess = streamedCost || saved.cost_estimated === true || !!(subs && subs.estimated)
+  const costFloor =
+    (recordedCost && saved.cost_partial === true) ||
+    // The gateway counted past the row: the row's cost no longer covers every token shown.
+    (recordedCost && source === 'gateway') ||
+    !!(subs && (subs.partial || exceeds(subs.lanes, subs.priced) || (cost === null && mainCounted)))
+  // Context: the gateway's last prompt, else the stream's, else the breakdown's.
+  const gatewayUsed = positive(stats.last_prompt_tokens)
+  const used = gatewayUsed || positive(live.context_used) || positive(crumbs.context_used)
+  const max = positive(stats.context_length) || positive(live.context_max) || positive(crumbs.context_max)
+  const guess = gatewayUsed
+    ? !!stats.context_source && stats.context_source !== 'provider_usage'
+    : positive(live.context_used)
+      ? live.context_estimated === true
+      : crumbs.context_estimated === true
   const percent = exceeds(max, 0) && exceeds(used, 0) ? Math.min(100, Math.round((used / max) * 100)) : null
-  const tps = positive(live.avg_tps)
-  const latency = positive(live.avg_latency_s)
+  const tps = positive(stats.tokens_per_s) || positive(live.avg_tps)
+  const latency = positive(stats.avg_latency_s) || positive(live.avg_latency_s)
   const last = turns.length ? turns[turns.length - 1] : null
   const mean = turns.length
     ? turns.reduce(function (total, ms) {
@@ -1598,15 +1715,20 @@ export function usageBoard(input) {
     return total + entry.tokens
   }, 0)
   const parts = listed.map(function (entry, index) {
-    return { id: String(entry.id || index), label: String(entry.label || entry.id || ''), tokens: entry.tokens, share: entry.tokens / sum }
+    return { id: String(entry.id || index), label: String(entry.label || entry.id || ''), tokens: entry.tokens, share: entry.tokens / (exceeds(max, sum) ? max : sum) }
   })
-  if (!(exceeds(counted, 0) || exceeds(used, 0) || parts.length || turns.length || exceeds(tps, 0))) return null
+  const empty = !(exceeds(counted, 0) || exceeds(used, 0) || parts.length || turns.length || exceeds(tps, 0))
   const marked = guess ? '~' : ''
   return {
-    model: String(live.model || saved.model || crumbs.model || ''),
-    calls: positive(live.calls),
+    empty,
+    source,
+    model: String(stats.model || live.model || saved.model || crumbs.model || ''),
+    calls: Math.max(positive(stats.api_calls), positive(live.calls)),
     sum,
     parts,
+    dial: { split: exceeds(counted, 0) ? split : null, total: counted, cache: hit === null ? null : percentText(hit) },
+    window: exceeds(max, sum) ? max : 0,
+    free: exceeds(max, sum) ? max - sum : 0,
     cells: [
       {
         label: t('dgTokens'),
@@ -1617,21 +1739,22 @@ export function usageBoard(input) {
       {
         label: t('dgCacheHit'),
         value: percentText(hit),
-        sub: hasRecord && exceeds(prompt, 0) ? t('dgCacheHitSub', { read: tokenCountText(recorded.read), prompt: tokenCountText(prompt) }) : '',
+        sub: exceeds(prompt, 0) ? t('dgCacheHitSub', { read: tokenCountText(split.read), prompt: tokenCountText(prompt) }) : '',
         tip: t('ubCacheTip'),
-        ring: hasRecord && exceeds(prompt, 0) ? recorded : null
+        ring: exceeds(prompt, 0) ? split : null
       },
       {
         label: t('dgCost'),
-        value: costText(cost, streamedCost || saved.cost_estimated === true, recordedCost && saved.cost_partial === true),
-        sub: cost === null ? (exceeds(counted, 0) ? t('dgUnpriced') : t('dgCostNone')) : '',
+        value: costText(costAll, costGuess, costFloor),
+        sub: costAll === null ? (exceeds(counted, 0) ? t('dgUnpriced') : t('dgCostNone')) : '',
         tip: t('ubCostTip')
       },
       {
         label: t('ubContext'),
         value: percent === null ? (exceeds(used, 0) ? `${marked}${tokenCountText(used)}` : '—') : `${marked}${percent}%`,
         sub: percent === null ? '' : t('ubContextSub', { used: tokenCountText(used), max: tokenCountText(max) }),
-        tip: t('ubContextTip')
+        tip: t('ubContextTip'),
+        meter: percent
       },
       {
         label: t('ubSpeed'),
@@ -1692,12 +1815,43 @@ function idsForTitles(lanes, titles) {
     .filter(Boolean)
 }
 
-// The model of a DAG or verified fanout graph. Native/team graphs keep their drawing;
-// fanout has no backend critical-path record, so its path and bottlenecks stay empty.
+// The dependency edges another chain of dependencies already implies (a to c where a to b to c stands), as `from.to`
+// keys. A repair or an extend edge only says where a node came from, so it neither implies nor is implied.
+function impliedEdges(edges) {
+  const next = new Map()
+  edges.forEach(function (edge) {
+    if (edge.kind === 'depends_on') next.set(edge.from, (next.get(edge.from) || []).concat([edge.to]))
+  })
+  function reaches(from, to) {
+    const seen = new Set()
+    const stack = [from]
+    while (stack.length) {
+      const at = stack.pop()
+      for (const step of next.get(at) || []) {
+        if (at === from && step === to) continue
+        if (step === to) return true
+        if (!seen.has(step)) {
+          seen.add(step)
+          stack.push(step)
+        }
+      }
+    }
+    return false
+  }
+  return edges
+    .filter(function (edge) {
+      return edge.kind === 'depends_on' && reaches(edge.from, edge.to)
+    })
+    .map(function (edge) {
+      return `${edge.from}.${edge.to}`
+    })
+}
+
+// The model of any active graph. Only a dag-ulw run carries `dag_topology`;
+// without it the path and the bottlenecks stay empty.
 export function dagModel(graph) {
-  const fanout = !!graph && graph.source === 'fanout'
-  const topology = graph && graph.dag_topology
-  if (!graph || graph.status !== 'active' || (!fanout && (!topology || typeof topology !== 'object'))) return null
+  const topology = graph && graph.dag_topology && typeof graph.dag_topology === 'object' ? graph.dag_topology : null
+  if (!graph || graph.status !== 'active') return null
   const records = lanesOf(graph)
   if (!records.length) return null
   const ids = new Set(
@@ -1715,11 +1869,20 @@ export function dagModel(graph) {
     const key = `${from}|${to}`
     if (!ids.has(from) || !ids.has(to) || from === to || taken.has(key)) continue
     taken.add(key)
-    edges.push({ from, to })
+    // `elided`: the reader cut the lanes between the two, so the edge stands for a path, drawn as implied.
+    edges.push(edge.elided === true ? { from, to, kind: safeText(edge.kind), elided: true } : { from, to, kind: safeText(edge.kind) })
     parents.set(to, (parents.get(to) || []).concat([from]))
     children.set(from, (children.get(from) || []).concat([to]))
   }
   const memo = new Map()
+  // A graph the reader cut (`layer_hidden`) numbers each lane's layer itself: its parents may be among the cut.
+  // Only a layer that lost lanes has a row, named by its `layer`; `layer_count` is how many layers the run has.
+  const hiddenAt = Array.isArray(graph.layer_hidden) ? rows(graph.layer_hidden) : null
+  const hiddenRow = {}
+  rows(graph.layer_hidden).forEach(function (row) {
+    if (Number.isInteger(row.layer) && reaches(row.layer, 0)) hiddenRow[row.layer] = row
+  })
+  const layerCount = hiddenAt && Number.isInteger(graph.layer_count) && exceeds(graph.layer_count, 0) ? graph.layer_count : 0
   const lanes = records.map(function (record) {
     const id = safeText(record.id)
     const state = humanState(record.state) || 'unknown'
@@ -1746,7 +1909,7 @@ export function dagModel(graph) {
       summary: longText(record.summary),
       unchecked: record.handoff_checked === false,
       usage: laneUsage(record),
-      layer: dagLayer(id, parents, memo, new Set([id])),
+      layer: hiddenAt && Number.isInteger(record.layer) && reaches(record.layer, 0) ? record.layer : dagLayer(id, parents, memo, new Set([id])),
       parents: parents.get(id) || [],
       children: children.get(id) || [],
       blocks: below(id, children).size
@@ -1756,9 +1919,12 @@ export function dagModel(graph) {
   lanes.forEach(function (lane) {
     index[lane.id] = lane
   })
-  const depth = lanes.reduce(function (most, lane) {
-    return Math.max(most, lane.layer)
-  }, 0)
+  const depth = lanes.reduce(
+    function (most, lane) {
+      return Math.max(most, lane.layer)
+    },
+    layerCount - 1
+  )
   const layers = []
   for (let at = 0; reaches(depth, at); at += 1) {
     layers.push(
@@ -1799,6 +1965,7 @@ export function dagModel(graph) {
     index,
     layers,
     edges,
+    implied: impliedEdges(edges),
     models,
     bottlenecks,
     path: idsForTitles(lanes, topology && Array.isArray(topology.critical_path) ? topology.critical_path : []),
@@ -1814,17 +1981,68 @@ export function dagModel(graph) {
       return lane.elapsed !== null
     }),
     hidden: Number(graph.hidden_nodes) || 0,
-    cards: !exceeds(lanes.length, DAG_CARD_LIMIT)
+    // Per layer, the lanes the reader left out and their states; null where it cut nothing by layer.
+    hiddenAt: hiddenAt
+      ? layers.map(function (ids, at) {
+          const row = hiddenRow[at] || {}
+          return { count: Number(row.count) || 0, states: row.states && typeof row.states === 'object' ? row.states : {} }
+        })
+      : null
   }
 }
 
-// A settled dag-ulw run's model, for its figures alone, where any lane counted
-// anything; null otherwise, so a run that recorded nothing stays one line. A
-// settled run hides no lane (`dagRunSummary` reads none as settled then), so
-// the figures cover the whole run.
-export function closingDag(graph) {
-  const dag = dagModel(graph)
-  return dag && dag.total.lanes ? dag : null
+const RUNTIME_SETTLED = new Set(['completed', 'already_completed', 'dry_run_planned'])
+
+// The runtime graph (`payload.graph`, a fanout's units as the runtime store
+// records them) in the delegation graph's shape, so it is drawn as cards like
+// every other graph: each unit a lane in its own state word, an edge from each
+// unit it waits on. Null unless the reader calls it active.
+export function runtimeGraph(graph) {
+  if (!graph || graph.status !== 'active') return null
+  const records = rows(graph.nodes)
+  const ids = new Set(
+    records.map(function (record) {
+      return safeText(record.node_id)
+    })
+  )
+  const nodes = records.map(function (record) {
+    const raw = safeText(record.unit_state) || safeText(record.state)
+    const state = record.unit_state
+      ? 'stuck'
+      : record.in_frontier
+        ? 'running'
+        : raw === 'blocked' || raw === 'blocked_by_dependency'
+          ? 'waiting'
+          : GRAPH_FAILED.has(raw)
+            ? 'failed'
+            : RUNTIME_SETTLED.has(raw)
+              ? 'done'
+              : 'waiting'
+    const id = safeText(record.node_id)
+    return { id, kind: 'lane', title: id, state, status: raw, summary: graphNodeView(record).detail }
+  })
+  const edges = records.flatMap(function (record) {
+    const to = safeText(record.node_id)
+    return (Array.isArray(record.blocked_by) ? record.blocked_by : [])
+      .map(safeText)
+      .filter(function (from) {
+        return ids.has(from)
+      })
+      .map(function (from) {
+        return { from, to, kind: 'depends_on' }
+      })
+  })
+  return { status: 'active', source: 'runtime', name: safeText(graph.name) || t('graphRuntimeName'), nodes, edges, hidden_nodes: graph.hidden_nodes }
+}
+
+// The graph the DAG section draws: the delegation graph while the reader calls
+// it active (a verified fanout is drawn inside it), else the runtime graph. A
+// pane that `named` its chat draws that chat's work alone: the runtime graph is
+// the home's, whichever session or command started it.
+export function sectionGraph(payload, named) {
+  const graph = payload && payload.delegation_graph
+  if (graph && graph.status === 'active' && (lanesOf(graph).length || graph.counts_only)) return graph
+  return named ? null : runtimeGraph(payload && payload.graph)
 }
 
 // What the card line under a lane's route says: a waiting lane the lanes it waits on, any other its state, time and output.
@@ -1833,6 +2051,98 @@ export function laneStatus(lane) {
   const time = lane.elapsed === null ? '' : ` ${elapsedText(lane.elapsed)}`
   const output = exceeds(lane.usage.output, 0) ? ` · ↓${tokensText(lane.usage.output)}` : ''
   return `${lane.glyph} ${lane.word}${time}${output}`
+}
+
+// ---------------------------------------------------------------------------
+// Folding a DAG by layer. A folded layer is one chip in the place of its
+// cards, its edges drawn to the chip. The mode picks which layers fold; a
+// layer the person opened or folded by hand keeps that until the mode
+// changes, and the open lane's layer is always open.
+// ---------------------------------------------------------------------------
+
+export const FOLD_MODES = ['auto', 'active', 'open', 'closed']
+// ponytail: below this many lanes `auto` folds nothing; a small run reads whole. Raise it if small runs feel cramped.
+export const AUTO_FOLD_MIN_LANES = 9
+// How many layers past the work in hand `auto` keeps open; the rest wait folded.
+export const AUTO_LOOKAHEAD = 2
+const ACTIVE_STATES = new Set(['running', 'dispatched', 'stuck', 'failed', 'interrupted'])
+const LAYER_STATE_ORDER = ['running', 'stuck', 'failed', 'interrupted', 'dispatched', 'waiting', 'unknown', 'done']
+
+// One layer's lanes counted by state, and the state the folded chip is drawn in: the most pressing one it holds.
+export function layerSummary(dag, at) {
+  const lanes = (dag.layers[at] || []).map(function (id) {
+    return dag.index[id]
+  })
+  const states = {}
+  lanes.forEach(function (lane) {
+    states[lane.state] = (states[lane.state] || 0) + 1
+  })
+  const cut = layerHidden(dag, at)
+  Object.keys(cut.states).forEach(function (raw) {
+    const word = humanState(raw) || 'unknown'
+    states[word] = (states[word] || 0) + (Number(cut.states[raw]) || 0)
+  })
+  const state = LAYER_STATE_ORDER.find(function (word) {
+    return own(states, word)
+  }) || 'unknown'
+  return { layer: at, count: lanes.length + cut.count, states, state, ids: dag.layers[at] || [], hidden: cut.count }
+}
+
+// The lanes the reader left out of one layer.
+function layerHidden(dag, at) {
+  return (dag.hiddenAt && dag.hiddenAt[at]) || { count: 0, states: {} }
+}
+
+function layerSettled(dag, at) {
+  const states = layerSummary(dag, at).states
+  return Object.keys(states).every(function (word) {
+    return word === 'done'
+  })
+}
+
+function layerActive(dag, at) {
+  const states = layerSummary(dag, at).states
+  return Object.keys(states).some(function (word) {
+    return ACTIVE_STATES.has(word)
+  })
+}
+
+// The layers drawn folded: the mode's choice, then the person's own per layer, then the open lane's layer opened.
+export function foldedLayers(dag, mode, overrides, pick) {
+  const folded = new Set()
+  const active = dag.layers
+    .map(function (ids, at) {
+      return layerActive(dag, at) ? at : -1
+    })
+    .filter(function (at) {
+      return reaches(at, 0)
+    })
+  // With nothing active, the first layer that has not finished is the one to watch.
+  const next = dag.layers.findIndex(function (ids, at) {
+    return !layerSettled(dag, at)
+  })
+  // The furthest layer with work in hand; `auto` keeps a few layers past it open and folds what lies beyond.
+  const frontier = active.length ? active[active.length - 1] : next
+  const big = exceeds(dag.lanes.length + dag.hidden, AUTO_FOLD_MIN_LANES - 1)
+  // `active` focuses the work in hand with the layer feeding it and the layer it feeds; with none, the next layer.
+  const focus = active.length ? active : reaches(next, 0) ? [next] : []
+  const near = function (at) {
+    return focus.some(function (hot) {
+      return reaches(1, Math.abs(hot - at))
+    })
+  }
+  dag.layers.forEach(function (ids, at) {
+    let fold = false
+    // Folding all still leaves the work in hand open: running, and returned to be checked.
+    if (mode === 'closed') fold = active.indexOf(at) === -1
+    else if (mode === 'active') fold = !near(at)
+    else if (mode === 'auto') fold = big && (layerSettled(dag, at) || (reaches(frontier, 0) && exceeds(at, frontier + AUTO_LOOKAHEAD)))
+    if (overrides && own(overrides, String(at))) fold = !overrides[String(at)]
+    if (fold) folded.add(at)
+  })
+  const picked = pick && dag.index[pick]
+  if (picked) folded.delete(picked.layer)
+  return folded
 }
 
 // The lane ids a highlight keeps lit: a model's lanes, or the critical path; null where nothing is highlighted.
@@ -2041,7 +2351,7 @@ const MONO = "'JetBrains Mono',var(--font-mono,var(--dt-font-mono,monospace))"
 
 export const PANE_CSS = `
 .omh-pane{display:flex;flex-direction:column;height:100%;min-width:0;container-type:inline-size;font-family:var(--font-sans,var(--dt-font-sans,sans-serif));font-size:12px;line-height:1.4;color:var(--ui-text-primary)}
-.omh-pane,.omh-bar{--omh-text-readable:color-mix(in srgb,var(--ui-text-secondary),var(--ui-text-tertiary));--omh-warn:color-mix(in srgb,var(--ui-yellow) 72%,var(--ui-text-primary));--omh-edge:color-mix(in srgb,var(--ui-purple) 55%,var(--background));--omh-brand:color-mix(in srgb,color-mix(in srgb,var(--ui-red) 60%,var(--ui-purple)) 85%,var(--ui-text-primary));--omh-label:color-mix(in srgb,var(--ui-orange) 65%,var(--ui-text-primary));--omh-mark:color-mix(in srgb,var(--ui-base) 50%,var(--background))}
+.omh-pane,.omh-bar{--omh-text-readable:color-mix(in srgb,var(--ui-text-secondary),var(--ui-text-tertiary));--omh-warn:color-mix(in srgb,var(--ui-yellow) 72%,var(--ui-text-primary));--omh-edge:color-mix(in srgb,var(--ui-purple) 55%,var(--background));--omh-brand:color-mix(in srgb,color-mix(in srgb,var(--ui-red) 60%,var(--ui-purple)) 85%,var(--ui-text-primary));--omh-label:color-mix(in srgb,var(--ui-orange) 65%,var(--ui-text-primary));--omh-mark:color-mix(in srgb,var(--ui-base) 50%,var(--background));--omh-ok:var(--ui-green)}
 .omh-pane-mono{font-family:${MONO};font-variant-numeric:tabular-nums}
 .omh-pane-head{display:flex;align-items:center;gap:8px;padding:12px 12px 0;min-width:0}
 .omh-pane-brand{font-weight:700;letter-spacing:.02em;white-space:nowrap;color:var(--omh-brand)}
@@ -2052,8 +2362,9 @@ export const PANE_CSS = `
 .omh-pane-chips{display:flex;flex-wrap:wrap;gap:4px;padding:0 12px 10px}
 .omh-pane-rule{flex:none;border-top:1px solid var(--omh-edge)}
 .omh-pane-body{min-height:0;flex:1;overflow-y:auto;overscroll-behavior:contain;padding-bottom:12px}
-.omh-pane-section{display:flex;align-items:baseline;gap:8px;padding:16px 12px 6px;min-width:0;max-width:640px;box-sizing:border-box}
-.omh-pane-section-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--omh-label);white-space:nowrap}
+.omh-pane-section{display:flex;align-items:baseline;gap:8px;margin:18px 0 8px;padding:6px 12px 6px 9px;min-width:0;max-width:640px;box-sizing:border-box;background:color-mix(in srgb,var(--ui-text-primary) 6%,transparent);border-left:3px solid var(--omh-brand);border-bottom:1px solid var(--ui-stroke-tertiary)}
+.omh-pane-body .omh-pane-section:first-child{margin-top:6px}
+.omh-pane-section-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--omh-label);white-space:nowrap}
 .omh-pane-section-title{min-width:0;flex:1;color:var(--ui-text-secondary);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .omh-pane-section-count{margin-left:auto;font-size:11px;color:var(--omh-text-readable);white-space:nowrap}
 .omh-pane-block{padding:0 12px;min-width:0;max-width:640px;box-sizing:border-box}
@@ -2078,20 +2389,12 @@ export const PANE_CSS = `
 .omh-pane-catch{display:grid;grid-template-columns:20px minmax(0,1fr);gap:0 4px;align-items:baseline;padding:1px 0;color:var(--ui-text-secondary)}
 .omh-pane-catch-text{min-width:0;overflow-wrap:anywhere}
 .omh-pane-summary{display:block;padding:10px 0 0;color:var(--omh-text-readable);overflow-wrap:anywhere}
+.omh-pane-pick{position:relative;display:inline-flex;align-items:center;min-width:0;max-width:100%;margin-left:auto;color:var(--omh-text-readable)}
+.omh-pane-dag-pick{position:relative;max-width:100%;margin:0;padding:2px 20px 2px 8px;font:inherit;font-size:11px;text-align:left;color:inherit;background:transparent;border:1px solid var(--omh-edge);border-radius:var(--radius-md,6px);cursor:pointer;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}\n.omh-pane-dag-pick::after{content:'';position:absolute;right:7px;top:50%;width:4px;height:4px;margin-top:-4px;border:solid currentColor;border-width:0 1.2px 1.2px 0;transform:rotate(45deg)}\n.omh-pane-dag-pick:hover,.omh-pane-dag-pick:focus-visible,.omh-pane-dag-pick[aria-expanded=true]{color:var(--ui-text-primary);background:color-mix(in srgb,var(--ui-bg-card) 70%,transparent);outline:none}\n.omh-pane-pick{position:relative;display:inline-block}
+.omh-pane-pick-menu{position:absolute;z-index:50;right:0;top:100%;margin-top:4px;display:flex;flex-direction:column;min-width:100%;width:max-content;max-width:min(340px,calc(100cqw - 24px));max-height:240px;overflow-y:auto;padding:3px;background:var(--ui-bg-elevated,var(--background));border:1px solid var(--omh-edge);border-radius:var(--radius-md,6px);color:var(--ui-text-primary)}\n.omh-pane-pick-opt{display:block;width:100%;margin:0;padding:4px 8px;font:inherit;font-size:11px;text-align:left;color:var(--ui-text-secondary);background:none;border:0;border-radius:var(--radius-sm,4px);cursor:pointer;white-space:normal;overflow-wrap:anywhere}\n.omh-pane-pick-opt:hover,.omh-pane-pick-opt:focus-visible{color:var(--ui-text-primary);background:color-mix(in srgb,var(--ui-text-primary) 8%,transparent);outline:none}\n.omh-pane-pick-opt[data-on=true]{color:var(--ui-text-primary);background:color-mix(in srgb,var(--omh-brand) 18%,transparent)}
 .omh-pane-run{padding:0 0 3px;color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.omh-pane-dag-card{margin:2px 0 4px;padding:10px;border:1px solid var(--omh-edge);border-radius:var(--radius-md,6px);background:var(--ui-bg-card)}
-.omh-pane-dag{margin:0;font-family:${MONO};font-size:11px;line-height:1.2;white-space:pre;overflow-x:auto;overflow-y:hidden;color:var(--ui-text-primary)}
-.omh-pane-dag-line{display:block;min-height:1.2em}
-.omh-pane-dag-title{font-weight:700}
-.omh-pane-dag-wide{display:inline-block;overflow:hidden;vertical-align:top}
-.omh-pane-dag-probe{position:absolute;visibility:hidden;white-space:pre;font-family:${MONO};font-size:11px}
-.omh-pane-lane{display:grid;grid-template-columns:14px minmax(0,1fr) auto 64px;gap:0 6px;align-items:baseline;min-width:0;padding:1px 0}
-.omh-pane-lane-glyph{text-align:center}
-.omh-pane-lane-title{min-width:0;padding-left:var(--omh-lane-indent,0);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.omh-pane-lane-model{max-width:96px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11px;color:var(--omh-text-readable)}
-.omh-pane-lane-state{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11px;text-align:right}
-@container (max-width: 420px){.omh-pane-lane{grid-template-columns:14px minmax(0,1fr) 64px}.omh-pane-lane-glyph{grid-row:1}.omh-pane-lane-title{grid-column:2;grid-row:1}.omh-pane-lane-state{grid-column:3;grid-row:1}.omh-pane-lane-model{grid-column:2/-1;grid-row:2;max-width:none;padding-left:var(--omh-lane-indent,0)}}
 .omh-pane-more{padding:2px 0 0 20px;font-size:11px;color:var(--omh-text-readable)}
+.omh-pane-dv-more{align-self:center;font-size:11px;color:var(--omh-text-readable)}
 .omh-agent{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:2px 6px;align-items:baseline;min-width:0;margin:0 -6px;padding:5px 6px;border-radius:var(--radius-sm,4px);transition:background-color .15s}
 .omh-agent:hover{background:var(--chrome-action-hover)}
 .omh-agent-glyph{text-align:center}
@@ -2101,10 +2404,6 @@ export const PANE_CSS = `
 .omh-agent-route{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .omh-agent-state{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .omh-agent-figure{white-space:nowrap;text-align:right}
-.omh-pane-graph{display:grid;gap:1px;padding:0 12px;font-size:11px;min-width:0;max-width:640px;box-sizing:border-box}
-.omh-pane-graph-node{display:grid;grid-template-columns:14px auto minmax(0,1fr);gap:0 6px;align-items:baseline;min-width:0}
-.omh-pane-graph-glyph{text-align:center}
-.omh-pane-graph-detail{min-width:0;overflow-wrap:anywhere;color:var(--omh-text-readable)}
 .omh-pane-notice{margin:6px 12px 8px;border-radius:6px;background:var(--chrome-action-hover);padding:6px 8px;font-size:11px;color:var(--omh-text-readable);overflow-wrap:anywhere}
 .omh-pane-skeleton{height:10px;margin:6px 12px}
 .omh-pane-dv{min-width:0}
@@ -2115,14 +2414,18 @@ export const PANE_CSS = `
 .omh-pane-dv-kpi-value{font-family:${MONO};font-size:15px;font-weight:600;line-height:1.25;color:var(--ui-text-primary);font-variant-numeric:tabular-nums}
 .omh-pane-dv-kpi-sub{font-family:${MONO};font-size:10.5px;line-height:1.3;color:var(--omh-text-readable);overflow-wrap:anywhere;text-wrap:balance}
 .omh-pane-dv-kpi-ring{position:absolute;right:8px;top:8px;display:flex}
-.omh-pane-dv-canvas{position:relative;padding:4px 18px 4px 0}
+.omh-pane-dv-canvas{position:relative;padding:4px 30px 4px 0}
 .omh-pane-dv-edges{position:absolute;left:0;top:0;z-index:0;overflow:visible;pointer-events:none}
-.omh-pane-dv-row{position:relative;z-index:1;display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-bottom:34px}
+.omh-pane-dv-row{position:relative;z-index:1;display:flex;flex-wrap:wrap;justify-content:center;gap:44px 12px;margin-bottom:44px}
 .omh-pane-dv-row:last-child{margin-bottom:0}
 .omh-pane-dv-card{--dv-c:var(--omh-mark);box-sizing:border-box;flex:1 1 0;min-width:118px;max-width:300px;display:flex;flex-direction:column;gap:2px;margin:0;padding:7px 9px 8px;text-align:left;background:var(--ui-bg-card);border:1px solid var(--dv-c);border-radius:var(--radius-sm,2px);color:inherit;font:inherit;cursor:pointer;overflow:hidden;transition:opacity .15s,border-color .15s,background-color .15s}
 .omh-pane-dv-card:hover{background:color-mix(in srgb,var(--ui-bg-card),var(--ui-text-primary) 6%)}
 .omh-pane-dv-card:focus-visible{outline:2px solid var(--omh-brand);outline-offset:1px}
-.omh-pane-dv-card[data-tone=accent]{--dv-c:var(--ui-accent)}
+.omh-pane-dv-card[data-state=running],.omh-pane-dv-card[data-state=dispatched]{position:relative;border:1.5px solid transparent}
+.omh-pane-dv-card[data-state=running]::before,.omh-pane-dv-card[data-state=dispatched]::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1.5px;background:linear-gradient(90deg,color-mix(in srgb,var(--dv-c) 15%,var(--ui-bg-card)),var(--dv-c),color-mix(in srgb,var(--dv-c) 15%,var(--ui-bg-card)));background-size:300% 100%;animation:omh-dv-flow 2.4s ease-in-out infinite alternate;-webkit-mask:linear-gradient(rgb(0,0,0),rgb(0,0,0)) content-box,linear-gradient(rgb(0,0,0),rgb(0,0,0));-webkit-mask-composite:xor;mask:linear-gradient(rgb(0,0,0),rgb(0,0,0)) content-box,linear-gradient(rgb(0,0,0),rgb(0,0,0));mask-composite:exclude;pointer-events:none}
+@keyframes omh-dv-flow{from{background-position:0% 0}to{background-position:100% 0}}
+@media (prefers-reduced-motion:reduce){.omh-pane-dv-card[data-state=running]::before,.omh-pane-dv-card[data-state=dispatched]::before{animation:none;background-position:50% 0}}
+.omh-pane-dv-card[data-tone=accent]{--dv-c:var(--ui-accent)}\n.omh-pane-dv-card[data-tone=ok]{--dv-c:var(--omh-ok)}
 .omh-pane-dv-card[data-tone=warn]{--dv-c:var(--omh-warn)}
 .omh-pane-dv-card[data-tone=error]{--dv-c:var(--ui-red)}
 .omh-pane-dv-picked{border-color:var(--omh-brand);outline:1px solid var(--omh-brand)}
@@ -2149,6 +2452,11 @@ export const PANE_CSS = `
 .omh-pane-dv-edge[data-hot=true],.omh-pane-dv-tip[data-hot=true]{--dv-e:var(--omh-brand)}
 .omh-pane-dv-edge[data-hot=true]{stroke-width:1.6}
 .omh-pane-dv-edge[data-hollow=true]{stroke-dasharray:4 3}
+.omh-pane-dv-edge[data-origin=true]{stroke-dasharray:2 3;opacity:.55}
+.omh-pane-dv-tip[data-origin=true]{opacity:.55}
+.omh-pane-dv-edge[data-elided=true]{stroke-dasharray:1 3;opacity:.55}
+.omh-pane-dv-tip[data-elided=true]{opacity:.55}
+.omh-pane-dv-edgebar{display:flex;justify-content:flex-end;padding:0 0 4px}
 .omh-pane-dv-tip[data-hollow=true]{fill:var(--background)}
 .omh-pane-dv-edge[data-dim=true],.omh-pane-dv-tip[data-dim=true]{opacity:.3}
 .omh-pane-dv-detail{margin-top:12px;padding:10px;min-width:0;background:var(--ui-bg-card);border:1px solid var(--omh-edge);border-radius:var(--radius-md,4px)}
@@ -2186,6 +2494,7 @@ export const PANE_CSS = `
 .omh-pane-dv-stats[open] .omh-pane-dv-stats-h::before{content:'▾'}
 .omh-pane-dv-stats-c{margin-left:auto;font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--omh-text-readable)}
 .omh-pane-dv-stats-body{padding:0 10px 10px}
+.omh-pane-dv-fold-h.omh-pane-dv-stats-h{padding:0 0 6px;font-size:inherit;font-weight:400;text-transform:none;letter-spacing:0;color:var(--ui-text-secondary)}
 .omh-pane-dv-mrow{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1.5fr) 28px 54px minmax(60px,1fr) 56px;gap:0 8px;align-items:center;width:100%;margin:0;padding:4px 0;font-family:${MONO};font-size:11px;text-align:left;color:inherit;background:none;border:0;border-top:1px solid var(--ui-stroke-tertiary);transition:background-color .15s}
 button.omh-pane-dv-mrow{cursor:pointer}
 button.omh-pane-dv-mrow:hover{background:var(--chrome-action-hover)}
@@ -2203,8 +2512,24 @@ button.omh-pane-dv-mrow:hover{background:var(--chrome-action-hover)}
 .omh-pane-dv-hl{margin:0 0 0 auto;padding:0;font:inherit;font-size:11px;color:var(--ui-accent);background:none;border:0;cursor:pointer}
 .omh-pane-dv-note{margin-top:8px;font-size:10.5px;color:var(--omh-text-readable)}
 @media (pointer:coarse),(max-width:640px){.omh-pane-dv-x,.omh-pane-dv-link,.omh-pane-dv-hl{position:relative;height:32px;padding:0 12px;-webkit-tap-highlight-color:transparent}.omh-pane-dv-hl{padding:0 6px}.omh-pane-dv-x::after,.omh-pane-dv-link::after,.omh-pane-dv-hl::after{content:'';position:absolute;inset:-7px -5px}.omh-pane-dv-chips,.omh-pane-dv-links,.omh-pane-dv-path{gap:14px 8px}.omh-pane-dv-path{margin-top:14px}.omh-pane-dv-stats-h{padding:16px 10px}.omh-pane-dv-mrow{padding:16px 0}.omh-pane-dv-mh{padding:0 0 3px}.omh-pane-dv-card{padding:9px 10px 10px;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}}
-@media (pointer:coarse){.omh-pane-dv .omh-pane-dag{overflow-x:hidden}}
 @container (min-width:520px){.omh-pane-dv-kpis.omh-pane-ub-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.omh-pane-ub-main{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:6px 0 10px}
+.omh-pane-ub-main .omh-pane-dv-kpis.omh-pane-ub-kpis{flex:1 1 150px;min-width:0;margin:0;grid-template-columns:minmax(0,1fr)}
+.omh-pane-ub-dial{position:relative;flex:none;width:96px;height:96px;cursor:help}
+.omh-pane-ub-center{position:absolute;left:0;top:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;text-align:center}
+.omh-pane-ub-total{font-family:${MONO};font-size:15px;font-weight:600;line-height:1.1;color:var(--ui-text-primary)}
+.omh-pane-ub-cache{font-family:${MONO};font-size:10px;color:var(--omh-text-readable)}
+.omh-pane-seg{display:inline-flex;margin-left:8px;border:1px solid var(--omh-edge);border-radius:var(--radius-md,6px);overflow:hidden}
+.omh-pane-seg-b{margin:0;padding:1px 8px;font:inherit;font-size:10.5px;text-transform:none;letter-spacing:0;color:var(--omh-text-readable);background:none;border:0;cursor:pointer}
+.omh-pane-seg-b[aria-pressed=true]{color:var(--ui-text-primary);background:color-mix(in srgb,var(--omh-brand) 22%,transparent)}
+.omh-pane-ub-kpis{gap:0 18px;margin:2px 0 10px}
+.omh-pane-ub-kpis .omh-pane-dv-kpi{flex-direction:row;align-items:baseline;gap:6px;padding:4px 0;background:none;border:0;border-bottom:1px solid var(--ui-stroke-tertiary);border-radius:0}
+.omh-pane-ub-kpis .omh-pane-dv-kpi-label{flex:none;min-width:58px}
+.omh-pane-ub-kpis .omh-pane-dv-kpi-value{flex:none;font-size:13px}
+.omh-pane-ub-kpis .omh-pane-dv-kpi-sub{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-wrap:nowrap}
+.omh-pane-ub-kpis .omh-pane-dv-kpi-ring{position:static;align-self:center;margin-left:auto}
+.omh-pane-ub-parts .omh-pane-dv-stats-h{flex-wrap:wrap}
+.omh-pane-ub-parts .omh-pane-dv-stack{flex:1 0 100%;height:8px;margin:2px 0 0;border:1px solid var(--ui-stroke-tertiary);box-sizing:border-box}
 .omh-pane-ub-c0{--dv-k:var(--omh-brand)}
 .omh-pane-ub-c1{--dv-k:var(--ui-accent)}
 .omh-pane-ub-c2{--dv-k:var(--omh-label)}
@@ -2219,8 +2544,34 @@ button.omh-pane-dv-mrow:hover{background:var(--chrome-action-hover)}
 .omh-bar:hover{background:var(--chrome-action-hover);color:var(--ui-text-primary)}
 .omh-bar-brand{font-weight:700;color:var(--omh-brand)}
 .omh-bar-seg+.omh-bar-seg::before{content:'·';margin:0 3px;color:var(--ui-text-quaternary)}
+.omh-pane-section-toggle{display:flex;align-items:baseline;gap:8px;flex:1;min-width:0;margin:0;padding:0;font:inherit;color:inherit;text-align:left;background:none;border:0}
+button.omh-pane-section-toggle{cursor:pointer}
+button.omh-pane-section-toggle:focus-visible{outline:2px solid var(--omh-brand);outline-offset:2px;border-radius:2px}
+.omh-pane-section-fold{flex:none;width:9px;font-size:9px;color:var(--omh-text-readable)}
+.omh-pane-sec[data-open=false] .omh-pane-section{margin-bottom:0}
+.omh-pane-controls{display:inline-flex;align-items:center;gap:6px;flex:none;min-width:0;max-width:62%}
+.omh-pane-controls .omh-pane-pick{margin-left:0}
+.omh-pane-empty{display:flex;flex-direction:column;gap:1px;padding:1px 0 2px 2px;font-size:11.5px;color:var(--omh-text-readable)}
+.omh-pane-empty-title{color:var(--ui-text-secondary)}
+.omh-pane-empty-quiet .omh-pane-empty-title{color:var(--omh-text-readable)}
+.omh-pane-menu-label{display:block;padding:6px 8px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--omh-text-readable)}
+.omh-pane-opt-mark{display:inline-block;width:14px;color:var(--omh-brand)}
+.omh-pane-ub-source{font-family:${MONO};font-size:10px;line-height:16px;padding:0 5px;border:1px solid var(--ui-stroke-tertiary);border-radius:3px;color:var(--omh-text-readable);white-space:nowrap;cursor:help}
+.omh-pane-seg-b:disabled{opacity:.45;cursor:default}
+.omh-pane-seg.omh-pane-dv-modes{display:flex;width:max-content;max-width:100%;margin:10px 0 4px}
+.omh-pane-dv-modes .omh-pane-seg-b{padding:2px 9px;font-size:11px}
+.omh-pane-dv-modes .omh-pane-seg-b+.omh-pane-seg-b{border-left:1px solid var(--omh-edge)}
+.omh-pane-ub-meter{flex:none;align-self:center;width:44px;height:4px;margin-left:auto;border-radius:2px;background:var(--ui-stroke-tertiary);overflow:hidden}
+.omh-pane-ub-meter i{display:block;height:100%;background:var(--ui-accent)}
+.omh-pane-dv-tagged{padding-top:20px}
+.omh-pane-dv-layer-tag{position:absolute;left:0;top:-19px;z-index:2;margin:0;padding:0 4px;font-family:${MONO};font-size:10px;line-height:16px;color:var(--omh-text-readable);background:color-mix(in srgb,var(--background) 85%,transparent);border:0;border-radius:3px;cursor:pointer}
+.omh-pane-dv-layer-tag:hover,.omh-pane-dv-layer-tag:focus-visible{color:var(--ui-text-primary);background:var(--chrome-action-hover);outline:none}
+.omh-pane-dv-card.omh-pane-dv-layer{flex:1 1 100%;max-width:none;flex-direction:row;flex-wrap:wrap;align-items:center;gap:2px 10px;padding:6px 9px;border-style:dashed}
+.omh-pane-dv-layer-name{font-family:${MONO};font-size:11px;color:var(--ui-text-secondary);white-space:nowrap}
+.omh-pane-dv-tallies{display:flex;flex-wrap:wrap;gap:2px 8px;margin-left:auto;font-family:${MONO};font-size:10.5px}
+.omh-pane-dv-tally{white-space:nowrap}
 /* Tone classes last: a tone on a cell wins over the cell's own resting colour. */
-.omh-pane-accent{color:var(--ui-accent)}
+.omh-pane-accent{color:var(--ui-accent)}\n.omh-pane-ok{color:var(--omh-ok)}
 .omh-pane-warn{color:var(--omh-warn)}
 .omh-pane-error{color:var(--ui-red)}
 .omh-pane-muted{color:var(--omh-text-readable)}
@@ -2270,45 +2621,35 @@ function toneClass(tone) {
   return tone ? `omh-pane-${tone}` : ''
 }
 
-// How many cells of the drawing's font fit the drawing's card in `body`: the
-// body's width less the card's insets, over one cell measured from a probe
-// set in the drawing's own class. Zero where nothing can be measured.
-export function measureCells(body) {
-  if (!body || typeof document === 'undefined' || typeof body.append !== 'function') return 0
-  const probe = document.createElement('span')
-  probe.className = 'omh-pane-dag-probe'
-  probe.textContent = '0'.repeat(40)
-  body.append(probe)
-  const cell = probe.getBoundingClientRect().width / 40
-  probe.remove()
-  return exceeds(cell, 0) ? Math.floor((body.clientWidth - DRAWING_INSET_PX) / cell) : 0
+// The layers the DAG section holds open, for the session and dag run it drew them for. One record for the
+// module, not a state per hook: the status item and the pane both call `useHud`, and two answers would be two query
+// keys, so two full reads on every poll. The DAG clears it when it unmounts or a new run replaces it.
+const dagOpenStore = { key: '', layers: '' }
+const dagOpenListeners = new Set()
+
+export function setDagOpen(key, layers) {
+  if (dagOpenStore.key === key && dagOpenStore.layers === layers) return
+  dagOpenStore.key = key
+  dagOpenStore.layers = layers
+  dagOpenListeners.forEach(function (listen) {
+    listen()
+  })
 }
 
-// Measures the pane body whenever it resizes (and once its fonts load), and
-// hands the width in cells to every query through `setDrawingCells`.
-function useMeasuredCells(body) {
-  useEffect(
-    function () {
-      if (!body) return undefined
-      const measure = function () {
-        setDrawingCells(measureCells(body))
-      }
-      measure()
-      let alive = true
-      if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) {
-        document.fonts.ready.then(function () {
-          if (alive) measure()
-        })
-      }
-      const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null
-      if (observer) observer.observe(body)
-      return function () {
-        alive = false
-        if (observer) observer.disconnect()
-      }
-    },
-    [body]
-  )
+function useDagOpen() {
+  const [, setSeen] = useState(0)
+  useEffect(function () {
+    const sync = function () {
+      setSeen(function (count) {
+        return count + 1
+      })
+    }
+    dagOpenListeners.add(sync)
+    return function () {
+      dagOpenListeners.delete(sync)
+    }
+  }, [])
+  return dagOpenStore
 }
 
 function useHud() {
@@ -2319,23 +2660,38 @@ function useHud() {
   // value is ignored.
   const busyRead = useValue(host.state.busy || host.state.gateway)
   const busy = host.state.busy ? busyRead === true : false
-  const cols = useDrawingCells()
+  // The dag run the person switched to, kept for the session they switched it in; none follows the newest run.
+  const [pick, setPick] = useState({ session: '', run: '' })
+  const dagRun = pick.run && pick.session === (sessionId || '') ? pick.run : ''
+  // The layers the DAG section holds open, for the session and run it drew them for; a new set is asked for at once.
+  const opened = useDagOpen()
+  const openKey = `${sessionId || ''}|${dagRun}`
+  const dagOpen = opened.key === openKey ? opened.layers : ''
   const query = useQuery({
-    queryKey: [PLUGIN_ID, 'hud', sessionId || '', cols],
+    queryKey: [PLUGIN_ID, 'hud', sessionId || '', dagRun, dagOpen],
     queryFn: function () {
-      return fetchHud(sessionId, cols)
+      return fetchHud(sessionId, dagRun, dagOpen)
     },
     refetchInterval: pollInterval(busy),
     enabled: gateway === 'open',
-    // Keep the last answer on screen across a session switch and while a
-    // refetch is in flight, so the pane never blanks between polls.
-    placeholderData: function (previous) {
-      return previous
+    // The last answer stays on screen while a refetch is in flight and across
+    // a switch of dag run, so the pane never blanks between polls. Across a
+    // switch of session it does not: another chat's plan, catches and DAG are
+    // not this one's, so the sections read as pending until this chat's lands.
+    placeholderData: function (previous, before) {
+      return before && before.queryKey[2] === (sessionId || '') ? previous : undefined
     }
   })
   return {
     gateway,
     sessionId,
+    dagRun,
+    pickDagRun: function (run) {
+      setPick({ session: sessionId || '', run })
+    },
+    openDagLayers: function (layers) {
+      setDagOpen(layers ? openKey : '', layers)
+    },
     data: query.data,
     error: query.error,
     receivedAt: Number.isFinite(query.dataUpdatedAt) ? query.dataUpdatedAt : 0
@@ -2405,29 +2761,105 @@ function Chips({ payload }) {
   )
 }
 
-// `PLAN  Desktop check          2/6`: the small label, an optional title,
-// the count at the right edge.
-function SectionHeader({ label, title, count, countClass, column }) {
-  return node('div', { className: 'omh-pane-section', 'data-column': column || 'full' }, [
-    span('omh-pane-section-label', label),
-    title ? span('omh-pane-section-title', title) : null,
-    count ? span(`omh-pane-section-count ${countClass || ''}`, count) : null
+// `PLAN  Desktop check          2/6`: a fold mark, the small label, an
+// optional title, the count at the right edge, a control after it. The label
+// side is the button that folds the section; the control is its own.
+function SectionHeader({ label, title, count, countClass, column, control, open, onFold }) {
+  const fold = typeof onFold === 'function'
+  const head = [
+    fold ? span('omh-pane-section-fold', open === false ? '▸' : '▾', 'fold') : null,
+    span('omh-pane-section-label', label, 'label'),
+    title ? span('omh-pane-section-title', title, 'title') : null,
+    count ? span(`omh-pane-section-count ${countClass || ''}`, count, 'count') : null
+  ]
+  return node('div', { className: 'omh-pane-section', 'data-column': column || 'full', 'data-open': open === false ? 'false' : 'true' }, [
+    fold
+      ? node(
+          'button',
+          {
+            type: 'button',
+            className: 'omh-pane-section-toggle',
+            'aria-expanded': open !== false,
+            title: t('foldToggle'),
+            onClick: function () {
+              onFold(open === false)
+            }
+          },
+          head,
+          'toggle'
+        )
+      : node('span', { className: 'omh-pane-section-toggle' }, head, 'toggle'),
+    control || null
   ])
 }
 
-function CatchesSection({ payload }) {
-  const found = catchRows(payload)
-  if (!found.length) return null
+// Whether the person keeps a section open, remembered across polls and windows.
+function useFold(id) {
+  const [open, setOpen] = useState(function () {
+    return readStore(FOLD_STORE)[id] !== false
+  })
   return [
-    jsx(SectionHeader, { label: t('sectionCatches') }, 'catches-head'),
-    div(
-      'omh-pane-block',
-      found.map(function (row) {
-        return node('div', { className: 'omh-pane-catch' }, [span('', row.emoji), span('omh-pane-catch-text', row.text)], `catch-${row.seq}`)
-      }),
-      'catches-body'
-    )
+    open,
+    function (next) {
+      setOpen(next)
+      writeStore(FOLD_STORE, { ...readStore(FOLD_STORE), [id]: next })
+    }
   ]
+}
+
+// The one line a section says when it has nothing to show, or cannot vouch for what it would.
+function EmptyLine({ title, description, tone }) {
+  return node('div', { className: `omh-pane-empty${tone ? ` omh-pane-empty-${tone}` : ''}` }, [
+    span('omh-pane-empty-title', title, 'title'),
+    description ? span('omh-pane-empty-text', description, 'text') : null
+  ])
+}
+
+// A section of the pane: its header, then its body while it is open. `state`
+// is `pending` while this chat's poll has not landed, `unavailable` where the
+// reader cannot answer; both draw the same line in every section, in place of
+// a body built from data the pane cannot vouch for.
+function Section({ id, label, title, count, countClass, control, state, empty, children }) {
+  const [open, setOpen] = useFold(id)
+  let body = null
+  if (open) {
+    if (state === 'pending') body = div('omh-pane-block', jsx(Skeleton, { className: 'omh-pane-skeleton', style: { width: '60%' } }), `${id}-body`)
+    else if (state === 'unavailable') body = div('omh-pane-block', jsx(EmptyLine, { title: t('sectionUnavailable'), tone: 'quiet' }), `${id}-body`)
+    else if (empty) body = div('omh-pane-block', jsx(EmptyLine, empty), `${id}-body`)
+    else body = div('omh-pane-block', children, `${id}-body`)
+  }
+  return node('section', { className: 'omh-pane-sec', 'data-section': id, 'data-open': open ? 'true' : 'false' }, [
+    jsx(
+      SectionHeader,
+      {
+        label,
+        title: state ? '' : title,
+        count: state === 'pending' ? t('sectionPending') : state ? '' : count,
+        countClass,
+        control: state ? null : control,
+        open,
+        onFold: setOpen
+      },
+      `${id}-head`
+    ),
+    body
+  ])
+}
+
+function CatchesSection({ payload, state }) {
+  const found = catchRows(payload)
+  return jsx(Section, {
+    id: 'catches',
+    label: t('sectionCatches'),
+    title: found.length ? t('catchesTitle') : '',
+    count: found.length ? `${found.length}` : '',
+    countClass: 'omh-pane-mono',
+    state,
+    empty: found.length ? null : { title: t('catchesEmpty') },
+    children: found.map(function (row) {
+      return node('div', { className: 'omh-pane-catch' }, [span('', row.emoji), span('omh-pane-catch-text', row.text)], `catch-${row.seq}`)
+    })
+  })
 }
 
 function PlanItem({ item, live, unchanged }) {
@@ -2456,7 +2888,10 @@ function planLiveness(payload) {
   return activity.post_tool_call_observed ? !!activity.live : true
 }
 
-function NativeHeldPlanSection({ payload, todo }) {
+// A plan Hermes' todo_list holds: its steps are in the composer, so the
+// section keeps the open items carrying a reason and the stall finding, and
+// with neither says where the steps are.
+function nativePlanBody(payload, todo) {
   const items = Array.isArray(todo.items) ? todo.items : []
   const waiting = items.filter(function (item) {
     return item.state !== 'done' && reasonOf(item)
@@ -2465,7 +2900,6 @@ function NativeHeldPlanSection({ payload, todo }) {
     todo.status === 'established' && todo.stall && todo.stall.status === 'unchanged' && Number.isFinite(todo.updated_age_seconds)
       ? elapsedText(Math.max(0, todo.updated_age_seconds))
       : ''
-  if (!waiting.length && !unchanged) return []
   const live = planLiveness(payload)
   const shown = waiting.map(function (item, index) {
     return jsx(PlanItem, { item, live, unchanged }, `native-${index}`)
@@ -2474,32 +2908,16 @@ function NativeHeldPlanSection({ payload, todo }) {
     return item.state === 'active'
   })
   if (unchanged && !anyActive) shown.push(div('omh-pane-fold', t('planNoteUnchanged', { age: unchanged }), 'native-unchanged'))
-  return [
-    jsx(
-      SectionHeader,
-      {
-        label: t('sectionPlan'),
-        title: t('planNativeTitle'),
-        count: waiting.length ? t('planWaiting', { count: waiting.length }) : '',
-        countClass: 'omh-pane-warn',
-        column: 'plan'
-      },
-      'plan-head'
-    ),
-    div('omh-pane-block', shown, 'plan-body')
-  ]
+  if (!shown.length) shown.push(div('omh-pane-fold', t('planNativeHeld'), 'native-held'))
+  return {
+    title: t('planNativeTitle'),
+    count: waiting.length ? t('planWaiting', { count: waiting.length }) : '',
+    countClass: 'omh-pane-warn',
+    children: shown
+  }
 }
 
-function PlanSection({ payload }) {
-  const todo = payload.todo || {}
-  const declared = todo.status === 'established' || todo.status === 'all_done'
-  if (!declared) {
-    return [
-      jsx(SectionHeader, { label: t('sectionPlan'), column: 'plan' }, 'plan-head'),
-      jsx(PanelEmpty, { icon: 'checklist', title: t('planEmptyTitle'), description: t('planEmptyDescription') }, 'plan-empty')
-    ]
-  }
-  if (todo.source === NATIVE_TODO_SOURCE) return NativeHeldPlanSection({ payload, todo })
+function omhPlanBody(payload, todo) {
   const progress = planProgress(todo)
   const items = Array.isArray(todo.items) ? todo.items : []
   const window = planWindow(items)
@@ -2536,55 +2954,38 @@ function PlanSection({ payload }) {
     shown.push(div('omh-pane-phase-items', itemNodes, `${groupIndex}-items`))
   })
   if (folds.later) shown.push(div('omh-pane-fold', folds.later, 'later'))
-  return [
-    jsx(
-      SectionHeader,
-      { label: t('sectionPlan'), title: safeText(todo.title), count: planCountText(todo), countClass: 'omh-pane-mono', column: 'plan' },
-      'plan-head'
-    ),
-    div(
-      'omh-pane-block',
-      [
-        node(
-          'div',
-          { className: 'omh-pane-bar' },
-          node('div', {
-            className: 'omh-pane-bar-fill',
-            'data-done': progress.allDone ? 'true' : 'false',
-            style: { width: `${progress.percent}%` }
-          }),
-          'plan-bar'
-        ),
-        ...shown
-      ],
-      'plan-body'
-    )
-  ]
+  return {
+    title: safeText(todo.title),
+    count: planCountText(todo),
+    countClass: 'omh-pane-mono',
+    children: [
+      node(
+        'div',
+        { className: 'omh-pane-bar' },
+        node('div', {
+          className: 'omh-pane-bar-fill',
+          'data-done': progress.allDone ? 'true' : 'false',
+          style: { width: `${progress.percent}%` }
+        }),
+        'plan-bar'
+      ),
+      ...shown
+    ]
+  }
 }
 
-// The drawing as one preformatted block: one line per row, each segment in
-// its tone, a box's title in bold; it scrolls sideways and never wraps.
-function DagDrawing({ lines }) {
-  return div('omh-pane-dag-card', node(
-    'pre',
-    { className: 'omh-pane-dag', 'data-drawing': 'true' },
-    lines.map(function (line, index) {
-      return node(
-        'span',
-        { className: 'omh-pane-dag-line' },
-        line.length
-          ? line.map(function (segment, at) {
-              const className = `${toneClass(segment.tone)}${segment.title ? ' omh-pane-dag-title' : ''}${segment.cells ? ' omh-pane-dag-wide' : ''}`
-              // A wide character's fallback font is narrower than two cells; the segment keeps the renderer's width.
-              return segment.cells
-                ? node('span', { className, style: { width: `${segment.cells}ch` } }, segment.text, `s-${at}`)
-                : span(className, segment.text, `s-${at}`)
-            })
-          : ' ',
-        `l-${index}`
-      )
-    })
-  ))
+// The plan as it stands now: a snapshot, unlike CATCHES, which keeps what happened.
+function PlanSection({ payload, state }) {
+  const todo = (payload && payload.todo) || {}
+  const declared = todo.status === 'established' || todo.status === 'all_done'
+  const body = !declared ? null : todo.source === NATIVE_TODO_SOURCE ? nativePlanBody(payload, todo) : omhPlanBody(payload, todo)
+  return jsx(Section, {
+    id: 'plan',
+    label: t('sectionPlan'),
+    state,
+    empty: body ? null : { title: t('planEmptyTitle'), description: t('planEmptyDescription') },
+    ...(body || {})
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -2659,6 +3060,8 @@ function UsageStack({ usage, big }) {
 
 function DagKpis({ dag }) {
   const total = dag.total
+  // A share names the whole run, the lanes the reader cut included: `47/500 nodes priced`, not `47/47`.
+  const lanes = dag.lanes.length + dag.hidden
   const prompt = promptTokens(total)
   const cells = [
     {
@@ -2677,13 +3080,13 @@ function DagKpis({ dag }) {
     {
       label: t('dgCost'),
       value: sumCostText(total),
-      sub: total.lanes ? t('dgCostSub', { priced: total.priced, counted: total.lanes }) : t('dgCostNone'),
+      sub: total.lanes ? t('dgCostSub', { priced: total.priced, total: lanes }) : t('dgCostNone'),
       tip: t('dgCostTip')
     },
     {
       label: t('dgNodeTime'),
       value: dag.timed ? elapsedText(dag.seconds) : '—',
-      sub: dag.timed ? t('dgNodeTimeSub', { count: dag.timed }) : '',
+      sub: dag.timed ? t('dgNodeTimeSub', { count: dag.timed, total: lanes }) : '',
       tip: t('dgNodeTimeTip')
     }
   ]
@@ -2704,7 +3107,11 @@ function KpiGrid({ cells, wide }) {
           span('omh-pane-dv-kpi-label', cell.label),
           span('omh-pane-dv-kpi-value', cell.value),
           span('omh-pane-dv-kpi-sub', cell.sub),
-          cell.ring ? span('omh-pane-dv-kpi-ring', jsx(UsageRing, { usage: cell.ring, size: 26 })) : null
+          cell.ring ? span('omh-pane-dv-kpi-ring', jsx(UsageRing, { usage: cell.ring, size: wide ? 16 : 26 })) : null,
+          // A share of a whole (the context window) carries its own bar, empty where nothing measured it.
+          cell.meter !== undefined
+            ? node('span', { className: 'omh-pane-ub-meter', 'data-on': cell.meter === null ? 'false' : 'true' }, node('i', { style: { width: `${cell.meter || 0}%` } }), 'meter')
+            : null
         ],
         cell.label
       )
@@ -2714,10 +3121,10 @@ function KpiGrid({ cells, wide }) {
 
 function routeText(lane) {
   const model = lane.model ? `${lane.model}${lane.effort ? `:${lane.effort}` : ''}` : ''
-  return [lane.category, model].filter(Boolean).join(' · ') || '?'
+  return [lane.category, model].filter(Boolean).join(' · ') || '—'
 }
 
-function LaneCard({ dag, lane, picked, dim, onPick }) {
+function LaneCard({ dag, lane, picked, dim, compact, onPick }) {
   const after = lane.parents.length
     ? t('dgAfter', {
         nodes: lane.parents
@@ -2735,6 +3142,7 @@ function LaneCard({ dag, lane, picked, dim, onPick }) {
       className: `omh-pane-dv-card${picked ? ' omh-pane-dv-picked' : ''}${dim ? ' omh-pane-dv-dim' : ''}`,
       'data-lane': lane.id,
       'data-tone': lane.border,
+      'data-state': lane.state,
       'aria-pressed': picked,
       onClick: function () {
         onPick(picked ? '' : lane.id)
@@ -2742,17 +3150,109 @@ function LaneCard({ dag, lane, picked, dim, onPick }) {
     },
     [
       span(`omh-pane-dv-title ${named}`, lane.title),
-      span('omh-pane-dv-line omh-pane-dv-wrap', routeText(lane)),
+      compact ? null : span('omh-pane-dv-line omh-pane-dv-wrap', routeText(lane)),
       span(`omh-pane-dv-line omh-pane-dv-wrap ${toneClass(lane.tone)}`, laneStatus(lane)),
-      span('omh-pane-dv-line omh-pane-dv-wrap', after),
-      jsx(UsageStack, { usage: lane.usage })
+      compact ? null : span('omh-pane-dv-line omh-pane-dv-wrap', after),
+      compact ? null : jsx(UsageStack, { usage: lane.usage })
     ]
   )
 }
 
 // Where each edge runs, measured from the cards as laid out: out of a card's
-// foot, along the gap, into the next card's head. An edge over a skipped layer
-// takes the right-hand gutter. `tone` is the state of the pair it joins.
+// foot, along a lane of the gap, into the next card's head. Every edge has a
+// port of its own on each card it touches and a lane of its own in its gap, so
+// no two edges lie on one line; where they must meet they cross. An edge over
+// a skipped line (a line, not a layer: a wrapped row is two lines) runs down a
+// gutter column of its own in the right-hand margin. `tone` is the state of
+// the pair it joins.
+const LANE_PAD = 6 // the room a lane keeps from a card's foot and from the arrow
+const LANE_STEP = 8 // the most apart two lanes of a gap sit
+const GUTTER_STEP = 4 // the cells between two gutter columns
+const PORT_STEP = 10 // the most apart two ports on one card sit; they share the middle of the card's width
+const MAX_PERMUTED = 7 // ponytail: past this many lanes in one gap the order they came in stands
+
+// The path through `pts` (axis-aligned runs) with its turns rounded by `r`, or less where a run is short.
+function roundedPath(pts, r) {
+  const kept = pts.filter(function (pt, i) {
+    return i === 0 || pt[0] !== pts[i - 1][0] || pt[1] !== pts[i - 1][1]
+  })
+  let d = `M${kept[0][0]} ${kept[0][1]}`
+  for (let i = 1; exceeds(kept.length, i + 1); i += 1) {
+    const [px, py] = kept[i - 1]
+    const [x, y] = kept[i]
+    const [nx, ny] = kept[i + 1]
+    const k = Math.min(r, (Math.abs(x - px) + Math.abs(y - py)) / 2, (Math.abs(nx - x) + Math.abs(ny - y)) / 2)
+    d += ` L${x - Math.sign(x - px) * k} ${y - Math.sign(y - py) * k} Q${x} ${y} ${x + Math.sign(nx - x) * k} ${y + Math.sign(ny - y) * k}`
+  }
+  const last = kept[kept.length - 1]
+  return `${d} L${last[0]} ${last[1]}`
+}
+
+// The segments of one piece of an edge inside a gap, its lane (if it has one) at `y`.
+function pieceSegments(piece, y, top, bottom) {
+  if (piece.fixed) return [{ x: piece.tx, y0: top, y1: bottom, v: true, piece }]
+  return [
+    { x: piece.tx, y0: top, y1: y, v: true, from: piece.srcTop ? piece.edge.from : null, piece },
+    { y, x0: Math.min(piece.tx, piece.bx), x1: Math.max(piece.tx, piece.bx), v: false, piece },
+    { x: piece.bx, y0: y, y1: bottom, v: true, to: piece.dstBottom ? piece.edge.to : null, piece }
+  ]
+}
+
+// How badly two segments of different edges read as one: a stretch of the same column is heavy (unless both leave
+// one source or both enter one target, which is a merge), a crossing is light.
+function segmentClash(a, b) {
+  if (a.v && b.v) {
+    if (exceeds(0.5, Math.abs(a.x - b.x))) {
+      const overlap = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0)
+      if (!exceeds(overlap, 0.5)) return 0
+      return (a.from && a.from === b.from) || (a.to && a.to === b.to) ? 0 : 50
+    }
+    return 0
+  }
+  if (a.v === b.v) return 0
+  const v = a.v ? a : b
+  const h = a.v ? b : a
+  return exceeds(v.x, h.x0 + 0.5) && exceeds(h.x1 - 0.5, v.x) && exceeds(h.y, v.y0 + 0.5) && exceeds(v.y1 - 0.5, h.y) ? 1 : 0
+}
+
+// The lanes of one gap, top to bottom, in the order that clashes least.
+function laneOrder(pieces, fixed, top, bottom, laneY) {
+  if (!exceeds(pieces.length, 1) || exceeds(pieces.length, MAX_PERMUTED)) return pieces
+  const standing = fixed.flatMap(function (piece) {
+    return pieceSegments(piece, 0, top, bottom)
+  })
+  let best = pieces
+  let bestCost = Infinity
+  function cost(order) {
+    const segs = order.flatMap(function (piece, i) {
+      return pieceSegments(piece, laneY(i, order.length), top, bottom)
+    })
+    const all = segs.concat(standing)
+    let sum = 0
+    for (let i = 0; exceeds(segs.length, i); i += 1) {
+      for (let j = i + 1; exceeds(all.length, j); j += 1) {
+        if (all[j].piece.edge !== segs[i].piece.edge) sum += segmentClash(segs[i], all[j])
+      }
+    }
+    return sum
+  }
+  function walk(rest, done) {
+    if (!rest.length) {
+      const c = cost(done)
+      if (exceeds(bestCost, c)) {
+        best = done
+        bestCost = c
+      }
+      return
+    }
+    rest.forEach(function (piece, i) {
+      walk(rest.slice(0, i).concat(rest.slice(i + 1)), done.concat([piece]))
+    })
+  }
+  walk(pieces, [])
+  return best
+}
+
 function edgeLines(canvas, dag, pick, lit) {
   const box = canvas.getBoundingClientRect()
   const at = {}
@@ -2760,54 +3260,216 @@ function edgeLines(canvas, dag, pick, lit) {
     const r = card.getBoundingClientRect()
     at[card.getAttribute('data-lane')] = { x: Math.round(r.left - box.left), y: Math.round(r.top - box.top), w: Math.round(r.width), h: Math.round(r.height) }
   })
-  const gutter = Math.round(box.width) - 8
-  const lines = []
+  // A layer's row wraps when its cards do not fit the width, so one layer can sit on several lines.
+  const lineOf = {}
+  const lineTop = []
+  const lineBottom = []
+  let line = -1
+  let seenTop = -Infinity
+  Object.keys(at)
+    .sort(function (a, b) {
+      return at[a].y - at[b].y
+    })
+    .forEach(function (id) {
+      if (exceeds(at[id].y - seenTop, 4)) {
+        line += 1
+        seenTop = at[id].y
+        lineTop[line] = at[id].y
+        lineBottom[line] = at[id].y + at[id].h
+      }
+      lineOf[id] = line
+      lineBottom[line] = Math.max(lineBottom[line], at[id].y + at[id].h)
+    })
+  const width = Math.round(box.width)
+  const routes = []
   dag.edges.forEach(function (edge) {
     const a = at[edge.from]
     const b = at[edge.to]
     if (!a || !b) return
+    const la = lineOf[edge.from]
+    const lb = lineOf[edge.to]
+    const down = exceeds(lb, la)
+    const skip = exceeds(lb - la, 1)
+    const x1 = a.x + Math.round(a.w / 2)
+    const x2 = down ? b.x + Math.round(b.w / 2) : x1
+    routes.push({ edge, la, lb, down, skip, x1, x2, yf: a.y + a.h, yt: b.y, gx: 0, lanes: {} })
+  })
+  const outs = {}
+  const ins = {}
+  routes.forEach(function (r) {
+    outs[r.edge.from] = (outs[r.edge.from] || []).concat([r])
+    if (r.down) ins[r.edge.to] = (ins[r.edge.to] || []).concat([r])
+  })
+  // Ports run in the order of the cards at the other end, so edges that can stay apart do.
+  function assignPorts(group, otherEnd, field) {
+    Object.keys(group).forEach(function (id) {
+      const list = group[id].slice().sort(function (p, q) {
+        return at[otherEnd(p)].x - at[otherEnd(q)].x
+      })
+      const step = Math.min(PORT_STEP, (at[id].w * 0.6) / Math.max(list.length - 1, 1))
+      list.forEach(function (r, i) {
+        r[field] = at[id].x + Math.round(at[id].w / 2 + (i - (list.length - 1) / 2) * step)
+      })
+    })
+  }
+  assignPorts(outs, function (r) {
+    return r.edge.to
+  }, 'x1')
+  assignPorts(ins, function (r) {
+    return r.edge.from
+  }, 'x2')
+  routes.forEach(function (r) {
+    if (!r.down) r.x2 = r.x1
+  })
+  const skips = routes.filter(function (r) {
+    return r.skip
+  })
+  const gutterStep = Math.min(GUTTER_STEP, Math.max(1, Math.floor(22 / Math.max(skips.length - 1, 1))))
+  skips.forEach(function (r, i) {
+    r.gx = width - 6 - gutterStep * i
+  })
+  // What each gap (the space under line g) holds: edges that turn take a lane, the others stand.
+  const gaps = {}
+  function put(g, piece) {
+    if (!gaps[g]) gaps[g] = { lanes: [], fixed: [] }
+    gaps[g][piece.fixed ? 'fixed' : 'lanes'].push(piece)
+  }
+  routes.forEach(function (r) {
+    if (!r.down) return
+    const edge = r.edge
+    if (!r.skip) {
+      if (exceeds(1, Math.abs(r.x2 - r.x1))) put(r.la, { edge, route: r, fixed: true, tx: r.x1, bx: r.x1 })
+      else put(r.la, { edge, route: r, slot: 'a', tx: r.x1, bx: r.x2, srcTop: true, dstBottom: true })
+      return
+    }
+    put(r.la, { edge, route: r, slot: 'a', tx: r.x1, bx: r.gx, srcTop: true, dstBottom: false })
+    for (let g = r.la + 1; exceeds(r.lb - 1, g); g += 1) put(g, { edge, route: r, fixed: true, tx: r.gx, bx: r.gx })
+    put(r.lb - 1, { edge, route: r, slot: 'b', tx: r.gx, bx: r.x2, srcTop: false, dstBottom: true })
+  })
+  Object.keys(gaps).forEach(function (key) {
+    const g = Number(key)
+    const top = lineBottom[g]
+    const bottom = lineTop[g + 1]
+    const near = top + LANE_PAD
+    const far = Math.max(near, bottom - ARROW_PX - LANE_PAD)
+    function laneY(i, count) {
+      const step = exceeds(count, 1) ? Math.min(LANE_STEP, (far - near) / (count - 1)) : 0
+      return far - (count - 1 - i) * step
+    }
+    const order = laneOrder(gaps[g].lanes, gaps[g].fixed, top, bottom, laneY)
+    order.forEach(function (piece, i) {
+      piece.route.lanes[piece.slot] = laneY(i, order.length)
+    })
+  })
+  const lines = []
+  routes.forEach(function (r) {
+    const edge = r.edge
     const from = dag.index[edge.from]
     const to = dag.index[edge.to]
-    const skip = exceeds(to.layer - from.layer, 1)
-    const x1 = a.x + Math.round(a.w / 2)
-    const y1 = a.y + a.h
-    const y2 = b.y
-    const x2 = b.x + Math.round(b.w / 2) + (skip ? Math.min(14, Math.round(b.w / 4)) : 0)
-    const bend = y2 - (skip ? 20 : 14)
-    let d
-    if (skip) {
-      d = `M${x1} ${y1} V${y1 + 12} H${gutter} V${bend} H${x2} V${y2 - ARROW_PX}`
-    } else if (exceeds(1, Math.abs(x2 - x1))) {
-      d = `M${x1} ${y1} V${y2 - ARROW_PX}`
-    } else {
-      const s = exceeds(x2, x1) ? 1 : -1
-      d = `M${x1} ${y1} V${bend - BEND_PX} Q${x1} ${bend} ${x1 + s * BEND_PX} ${bend} H${x2 - s * BEND_PX} Q${x2} ${bend} ${x2} ${bend + BEND_PX} V${y2 - ARROW_PX}`
-    }
+    const end = r.yt - ARROW_PX
+    let pts
+    if (!r.down || (!r.skip && r.lanes.a === undefined)) pts = [[r.x1, r.yf], [r.x2, end]]
+    else if (!r.skip) pts = [[r.x1, r.yf], [r.x1, r.lanes.a], [r.x2, r.lanes.a], [r.x2, end]]
+    else pts = [[r.x1, r.yf], [r.x1, r.lanes.a], [r.gx, r.lanes.a], [r.gx, r.lanes.b], [r.x2, r.lanes.b], [r.x2, end]]
     const bad = from.state === 'failed' || from.state === 'interrupted'
     const moving = from.state === 'done' && (to.state === 'running' || to.state === 'dispatched')
     const settled = from.state === 'done' && to.state === 'done'
     // An open lane lights its own edges; else a marked set (the path, a model) lights those between its lanes.
     const focus = pick ? edge.from === pick || edge.to === pick : lit ? lit.indexOf(edge.from) !== -1 && lit.indexOf(edge.to) !== -1 : null
     lines.push({
-      d,
-      tip: `M${x2 - 4} ${y2 - ARROW_PX} L${x2 + 4} ${y2 - ARROW_PX} L${x2} ${y2} Z`,
+      d: roundedPath(pts, BEND_PX),
+      points: pts,
+      origin: edge.kind === 'repair' || edge.kind === 'extend',
+      // An edge over lanes the reader cut is drawn as implied: dotted and faint, a path rather than one step.
+      elided: edge.elided === true,
+      tip: `M${r.x2 - 4} ${end} L${r.x2 + 4} ${end} L${r.x2} ${r.yt} Z`,
       tone: bad ? 'error' : moving ? 'accent' : settled ? 'done' : 'wait',
       hollow: !(moving || settled),
       hot: focus === true,
       dim: focus === false
     })
   })
-  return { width: Math.round(box.width), height: Math.round(box.height), lines }
+  return { width, height: Math.round(box.height), lines }
 }
 
-function DagCanvas({ dag, pick, lit, onPick }) {
+// The graph as drawn with `folded` layers: each folded layer's lanes stand
+// behind one chip (`layer:N`), every edge to or from them drawn to the chip,
+// once, and none inside it. A highlight lights a chip that holds a lit lane.
+export function foldedView(dag, folded, edges, lit) {
+  if (!folded.size) return { index: dag.index, edges, lit }
+  const groupOf = function (id) {
+    const lane = dag.index[id]
+    return lane && folded.has(lane.layer) ? `layer:${lane.layer}` : id
+  }
+  const index = { ...dag.index }
+  folded.forEach(function (at) {
+    const summary = layerSummary(dag, at)
+    index[`layer:${at}`] = { id: `layer:${at}`, state: summary.state, layer: at, summary }
+  })
+  const seen = new Set()
+  const drawn = []
+  edges.forEach(function (edge) {
+    const from = groupOf(edge.from)
+    const to = groupOf(edge.to)
+    const key = `${from}|${to}`
+    if (from === to || seen.has(key)) return
+    seen.add(key)
+    drawn.push({ ...edge, from, to })
+  })
+  const shownLit = lit
+    ? lit.concat(
+        Array.from(folded)
+          .filter(function (at) {
+            return dag.layers[at].some(function (id) {
+              return lit.indexOf(id) !== -1
+            })
+          })
+          .map(function (at) {
+            return `layer:${at}`
+          })
+      )
+    : lit
+  return { index, edges: drawn, lit: shownLit }
+}
+
+// A folded layer: one card-wide chip naming the layer, its size and its lanes by state.
+function LayerChip({ summary, dim, onLayer }) {
+  const counts = LAYER_STATE_ORDER.filter(function (word) {
+    return own(summary.states, word)
+  }).map(function (word) {
+    return span(`omh-pane-dv-tally ${toneClass(laneMark(word).tone)}`, `${laneMark(word).glyph} ${summary.states[word]}`, word)
+  })
+  return node(
+    'button',
+    {
+      type: 'button',
+      className: `omh-pane-dv-card omh-pane-dv-layer${dim ? ' omh-pane-dv-dim' : ''}`,
+      'data-lane': `layer:${summary.layer}`,
+      'data-tone': segmentTone(`node:${summary.state}`),
+      'aria-expanded': false,
+      title: t('dgLayerTip'),
+      onClick: function () {
+        onLayer(summary.layer, true)
+      }
+    },
+    [span('omh-pane-dv-layer-name', `▸ ${t('dgLayerFold', { layer: summary.layer + 1, count: summary.count })}`, 'name'), span('omh-pane-dv-tallies', counts, 'tallies')]
+  )
+}
+
+function DagCanvas({ dag, pick, lit, reduce, folded, compact, onPick, onLayer }) {
   const [canvas, setCanvas] = useState(null)
   const [drawn, setDrawn] = useState({ width: 0, height: 0, lines: [] })
   // What decides the edges; a poll that changes none of it leaves them be, and a card that grows is the observer's.
+  const shown = reduce
+    ? dag.edges.filter(function (edge) {
+        return dag.implied.indexOf(`${edge.from}.${edge.to}`) === -1
+      })
+    : dag.edges
+  const view = foldedView(dag, folded, shown, lit)
   const shape = [
     pick,
-    lit ? lit.join(',') : '',
-    dag.edges
+    view.lit ? view.lit.join(',') : '',
+    view.edges
       .map(function (edge) {
         return `${edge.from}.${edge.to}`
       })
@@ -2816,13 +3478,15 @@ function DagCanvas({ dag, pick, lit, onPick }) {
       .map(function (lane) {
         return `${lane.id}:${lane.state}`
       })
-      .join(',')
+      .join(','),
+    Array.from(folded).join(','),
+    compact ? 'compact' : ''
   ].join('|')
   useEffect(
     function () {
       if (!canvas) return undefined
       function draw() {
-        setDrawn(edgeLines(canvas, dag, pick, lit))
+        setDrawn(edgeLines(canvas, { ...dag, edges: view.edges, index: view.index }, pick, view.lit))
       }
       draw()
       const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(draw) : null
@@ -2833,12 +3497,20 @@ function DagCanvas({ dag, pick, lit, onPick }) {
     },
     [canvas, shape]
   )
-  return node('div', { className: 'omh-pane-dv-canvas', ref: setCanvas }, [
+  const tagged = exceeds(dag.layers.length, 1)
+  return node('div', { className: `omh-pane-dv-canvas${tagged ? ' omh-pane-dv-tagged' : ''}`, ref: setCanvas }, [
     node(
       'svg',
       { className: 'omh-pane-dv-edges', width: drawn.width, height: drawn.height, 'aria-hidden': 'true' },
       drawn.lines.flatMap(function (line, index) {
-        const flags = { 'data-tone': line.tone, 'data-hollow': line.hollow, 'data-hot': line.hot, 'data-dim': line.dim }
+        const flags = {
+          'data-tone': line.tone,
+          'data-hollow': line.hollow,
+          'data-origin': line.origin,
+          'data-elided': line.elided,
+          'data-hot': line.hot,
+          'data-dim': line.dim
+        }
         return [
           node('path', { className: 'omh-pane-dv-edge', d: line.d, ...flags }, [], `e${index}`),
           node('path', { className: 'omh-pane-dv-tip', d: line.tip, ...flags }, [], `a${index}`)
@@ -2847,16 +3519,45 @@ function DagCanvas({ dag, pick, lit, onPick }) {
       'edges'
     ),
     ...dag.layers.map(function (ids, at) {
+      if (folded.has(at)) {
+        const group = `layer:${at}`
+        return node(
+          'div',
+          { className: 'omh-pane-dv-row omh-pane-dv-row-folded' },
+          jsx(LayerChip, { summary: view.index[group].summary, dim: !!view.lit && view.lit.indexOf(group) === -1, onLayer }, group),
+          `row-${at}`
+        )
+      }
       return node(
         'div',
         { className: 'omh-pane-dv-row' },
-        ids.map(function (id) {
-          return jsx(
-            LaneCard,
-            { dag, lane: dag.index[id], picked: id === pick, dim: !!lit && lit.indexOf(id) === -1, onPick },
-            id
-          )
-        }),
+        [
+          tagged
+            ? node(
+                'button',
+                {
+                  type: 'button',
+                  className: 'omh-pane-dv-layer-tag',
+                  'aria-expanded': true,
+                  title: t('dgLayerTip'),
+                  onClick: function () {
+                    onLayer(at, false)
+                  }
+                },
+                `▾ ${t('dgLayer', { count: at + 1 })}`,
+                'tag'
+              )
+            : null,
+          ...ids.map(function (id) {
+            return jsx(
+              LaneCard,
+              { dag, lane: dag.index[id], picked: id === pick, dim: !!lit && lit.indexOf(id) === -1, compact, onPick },
+              id
+            )
+          }),
+          // The layer's lanes the reader left out, until the ask for it lands.
+          exceeds(layerHidden(dag, at).count, 0) ? span('omh-pane-dv-more', t('graphMore', { count: layerHidden(dag, at).count }), 'more') : null
+        ],
         `row-${at}`
       )
     })
@@ -3082,10 +3783,135 @@ function DagStats({ dag, mark, onMark, onPick, open, onOpen }) {
   )
 }
 
-function DagView({ dag, fallback }) {
+// The DAG view's settings, as stored or as the defaults: fold finished and
+// far-off layers of a large run, show the figures and the stats, leave implied edges out, full cards.
+export function dagViewOptions(stored) {
+  const value = stored && typeof stored === 'object' ? stored : {}
+  return {
+    fold: FOLD_MODES.indexOf(value.fold) === -1 ? 'auto' : value.fold,
+    figures: value.figures !== false,
+    stats: value.stats !== false,
+    implied: value.implied === true,
+    compact: value.compact === true
+  }
+}
+
+const FOLD_WORDS = { auto: 'dgFoldAuto', active: 'dgFoldActive', open: 'dgFoldOpen', closed: 'dgFoldClosed' }
+
+// The fold modes as buttons over the cards, one press away; pressing one, even the one in force, drops the
+// layers folded or opened by hand.
+function DagFoldBar({ fold, onFold }) {
+  return node(
+    'div',
+    { className: 'omh-pane-seg omh-pane-dv-modes', role: 'group', 'aria-label': t('dgFoldMode') },
+    FOLD_MODES.map(function (mode) {
+      return node(
+        'button',
+        {
+          type: 'button',
+          className: 'omh-pane-seg-b',
+          'aria-pressed': fold === mode,
+          title: t(`${FOLD_WORDS[mode]}Tip`),
+          onClick: function () {
+            onFold(mode)
+          }
+        },
+        t(FOLD_WORDS[mode]),
+        mode
+      )
+    }),
+    'bar'
+  )
+}
+const SHOW_WORDS = [
+  ['figures', 'dgShowFigures'],
+  ['stats', 'dgShowStats'],
+  ['implied', 'dgShowImplied'],
+  ['compact', 'dgShowCompact']
+]
+
+// Closes a menu on a press outside `root`.
+function useOutsidePress(open, root, close) {
+  useEffect(
+    function () {
+      if (!open || typeof document === 'undefined') return undefined
+      const away = function (event) {
+        if (root && !root.contains(event.target)) close()
+      }
+      document.addEventListener('mousedown', away)
+      return function () {
+        document.removeEventListener('mousedown', away)
+      }
+    },
+    [open, root]
+  )
+}
+
+// The DAG view's options: how layers fold, and what the view shows.
+function DagOptions({ options, onChange }) {
+  const [open, setOpen] = useState(false)
+  const [root, setRoot] = useState(null)
+  useOutsidePress(open, root, function () {
+    setOpen(false)
+  })
+  const option = function (key, label, on, role, onPick) {
+    return node(
+      'button',
+      { type: 'button', role, className: 'omh-pane-pick-opt', 'aria-checked': on, 'data-on': on, onClick: onPick },
+      [span('omh-pane-opt-mark', on ? '✓' : '', 'mark'), span('', label, 'label')],
+      key
+    )
+  }
+  return node(
+    'span',
+    {
+      className: 'omh-pane-pick',
+      ref: setRoot,
+      onKeyDown: function (event) {
+        if (event.key === 'Escape') setOpen(false)
+      }
+    },
+    [
+      node(
+        'button',
+        {
+          type: 'button',
+          className: 'omh-pane-dag-pick',
+          'aria-label': t('dgViewLabel'),
+          'aria-haspopup': 'menu',
+          'aria-expanded': open,
+          onClick: function () {
+            setOpen(!open)
+          }
+        },
+        t('dgView'),
+        'button'
+      ),
+      open
+        ? node(
+            'div',
+            { className: 'omh-pane-pick-menu', role: 'menu', 'aria-label': t('dgViewLabel') },
+            [
+              span('omh-pane-menu-label', t('dgShowLabel'), 'show-label'),
+              ...SHOW_WORDS.map(function (entry) {
+                return option(`show-${entry[0]}`, t(entry[1]), options[entry[0]], 'menuitemcheckbox', function () {
+                  onChange({ [entry[0]]: !options[entry[0]] })
+                })
+              })
+            ],
+            'menu'
+          )
+        : null
+    ]
+  )
+}
+
+function DagView({ dag, options, onOptions, onOpen }) {
   const [pick, setPick] = useState('')
   const [mark, setMark] = useState(null)
   const [statsOpen, setStatsOpen] = useState(true)
+  // The layers the person folded or opened by hand, for this run under this mode; a new mode starts over.
+  const [overrides, setOverrides] = useState({ key: '', layers: {} })
   const [seat, setSeat] = useState(null)
   // A lane opened below the cards is scrolled into reach once, when it opens.
   useEffect(
@@ -3094,6 +3920,40 @@ function DagView({ dag, fallback }) {
     },
     [pick, seat]
   )
+  const runKey = `${dag.name}|${options.fold}`
+  const layers = overrides.key === runKey ? overrides.layers : {}
+  const folded = foldedLayers(dag, options.fold, layers, pick)
+  // Where the reader cut the graph, the layers drawn open are asked for whole; asking for all of them, not only those
+  // still short, keeps the ask the same once they arrive.
+  const ask = dag.hiddenAt
+    ? dag.layers
+        .map(function (ids, at) {
+          return at
+        })
+        .filter(function (at) {
+          return !folded.has(at)
+        })
+        .join(',')
+    : ''
+  useEffect(
+    function () {
+      if (onOpen) onOpen(ask)
+    },
+    [ask]
+  )
+  // Gone, or replaced by another run's view: its layers are not the next graph's, which may be small.
+  useEffect(function () {
+    return function () {
+      if (onOpen) onOpen('')
+    }
+  }, [])
+  const onLayer = function (at, open) {
+    setOverrides({ key: runKey, layers: { ...layers, [String(at)]: open } })
+  }
+  const onFold = function (mode) {
+    setOverrides({ key: '', layers: {} })
+    if (mode !== options.fold) onOptions({ fold: mode })
+  }
   const lane = dag.index[pick] || null
   const toggle = function (next) {
     setMark(function (now) {
@@ -3109,93 +3969,129 @@ function DagView({ dag, fallback }) {
       }
     },
     [
-      jsx(DagKpis, { dag }, 'kpis'),
-      jsx(DagStats, { dag, mark, onMark: toggle, onPick: setPick, open: statsOpen, onOpen: setStatsOpen }, 'stats'),
-      dag.cards ? jsx(DagCanvas, { dag, pick, lit: markedLanes(dag, mark), onPick: setPick }, 'canvas') : fallback,
+      options.figures ? jsx(DagKpis, { dag }, 'kpis') : null,
+      options.stats ? jsx(DagStats, { dag, mark, onMark: toggle, onPick: setPick, open: statsOpen, onOpen: setStatsOpen }, 'stats') : null,
+      jsx(DagFoldBar, { fold: options.fold, onFold }, 'fold'),
+      jsx(DagCanvas, { dag, pick, lit: markedLanes(dag, mark), reduce: !options.implied, folded, compact: options.compact, onPick: setPick, onLayer }, 'canvas'),
       exceeds(dag.hidden, 0) ? div('omh-pane-more', t('graphMore', { count: dag.hidden }), 'hidden') : null,
       lane ? jsx(LaneDetail, { dag, lane, onPick: setPick, seat: setSeat }, 'detail') : null
     ]
   )
 }
 
-// While the graph runs, the TUI's drawing of it when the backend sent one,
-// else a row per lane; once every lane has settled, one summary line, as the
-// TUI's live block keeps. A dag-ulw run takes the DAG view instead (cards with
-// their figures and stats), falling back to those only past DAG_CARD_LIMIT.
-// A dag-ulw run that has settled keeps its figures under the summary line
-// (#2684): what the run used is what a finished run is read for, and the
-// cards collapsing took it away exactly then.
-function DelegationSection({ payload }) {
-  const view = delegationView(payload)
-  if (!view) return null
-  // A run every lane of which has settled is one summary line, cards or not, as the TUI clears its block at run end.
-  const dag = view.settled ? null : dagModel(payload.delegation_graph)
-  const closing = view.settled ? closingDag(payload.delegation_graph) : null
-  if (closing) {
-    return [
-      jsx(SectionHeader, { label: t('sectionDelegation') }, 'delegation-head'),
-      div(
-        'omh-pane-block',
-        [div('omh-pane-run', view.summary, 'run'), jsx(DagKpis, { dag: closing }, 'kpis')],
-        'delegation-body'
-      )
-    ]
+// The session's dag runs in a menu; the newest is what the pane follows, so choosing it clears the pick.
+// The menu is drawn in the pane's own tokens: the native one a select opens takes its colours from the system, not the theme.
+function DagRunPicker({ choices, onPick }) {
+  const [open, setOpen] = useState(false)
+  const [root, setRoot] = useState(null)
+  useOutsidePress(open, root, function () {
+    setOpen(false)
+  })
+  const current =
+    choices.options.find(function (option) {
+      return option.run === choices.current
+    }) || choices.options[0]
+  // Arrow keys walk the options; Escape closes and gives the focus back to the button.
+  const walk = function (event) {
+    if (event.key === 'Escape' && open) {
+      setOpen(false)
+      if (root) root.querySelector('button').focus()
+    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && root) {
+      event.preventDefault()
+      if (!open) return setOpen(true)
+      const items = Array.from(root.querySelectorAll('[role=option]'))
+      const at = items.indexOf(document.activeElement)
+      const next = event.key === 'ArrowDown' ? at + 1 : at - 1
+      const target = items[Math.min(items.length - 1, Math.max(0, next))]
+      if (target) target.focus()
+    }
   }
-  const drawing = view.settled ? null : drawingLines(payload)
-  const lanes = view.settled || drawing
-    ? []
-    : view.lanes.map(function (lane, index) {
-        return node(
-          'div',
-          { className: 'omh-pane-lane', style: lane.depth ? { '--omh-lane-indent': `${lane.depth * 12}px` } : undefined },
-          [
-            span(`omh-pane-lane-glyph ${toneClass(lane.tone)}`, lane.glyph),
-            jsx(Tip, {
-              label: [lane.title, lane.model].filter(Boolean).join(' · '),
-              children: span('omh-pane-lane-title', lane.title)
+  return node(
+    'span',
+    { className: 'omh-pane-pick', ref: setRoot, onKeyDown: walk },
+    [
+      node(
+        'button',
+        {
+          type: 'button',
+          className: 'omh-pane-dag-pick',
+          'aria-label': t('dagPickLabel'),
+          'aria-haspopup': 'listbox',
+          'aria-expanded': open,
+          onClick: function () {
+            setOpen(!open)
+          }
+        },
+        current ? current.label : '',
+        'button'
+      ),
+      open
+        ? node(
+            'div',
+            { className: 'omh-pane-pick-menu', role: 'listbox', 'aria-label': t('dagPickLabel') },
+            choices.options.map(function (option) {
+              const on = option.run === choices.current
+              return node(
+                'button',
+                {
+                  type: 'button',
+                  role: 'option',
+                  className: 'omh-pane-pick-opt',
+                  'aria-selected': on,
+                  'data-on': on,
+                  onClick: function () {
+                    setOpen(false)
+                    onPick(option.run === choices.newest ? '' : option.run)
+                  }
+                },
+                option.label,
+                option.run
+              )
             }),
-            span('omh-pane-lane-model omh-pane-mono', lane.model),
-            span(`omh-pane-lane-state ${toneClass(lane.tone)}`, lane.state)
-          ],
-          `lane-${index}`
-        )
-      })
-  if (dag) {
-    const beyondCards = drawing ? jsx(DagDrawing, { lines: drawing }, 'drawing') : lanes
-    return [
-      jsx(SectionHeader, { label: t('sectionDag') }, 'delegation-head'),
-      div(
-        'omh-pane-block',
-        [
-          // The cards name no run, so the summary line stays; a drawing past the card limit has its own header.
-          dag.cards || !drawing ? div('omh-pane-run', view.summary, 'run') : null,
-          jsx(DagView, { dag, fallback: dag.cards ? null : beyondCards }, 'dag')
-        ],
-        'delegation-body'
-      )
+            'menu'
+          )
+        : null
     ]
-  }
-  return [
-    jsx(SectionHeader, { label: t('sectionDelegation') }, 'delegation-head'),
-    div(
-      'omh-pane-block',
-      [
-        // The drawing's own header names the run and its counts; the summary line stands in only without it.
-        drawing ? jsx(DagDrawing, { lines: drawing }, 'drawing') : div('omh-pane-run', view.summary, 'run'),
-        ...lanes,
-        !view.settled && !drawing && view.hidden ? div('omh-pane-more', t('graphMore', { count: view.hidden }), 'more') : null
-      ],
-      'delegation-body'
-    )
-  ]
+  )
 }
 
-// The native subagents as one line; Desktop's Agents panel lists each one.
-function SubagentSummary({ payload }) {
-  const text = subagentSummary(payload)
-  if (!text) return null
-  const tip = agentTally(payload).subagents.length ? t('subagentsTip') : ''
-  return div('omh-pane-block', tip ? jsx(Tip, { label: tip, children: span('omh-pane-summary', text) }) : span('omh-pane-summary', text))
+// The one DAG block. Whatever the graph -- a dag-ulw run, running or settled,
+// a fanout, the native delegation tree, the runtime graph -- it is the same
+// view: the run's line, then its cards, folded by layer as the view options
+// say. With no graph it says so, and still offers the session's earlier runs.
+function DagSection({ payload, state, named, picked, onPick, onOpen }) {
+  const [options, setOptionsState] = useState(function () {
+    return dagViewOptions(readStore(DAG_VIEW_STORE))
+  })
+  const setOptions = function (next) {
+    const merged = dagViewOptions({ ...options, ...next })
+    setOptionsState(merged)
+    writeStore(DAG_VIEW_STORE, merged)
+  }
+  const choices = payload ? dagRunChoices(payload, picked) : null
+  const graph = payload ? sectionGraph(payload, named) : null
+  // The run drawn: the one picked, else the newest the reader lists; a run that replaces it is a new view.
+  const run = picked || safeText((rows(payload && payload.dag_runs)[0] || {}).run)
+  const view = graph ? delegationView({ delegation_graph: graph }) : null
+  const dag = view ? dagModel(graph) : null
+  const controls = [
+    choices ? jsx(DagRunPicker, { choices, onPick }, 'pick') : null,
+    dag ? jsx(DagOptions, { options, onChange: setOptions }, 'options') : null
+  ].filter(Boolean)
+  return jsx(Section, {
+    id: 'dag',
+    label: t('sectionDag'),
+    count: view ? `${view.done}/${view.total}` : '',
+    countClass: 'omh-pane-mono',
+    control: controls.length ? node('span', { className: 'omh-pane-controls' }, controls) : null,
+    state,
+    empty: dag || (view && view.note) ? null : { title: t('dagEmptyTitle'), description: choices ? t('dagEmptyRuns') : t('dagEmptyDescription') },
+    children: dag
+      ? [div('omh-pane-run', view.summary, 'run'), jsx(DagView, { dag, options, onOptions: setOptions, onOpen }, `dag-${run}|${dag.name}`)]
+      : view && view.note
+        ? [div('omh-pane-run', view.summary, 'run'), div('omh-pane-more', view.note, 'counts')]
+        : null
+  })
 }
 
 const ROUTE_TONE = { route: 'tertiary', 'route-fallback': 'warn', maestro: 'tertiary', kanban: 'tertiary' }
@@ -3219,58 +4115,31 @@ function RouteRow({ row, extraSeconds }) {
   ])
 }
 
-function RoutesSection({ payload, receivedAt }) {
+// Who works for this session: the native subagents as one line (Desktop's
+// Agents panel lists each), then the routes OMH dispatched, Maestro and Kanban.
+function AgentsSection({ payload, state, receivedAt }) {
   const tally = agentTally(payload)
   const routes = tally.routes
   const now = useClock(routes.some(isRunningRow))
-  if (!routes.length) return null
   const extraSeconds = receivedAt ? Math.max(0, (now - receivedAt) / 1000) : 0
-  return [
-    jsx(SectionHeader, { label: t('sectionRoutes'), count: `${routes.length}`, countClass: 'omh-pane-mono' }, 'routes-head'),
-    div(
-      'omh-pane-block',
-      [
-        ...routes.map(function (row, index) {
-          return jsx(RouteRow, { row, extraSeconds }, `${safeText(row.task_id)}-${index}`)
-        }),
-        tally.hidden ? div('omh-pane-more', t('subagentsMore', { count: tally.hidden }), 'routes-more') : null
-      ],
-      'routes-body'
-    )
-  ]
-}
-
-function GraphSection({ graph }) {
-  if (!graph || graph.status !== 'active') return null
-  const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
-  const shown = nodes.slice(0, GRAPH_NODE_LIMIT)
-  const frontier = Array.isArray(graph.frontier) ? graph.frontier : []
-  const edges = Array.isArray(graph.edges) ? graph.edges : []
-  const edgeCount = Math.max(edges.length, Number(graph.edge_count) || 0)
-  const hidden = Math.max(0, nodes.length - shown.length) + (Number(graph.hidden_nodes) || 0)
-  return [
-    jsx(
-      SectionHeader,
-      { label: t('sectionDag'), title: t('graphTitle', { ready: frontier.length, edges: edgeCount }), count: hidden ? t('graphMore', { count: hidden }) : '' },
-      'graph-head'
-    ),
-    div(
-      'omh-pane-graph',
-      shown.map(function (nodeRecord, index) {
-        const view = graphNodeView(nodeRecord)
-        return div(
-          'omh-pane-graph-node',
-          [
-            span(`omh-pane-graph-glyph ${toneClass(view.tone)}`, view.marker),
-            span('omh-pane-mono', view.id),
-            span(`omh-pane-graph-detail ${view.tone === 'tertiary' || view.tone === 'muted' ? '' : toneClass(view.tone)}`, view.detail)
-          ],
-          `${view.id}-${index}`
-        )
+  const summary = payload ? subagentSummary(payload) : ''
+  const tip = tally.subagents.length ? t('subagentsTip') : ''
+  const count = tally.subagents.length + routes.length
+  return jsx(Section, {
+    id: 'agents',
+    label: t('sectionAgents'),
+    count: count ? `${count}` : '',
+    countClass: 'omh-pane-mono',
+    state,
+    empty: summary || routes.length ? null : { title: t('agentsEmpty') },
+    children: [
+      summary ? (tip ? jsx(Tip, { label: tip, children: span('omh-pane-summary', summary) }, 'summary') : span('omh-pane-summary', summary, 'summary')) : null,
+      ...routes.map(function (row, index) {
+        return jsx(RouteRow, { row, extraSeconds }, `${safeText(row.task_id)}-${index}`)
       }),
-      'graph-nodes'
-    )
-  ]
+      routes.length && tally.hidden ? div('omh-pane-more', t('subagentsMore', { count: tally.hidden }), 'routes-more') : null
+    ]
+  })
 }
 
 const NO_TURNS = []
@@ -3300,19 +4169,96 @@ function useTurns(sessionId) {
   return turns
 }
 
+// The chat's tokens as a ring (cache read, uncached input, cache write, output), the total and the cache in its middle.
+function UsageDial({ dial, title }) {
+  const size = 96
+  const stroke = 9
+  const radius = (size - stroke) / 2
+  const circumference = 2 * Math.PI * radius
+  const mid = size / 2
+  const whole = dial.split ? allTokens(dial.split) : 0
+  let offset = 0
+  const arcs = []
+  USAGE_KEYS.map(function (key) {
+    return [key[0], key[1]]
+  })
+    .concat([['output', 'out']])
+    .forEach(function (key) {
+      const count = dial.split ? dial.split[key[0]] : 0
+      if (!exceeds(count, 0) || !exceeds(whole, 0)) return
+      const length = (count / whole) * circumference
+      arcs.push(
+        node(
+          'circle',
+          {
+            className: `omh-pane-dv-arc omh-pane-dv-${key[1]}`,
+            cx: mid,
+            cy: mid,
+            r: radius,
+            strokeWidth: stroke,
+            strokeDasharray: `${length.toFixed(2)} ${(circumference - length).toFixed(2)}`,
+            strokeDashoffset: (-offset).toFixed(2),
+            transform: `rotate(-90 ${mid} ${mid})`
+          },
+          [],
+          key[1]
+        )
+      )
+      offset += length
+    })
+  return node('div', { className: 'omh-pane-ub-dial', title }, [
+    node('svg', { className: 'omh-pane-dv-ring', width: size, height: size, viewBox: `0 0 ${size} ${size}`, 'aria-hidden': 'true' }, [
+      node('circle', { className: 'omh-pane-dv-track', cx: mid, cy: mid, r: radius, strokeWidth: stroke }, [], 'track'),
+      ...arcs
+    ], 'ring'),
+    node('div', { className: 'omh-pane-ub-center' }, [
+      span('omh-pane-ub-total', tokensText(dial.total), 'total'),
+      dial.cache === null ? null : span('omh-pane-ub-cache', t('ubCacheLine', { cache: dial.cache }), 'cache')
+    ], 'center')
+  ])
+}
+
+// Which tokens the board counts: the chat's own, or with its subagents' lanes.
+function UsageScope({ withSubs, count, onPick }) {
+  return node('span', { className: 'omh-pane-seg', role: 'group', 'aria-label': t('ubScope') }, [
+    node('button', { type: 'button', className: 'omh-pane-seg-b', 'aria-pressed': !withSubs, onClick: function () { onPick(false) } }, t('ubMain'), 'main'),
+    node('button', { type: 'button', className: 'omh-pane-seg-b', 'aria-pressed': withSubs, disabled: !count, onClick: function () { onPick(true) } }, t('ubWithSubs', { count }), 'subs')
+  ])
+}
+
+const SOURCE_WORDS = { gateway: 'ubSourceGateway', recorded: 'ubSourceRecorded', stream: 'ubSourceStream' }
+
 // The focused chat's own figures, first in the pane. The host's atoms are read
 // as the host holds them; an older host lacks some, and a hook cannot be
 // skipped, so there the read lands on the gateway atom and its value is ignored.
-function UsageBoard({ saved, stored }) {
+// Three feeds answer, and the board names the one its tokens came from: the
+// gateway's `session.stats` (the agent's own counters, the cache split
+// included), Hermes' recorded row (the reader's `session_usage`), the stream.
+function UsageBoard({ saved, stored, graph }) {
   const gateway = useValue(host.state.gateway)
   const streamRead = useValue(host.state.focusedUsage || host.state.gateway)
   const runtimeRead = useValue(host.state.focusedSessionId || host.state.gateway)
   const busyRead = useValue(host.state.busy || host.state.gateway)
   const [partsOpen, setPartsOpen] = useState(true)
+  const [withSubs, setWithSubs] = useState(false)
   const live = host.state.focusedUsage && streamRead && typeof streamRead === 'object' ? streamRead : null
   const runtime = host.state.focusedSessionId && typeof runtimeRead === 'string' ? runtimeRead : ''
   const busy = host.state.busy ? busyRead === true : false
   const turns = useTurns(runtime)
+  const asks = gateway === 'open' && !!runtime && typeof host.request === 'function'
+  const sameChat = function (previous, before) {
+    return before && before.queryKey[2] === runtime ? previous : undefined
+  }
+  // Asked again whenever the stream counts another call; never shown under another chat.
+  const counters = useQuery({
+    queryKey: [PLUGIN_ID, 'stats', runtime, live ? live.calls : 0],
+    queryFn: function () {
+      return host.request('session.stats', { session_id: runtime })
+    },
+    enabled: asks,
+    retry: false,
+    placeholderData: sameChat
+  })
   // Read when a call or a compression has moved the prompt and no turn is
   // running, as the host's own gauge does, and never shown under another chat.
   const composition = useQuery({
@@ -3320,83 +4266,118 @@ function UsageBoard({ saved, stored }) {
     queryFn: function () {
       return host.request('session.context_breakdown', { session_id: runtime })
     },
-    enabled: gateway === 'open' && !!runtime && !busy && typeof host.request === 'function',
+    enabled: asks && !busy,
     retry: false,
-    placeholderData: function (previous, before) {
-      return before && before.queryKey[2] === runtime ? previous : undefined
-    }
+    placeholderData: sameChat
   })
-  const board = usageBoard({ live, saved, stored, breakdown: composition.data, turns })
-  if (!board) return null
+  const subs = graph && typeof graph === 'object' && graph.status === 'active' ? sumUsage(lanesOf(graph).map(laneUsage)) : null
+  const board = usageBoard({ live, stats: counters.data, saved, stored, breakdown: composition.data, turns, subs, withSubs })
+  // The bar sits in the summary, so it shows folded too; what the prompt leaves of the window is the empty end.
   const bar = node(
     'div',
-    { className: 'omh-pane-dv-stack omh-pane-dv-big' },
-    board.parts.map(function (part, index) {
-      return node('i', { className: `omh-pane-ub-c${index % PART_TONES}`, style: { flexGrow: part.tokens } }, [], part.id)
-    })
+    { className: 'omh-pane-dv-stack' },
+    board.parts
+      .map(function (part, index) {
+        return node('i', { className: `omh-pane-ub-c${index % PART_TONES}`, style: { flexGrow: part.tokens } }, [], part.id)
+      })
+      .concat(board.free ? [node('i', { style: { flexGrow: board.free } }, [], 'free')] : [])
   )
   const legend = node(
     'div',
     { className: 'omh-pane-dv-legend omh-pane-ub-legend' },
-    board.parts.flatMap(function (part, index) {
-      return [
-        node('span', { className: `omh-pane-dv-legend-k omh-pane-ub-c${index % PART_TONES}` }, [span('omh-pane-dv-swatch', ''), span('omh-pane-dv-chip-t', part.label)], `k-${part.id}`),
-        span('omh-pane-dv-legend-n', tokenCountText(part.tokens), `n-${part.id}`),
-        span('omh-pane-dv-legend-p', percentText(part.share), `p-${part.id}`)
-      ]
-    })
-  )
-  const composed = board.parts.length
-    ? node(
-        'details',
-        {
-          className: 'omh-pane-dv-stats omh-pane-ub-parts',
-          open: partsOpen,
-          onToggle: function (event) {
-            setPartsOpen(event.currentTarget.open)
-          }
-        },
-        [
-          node('summary', { className: 'omh-pane-dv-stats-h' }, [span('', t('ubParts'), 'label'), span('omh-pane-dv-stats-c', `~${tokenCountText(board.sum)}`, 'count')], 'head'),
-          node('div', { className: 'omh-pane-dv-stats-body' }, [bar, legend], 'body')
-        ],
-        'parts'
+    board.parts
+      .flatMap(function (part, index) {
+        return [
+          node('span', { className: `omh-pane-dv-legend-k omh-pane-ub-c${index % PART_TONES}` }, [span('omh-pane-dv-swatch', ''), span('omh-pane-dv-chip-t', part.label)], `k-${part.id}`),
+          span('omh-pane-dv-legend-n', tokenCountText(part.tokens), `n-${part.id}`),
+          span('omh-pane-dv-legend-p', percentText(part.share), `p-${part.id}`)
+        ]
+      })
+      .concat(
+        board.free
+          ? [
+              node('span', { className: 'omh-pane-dv-legend-k' }, [span('omh-pane-dv-chip-t', t('ubFree'))], 'k-free'),
+              span('omh-pane-dv-legend-n', tokenCountText(board.free), 'n-free'),
+              span('omh-pane-dv-legend-p', percentText(board.free / board.window), 'p-free')
+            ]
+          : []
       )
-    : null
-  return [
-    jsx(SectionHeader, { label: t('sectionUsage'), title: board.model, count: board.calls ? t('ubCalls', { count: board.calls }) : '' }, 'usage-head'),
-    div('omh-pane-block', node('div', { className: 'omh-pane-dv' }, [jsx(KpiGrid, { cells: board.cells, wide: true }, 'kpis'), composed]), 'usage-body')
-  ]
+  )
+  // The composition is always there to open; until the host has measured one it says when it will.
+  const composed = node(
+    'details',
+    {
+      className: 'omh-pane-dv-stats omh-pane-ub-parts',
+      open: partsOpen,
+      onToggle: function (event) {
+        setPartsOpen(event.currentTarget.open)
+      }
+    },
+    [
+      node(
+        'summary',
+        { className: 'omh-pane-dv-stats-h' },
+        [
+          span('', t('ubParts'), 'label'),
+          span('omh-pane-dv-stats-c', board.parts.length ? (board.window ? `~${tokenCountText(board.sum)} / ${tokenCountText(board.window)}` : `~${tokenCountText(board.sum)}`) : '—', 'count'),
+          board.parts.length ? bar : null
+        ],
+        'head'
+      ),
+      node('div', { className: 'omh-pane-dv-stats-body' }, [board.parts.length ? legend : div('omh-pane-fold', t('ubPartsPending'), 'pending')], 'body')
+    ],
+    'parts'
+  )
+  // The dial speaks for tokens and cache; the figures beside it are TPS, TTFT, cost and context, in that order.
+  const side = [4, 5, 2, 3].map(function (at) {
+    return board.cells[at]
+  })
+  const dialTip = board.cells
+    .slice(0, 2)
+    .map(function (cell) {
+      return [cell.label, cell.value, cell.sub].filter(Boolean).join(' · ')
+    })
+    .join('\n')
+  const subCount = subs ? subs.lanes : 0
+  const source = board.source ? span('omh-pane-ub-source', t(SOURCE_WORDS[board.source]), 'source') : null
+  const scope = jsx(UsageScope, { withSubs: withSubs && exceeds(subCount, 0), count: subCount, onPick: setWithSubs }, 'scope')
+  return jsx(Section, {
+    id: 'usage',
+    label: t('sectionUsage'),
+    title: board.model,
+    count: board.calls ? t('ubCalls', { count: board.calls }) : '',
+    control: node('span', { className: 'omh-pane-controls', title: t('ubSourceTip') }, [source, scope]),
+    children: [
+      node('div', { className: 'omh-pane-dv' }, [
+        node('div', { className: 'omh-pane-ub-main' }, [jsx(UsageDial, { dial: board.dial, title: dialTip }, 'dial'), jsx(KpiGrid, { cells: side, wide: true }, 'kpis')], 'main'),
+        board.empty ? div('omh-pane-fold', stored || runtime ? t('ubEmpty') : t('ubNoChat'), 'empty') : null,
+        composed
+      ])
+    ]
+  })
 }
 
 function HudPane() {
   const hud = useHud()
-  // The body element, kept through a callback ref, is what the drawing's width is measured on.
-  const [body, setBody] = useState(null)
-  useMeasuredCells(body)
   const model = paneModel(hud)
   const payload = model.payload
-  const sections = []
-  if (model.loading) {
-    sections.push(jsx(Skeleton, { className: 'omh-pane-skeleton', style: { width: '70%' } }, 'skeleton-1'))
-    sections.push(jsx(Skeleton, { className: 'omh-pane-skeleton', style: { width: '45%' } }, 'skeleton-2'))
-  } else {
-    sections.push(jsx(UsageBoard, { saved: payload ? payload.session_usage : null, stored: hud.sessionId }, 'usage'))
-    if (payload) {
-      sections.push(jsx(CatchesSection, { payload }, 'catches'))
-      sections.push(jsx(PlanSection, { payload }, 'plan'))
-      sections.push(jsx(DelegationSection, { payload }, 'delegation'))
-      sections.push(jsx(SubagentSummary, { payload }, 'subagents'))
-      sections.push(jsx(RoutesSection, { payload, receivedAt: hud.receivedAt }, 'routes'))
-      sections.push(jsx(GraphSection, { graph: payload.graph }, 'graph'))
-    }
-  }
+  // Every section is drawn on every poll, in one order. Until this chat's poll
+  // lands, or while the gateway is still connecting, they read as pending;
+  // where the reader answered with an error, as unavailable.
+  const state = payload ? '' : model.loading || hud.gateway !== 'open' ? 'pending' : 'unavailable'
+  const sections = [
+    jsx(UsageBoard, { saved: payload ? payload.session_usage : null, stored: hud.sessionId, graph: payload ? payload.delegation_graph : null }, 'usage'),
+    jsx(CatchesSection, { payload, state }, 'catches'),
+    jsx(PlanSection, { payload, state }, 'plan'),
+    jsx(DagSection, { payload, state, named: !!hud.sessionId, picked: hud.dagRun, onPick: hud.pickDagRun, onOpen: hud.openDagLayers }, 'dag'),
+    jsx(AgentsSection, { payload, state, receivedAt: hud.receivedAt }, 'agents')
+  ]
   return div('omh-pane', [
     jsx(Header, { model }),
     div('omh-pane-scope', scopeLabel(hud.sessionId)),
     payload ? jsx(Chips, { payload }) : null,
     div('omh-pane-rule', []),
-    node('div', { className: 'omh-pane-body', ref: setBody }, sections),
+    node('div', { className: 'omh-pane-body' }, sections),
     model.notice ? div('omh-pane-notice', model.notice) : null
   ])
 }
@@ -3456,6 +4437,8 @@ export default {
       pluginI18n = null
       Object.assign(turnClock, newTurnClock())
       turnListeners.clear()
+      setDagOpen('', '')
+      dagOpenListeners.clear()
     })
     ctx.registerMany([
       {

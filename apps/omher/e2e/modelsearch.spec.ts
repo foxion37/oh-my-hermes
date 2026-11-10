@@ -50,7 +50,7 @@ test("search is focused on open and filters by model and provider as you type", 
   await expect(pop.getByTestId("model-opt")).toHaveCount(12);
 
   await page.keyboard.type("GPT");
-  await expect(names(pop)).toHaveText(["gpt-5.5", "gpt-5.5-mini"]);
+  await expect(names(pop)).toHaveText(["gpt-6.1-sol", "gpt-6.1-terra"]);
   await expect(pop.locator(".mp-g")).toHaveText(["OpenAI"]);
 
   // provider name matches every model it serves
@@ -100,8 +100,8 @@ test("chip and search combine", async ({ page }) => {
   await expect(names(pop)).toHaveText(["Opus 5.5", "anthropic/claude-opus-5-5"]);
   await pop.getByTestId("model-chip-openai").click();
   await expect(pop.getByTestId("model-opt")).toHaveCount(0);
-  await pop.getByTestId("model-search").fill("mini");
-  await expect(names(pop)).toHaveText(["gpt-5.5-mini"]);
+  await pop.getByTestId("model-search").fill("terra");
+  await expect(names(pop)).toHaveText(["gpt-6.1-terra"]);
 });
 
 test("keyboard: Down/Up move the highlight, Enter picks, Esc closes", async ({ page }) => {
@@ -116,8 +116,8 @@ test("keyboard: Down/Up move the highlight, Enter picks, Esc closes", async ({ p
   await page.keyboard.press("ArrowUp");
   await expect(rows.nth(1)).toHaveAttribute("data-active", "true");
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("model-label")).toHaveText("gpt-5.5-mini");
-  await expect.poll(setModelCalls).toEqual([{ bot: "kami", model: "gpt-5.5-mini", provider: "openai" }]);
+  await expect(page.getByTestId("model-label")).toHaveText("gpt-6.1-terra");
+  await expect.poll(setModelCalls).toEqual([{ bot: "kami", model: "gpt-6.1-terra", provider: "openai" }]);
 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("model-pop")).toHaveCount(0);
@@ -127,7 +127,7 @@ test("keyboard: Down/Up move the highlight, Enter picks, Esc closes", async ({ p
   await expect(again.getByTestId("model-search")).toHaveValue("");
   await expect(again.getByTestId("model-search")).toBeFocused();
   await expect(again.getByTestId("model-opt")).toHaveCount(12);
-  await expect(again.locator('[data-active="true"]')).toContainText("gpt-5.5-mini");
+  await expect(again.locator('[data-active="true"]')).toContainText("gpt-6.1-terra");
 });
 
 test("Esc closes the picker and gives focus back to the model button", async ({ page }) => {
@@ -201,9 +201,10 @@ test("long model id ellipsizes and stays inside the header at 900x700 with the p
   expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
 });
 
-// Keyboard focus in the picker shows a 2px ring at ink 40%, 2px off the edge, in dark and light; the small
-// gray labels in the popover meet 4.5:1 on the popover background in dark.
-test("focus ring on search, chips and rows; small labels readable in dark", async ({ page }) => {
+// Keyboard focus on the picker's chips and rows shows a 2px ring at ink 40%, 2px off the edge, in dark and light;
+// the search field, a text field, takes the app's calmer text-field focus instead: no ring, its 1px edge in --muted.
+// The small gray labels in the popover meet 4.5:1 on the popover background in dark.
+test("focus on search, chips and rows; small labels readable in dark", async ({ page }) => {
   const ring = (el: Element) => {
     const cs = getComputedStyle(el);
     return { style: cs.outlineStyle, width: cs.outlineWidth, offset: cs.outlineOffset, color: cs.outlineColor };
@@ -220,7 +221,18 @@ test("focus ring on search, chips and rows; small labels readable in dark", asyn
     await page.addInitScript((t) => localStorage.setItem("omher.theme", t), theme);
     const pop = await openPicker(page);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-    expectRing(await pop.locator(".mp-search").evaluate(ring));
+    const search = await pop.locator(".mp-search").evaluate((el) => {
+      const probe = document.createElement("i");
+      probe.style.color = "var(--muted)";
+      el.appendChild(probe);
+      const muted = getComputedStyle(probe).color;
+      probe.remove();
+      const cs = getComputedStyle(el);
+      return { outline: cs.outlineStyle, edge: cs.borderTopColor, width: cs.borderTopWidth, muted };
+    });
+    expect(search.outline).toBe("none");
+    expect(search.width).toBe("1px");
+    expect(search.edge).toBe(search.muted);
     await page.keyboard.press("Tab");
     await expect(pop.getByTestId("model-chip-all")).toBeFocused();
     expectRing(await pop.getByTestId("model-chip-all").evaluate(ring));

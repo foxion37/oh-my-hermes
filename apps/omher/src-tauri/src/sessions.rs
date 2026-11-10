@@ -115,9 +115,24 @@ pub fn agent(id: &str) -> Option<&'static Agent> {
 // Discovery (pure: env, file check and OS are passed in, so both layouts are tested on any host)
 // ---------------------------------------------------------------------------------------------
 
+/// CLI folders that macOS desktop apps carry inside their bundle, relative to an Applications folder.
+/// The ChatGPT app (and the Codex app) ship a signed-in Codex CLI there: `bin/codex` is a `/bin/sh`
+/// wrapper that execs the sibling `CodexCLI.app/Contents/MacOS/codex`.
+const APP_BUNDLE_CLI_DIRS: [&str; 2] =
+    ["ChatGPT.app/Contents/Resources/codex-cli/bin", "Codex.app/Contents/Resources/codex-cli/bin"];
+
+/// [`APP_BUNDLE_CLI_DIRS`] under `/Applications`, then under `~/Applications`. Both `search_dirs` (here and
+/// in `accounts`) append these after every other folder, so a real install on PATH or in an install folder
+/// wins. The folders only exist on macOS.
+pub(crate) fn app_bundle_cli_dirs(home: Option<&str>) -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from("/Applications")];
+    roots.extend(home.filter(|h| !h.trim().is_empty()).map(|h| Path::new(h).join("Applications")));
+    roots.iter().flat_map(|r| APP_BUNDLE_CLI_DIRS.iter().map(move |d| r.join(d))).collect()
+}
+
 /// Folders to look in, in order: every `PATH` entry, then the usual per-user install folders
 /// (`~/.local/bin` for Claude Code's installer, Homebrew, npm/pnpm/bun/cargo/volta globals, and on
-/// Windows `%APPDATA%\npm`). Duplicates are dropped.
+/// Windows `%APPDATA%\npm`), then on macOS the CLI folders inside app bundles. Duplicates are dropped.
 pub fn search_dirs<E: Fn(&str) -> Option<String>>(env: &E, os: Os) -> Vec<PathBuf> {
     let set = |k: &str| env(k).filter(|v| !v.trim().is_empty());
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -146,6 +161,7 @@ pub fn search_dirs<E: Fn(&str) -> Option<String>>(env: &E, os: Os) -> Vec<PathBu
             }
             dirs.push(PathBuf::from("/opt/homebrew/bin"));
             dirs.push(PathBuf::from("/usr/local/bin"));
+            dirs.extend(app_bundle_cli_dirs(set("HOME").as_deref()));
         }
         Os::Windows => {
             if let Some(appdata) = set("APPDATA") {
@@ -235,7 +251,8 @@ fn is_program_file(p: &Path) -> bool {
 }
 
 /// `search_dirs` on this machine plus the newest nvm Node (`~/.nvm/versions/node/<v>/bin`), which npm
-/// globals such as Codex live in when Node came from nvm.
+/// globals such as Codex live in when Node came from nvm. The nvm folders go before the app-bundle tail, so
+/// an npm install still wins over the ChatGPT app's copy.
 fn host_dirs() -> Vec<PathBuf> {
     let os = Os::current();
     let mut dirs = search_dirs(&host_env, os);
@@ -245,7 +262,10 @@ fn host_dirs() -> Vec<PathBuf> {
             if let Ok(rd) = std::fs::read_dir(&nvm) {
                 let mut vs: Vec<PathBuf> = rd.flatten().map(|e| e.path().join("bin")).filter(|p| p.is_dir()).collect();
                 vs.sort();
-                dirs.extend(vs.into_iter().rev());
+                vs.reverse();
+                let bundles = app_bundle_cli_dirs(Some(&home));
+                let at = dirs.len() - dirs.iter().rev().take_while(|d| bundles.contains(d)).count();
+                dirs.splice(at..at, vs);
             }
         }
     }
@@ -341,7 +361,16 @@ impl Sessions {
 
     /// Start `argv` in a new pseudo-terminal in `cwd`. Crate-internal: the app reaches it only through
     /// [`Sessions::start_agent`], so argv always comes from the allow-list (tests use it directly).
-    pub(crate) fn spawn<F>(&self, argv: Vec<OsString>, cwd: &Path, path_env: Option<OsString>, cols: u16, rows: u16, sink: F) -> Result<u32, String>
+    pub(crate) fn spawn<F>(
+        &self,
+        argv: Vec<OsString>,
+        cwd: &Path,
+        path_env: Option<OsString>,
+        account_env: &[(String, String)],
+        cols: u16,
+        rows: u16,
+        sink: F,
+    ) -> Result<u32, String>
     where
         F: FnMut(Output) + Send + 'static,
     {
@@ -349,19 +378,7 @@ impl Sessions {
             return Err(format!("not a folder: {}", cwd.display()));
         }
         let pair = native_pty_system().openpty(clamp_size(cols, rows)).map_err(|e| e.to_string())?;
-        let mut cmd = CommandBuilder::from_argv(argv);
-        cmd.cwd(cwd);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERM_PROGRAM", "omher");
-        if let Some(p) = path_env {
-            cmd.env("PATH", p);
-        }
-        #[cfg(unix)]
-        if std::env::var_os("LANG").is_none() {
-            // A Dock-started app has no locale; the agents' TUIs need UTF-8.
-            cmd.env("LANG", "en_US.UTF-8");
-        }
+        let cmd = command_for(argv, cwd, path_env, account_env);
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave); // only the child holds the terminal side, so its exit ends our reads
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -407,9 +424,18 @@ impl Sessions {
     }
 
     /// Start allow-listed agent `agent` in `cwd`. Anything not in [`AGENTS`] is refused before a process
-    /// exists.
-    /// `resume` (Claude Code only) continues that conversation in the agent's own terminal UI.
-    pub fn start_agent<F>(&self, agent_id: &str, cwd: &Path, resume: Option<&str>, cols: u16, rows: u16, sink: F) -> Result<u32, String>
+    /// exists. `account_env` is `accounts::session_env` for that agent: the chosen account's home variable,
+    /// or nothing. `resume` (Claude Code only) continues that conversation in the agent's own terminal UI.
+    pub fn start_agent<F>(
+        &self,
+        agent_id: &str,
+        cwd: &Path,
+        resume: Option<&str>,
+        account_env: &[(String, String)],
+        cols: u16,
+        rows: u16,
+        sink: F,
+    ) -> Result<u32, String>
     where
         F: FnMut(Output) + Send + 'static,
     {
@@ -417,7 +443,7 @@ impl Sessions {
         if let Some(r) = resume {
             argv.extend(resume_args(agent_id, r)?);
         }
-        self.spawn(argv, cwd, Some(path_env), cols, rows, sink)
+        self.spawn(argv, cwd, Some(path_env), account_env, cols, rows, sink)
     }
 
     /// Queue `data` for session `id`'s writer thread. Never blocks: a program that is not reading its
@@ -458,6 +484,28 @@ impl Sessions {
     pub fn count(&self) -> usize {
         self.live.lock().unwrap().len()
     }
+}
+
+/// The command a session runs: `argv` in `cwd`, with the terminal variables, the child `PATH`, and the chosen
+/// account's home variable (`account_env`, empty for the CLI's own login). Nothing else is added.
+fn command_for(argv: Vec<OsString>, cwd: &Path, path_env: Option<OsString>, account_env: &[(String, String)]) -> CommandBuilder {
+    let mut cmd = CommandBuilder::from_argv(argv);
+    cmd.cwd(cwd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "omher");
+    if let Some(p) = path_env {
+        cmd.env("PATH", p);
+    }
+    #[cfg(unix)]
+    if std::env::var_os("LANG").is_none() {
+        // A Dock-started app has no locale; the agents' TUIs need UTF-8.
+        cmd.env("LANG", "en_US.UTF-8");
+    }
+    for (k, v) in account_env {
+        cmd.env(k, v);
+    }
+    cmd
 }
 
 /// One thread reads the PTY (macOS hands out at most 1 KB per read); another merges what arrives into
@@ -615,7 +663,7 @@ mod tests {
         }
         assert!(resume_args("codex", id).is_err());
         let s = Sessions::default();
-        assert!(s.start_agent("claude", &std::env::temp_dir(), Some("--yolo"), 80, 24, |_| {}).is_err());
+        assert!(s.start_agent("claude", &std::env::temp_dir(), Some("--yolo"), &[], 80, 24, |_| {}).is_err());
         assert_eq!(s.count(), 0);
     }
 
@@ -632,7 +680,7 @@ mod tests {
     fn start_agent_refuses_an_unknown_id_before_any_process() {
         let s = Sessions::default();
         let tmp = std::env::temp_dir();
-        let err = s.start_agent("/bin/sh", &tmp, None, 80, 24, |_| {}).unwrap_err();
+        let err = s.start_agent("/bin/sh", &tmp, None, &[], 80, 24, |_| {}).unwrap_err();
         assert!(err.contains("unknown agent"), "{err}");
         assert_eq!(s.count(), 0);
     }
@@ -645,6 +693,31 @@ mod tests {
         assert!(dirs.contains(&PathBuf::from("/Users/k/.local/bin")));
         assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
         assert_eq!(dirs.iter().filter(|d| **d == PathBuf::from("/opt/homebrew/bin")).count(), 1);
+    }
+
+    #[test]
+    fn unix_dirs_end_with_the_cli_folders_inside_app_bundles() {
+        let env = env_of(&[("PATH", "/usr/bin:/Applications/Codex.app/Contents/Resources/codex-cli/bin"), ("HOME", "/Users/k")]);
+        let dirs = search_dirs(&env, Os::Unix);
+        assert_eq!(dirs[..2], [PathBuf::from("/usr/bin"), PathBuf::from("/Applications/Codex.app/Contents/Resources/codex-cli/bin")]);
+        // the PATH copy is kept where PATH put it, not repeated in the tail
+        assert_eq!(
+            dirs[dirs.len() - 3..],
+            [
+                PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin"),
+                PathBuf::from("/Users/k/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin"),
+                PathBuf::from("/Users/k/Applications/Codex.app/Contents/Resources/codex-cli/bin"),
+            ]
+        );
+        let unique: HashSet<&PathBuf> = dirs.iter().collect();
+        assert_eq!(unique.len(), dirs.len());
+        // a real install wins over the ChatGPT app's copy; the copy is found when it is the only one
+        let bundled = PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex");
+        let npm = PathBuf::from("/opt/homebrew/bin/codex");
+        assert_eq!(resolve("codex", &dirs, &fs_of(&[&bundled, &npm]), Os::Unix), Some(npm));
+        assert_eq!(resolve("codex", &dirs, &fs_of(&[&bundled]), Os::Unix), Some(bundled));
+        let home_only = env_of(&[("HOME", "/Users/k"), ("USERPROFILE", "C:/Users/k")]);
+        assert!(!search_dirs(&home_only, Os::Windows).iter().any(|d| d.to_string_lossy().contains(".app")));
     }
 
     #[test]
@@ -742,7 +815,7 @@ mod tests {
         let exit = Arc::new(Mutex::new(None));
         let (o, x) = (out.clone(), exit.clone());
         let id = s
-            .spawn(argv.iter().map(OsString::from).collect(), &std::env::temp_dir().canonicalize().unwrap(), None, cols, rows, move |ev| match ev {
+            .spawn(argv.iter().map(OsString::from).collect(), &std::env::temp_dir().canonicalize().unwrap(), None, &[], cols, rows, move |ev| match ev {
                 Output::Data(b) => o.lock().unwrap().extend(b),
                 Output::Exit(c) => *x.lock().unwrap() = Some(c),
             })
@@ -772,6 +845,42 @@ mod tests {
         assert!(text.contains("27 91"), "{text:?}");
         assert!(text.contains(&std::env::temp_dir().canonicalize().unwrap().to_string_lossy().to_string()), "{text:?}");
         assert_eq!(*exit.lock().unwrap(), Some(Some(3)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pty_runs_the_chatgpt_apps_codex_wrapper() {
+        // the layout and wrapper the ChatGPT app ships: bin/codex is a sh script that resolves its own folder
+        // and execs ../CodexCLI.app/Contents/MacOS/codex with the arguments
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("omher-bundle-{}", std::process::id()));
+        let bin = root.join("ChatGPT.app/Contents/Resources/codex-cli/bin");
+        let real = root.join("ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        let wrapper = "#!/bin/sh\nset -eu\nentry=\"$0\"\nwhile [ -L \"$entry\" ]; do\n  parent=$(CDPATH= cd -P -- \"$(dirname -- \"$entry\")\" && pwd)\n  entry=$(readlink \"$entry\")\n  case \"$entry\" in /*) ;; *) entry=\"$parent/$entry\" ;; esac\ndone\nbin_dir=$(CDPATH= cd -P -- \"$(dirname -- \"$entry\")\" && pwd)\nexec \"$bin_dir/../CodexCLI.app/Contents/MacOS/codex\" \"$@\"\n";
+        for (p, body) in [(bin.join("codex"), wrapper), (real.join("codex"), "#!/bin/sh\necho \"bundled codex $*\"\n")] {
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = resolve("codex", &[bin.clone()], is_program_file, Os::Unix).expect("wrapper found");
+        let argv = argv_for(&path, Os::Unix).unwrap();
+        assert_eq!(argv, vec![OsString::from(bin.join("codex"))]);
+        let s = Sessions::default();
+        let (out, exit) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
+        let (o, x) = (out.clone(), exit.clone());
+        let mut argv = argv;
+        argv.push("--version".into());
+        s.spawn(argv, &root, Some(OsString::from("/usr/bin:/bin")), &[], 80, 24, move |ev| match ev {
+            Output::Data(b) => o.lock().unwrap().extend(b),
+            Output::Exit(c) => *x.lock().unwrap() = Some(c),
+        })
+        .unwrap();
+        assert!(wait_for(|| exit.lock().unwrap().is_some()), "no exit");
+        let text = String::from_utf8_lossy(&out.lock().unwrap()).to_string();
+        assert!(text.contains("bundled codex --version"), "{text:?}");
+        assert_eq!(*exit.lock().unwrap(), Some(Some(0)));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(unix)]
@@ -833,6 +942,7 @@ mod tests {
             ["/bin/sh", "-c", "head -c 524288 /dev/zero | tr '\\0' a"].iter().map(OsString::from).collect(),
             &std::env::temp_dir().canonicalize().unwrap(),
             None,
+            &[],
             80,
             24,
             move |ev| match ev {
@@ -852,8 +962,66 @@ mod tests {
     #[test]
     fn refuses_a_cwd_that_is_not_a_folder() {
         let s = Sessions::default();
-        assert!(s.spawn(vec!["x".into()], Path::new("relative/dir"), None, 80, 24, |_| {}).is_err());
-        assert!(s.spawn(vec!["x".into()], &std::env::temp_dir().join("omher-no-such-dir-x9"), None, 80, 24, |_| {}).is_err());
+        assert!(s.spawn(vec!["x".into()], Path::new("relative/dir"), None, &[], 80, 24, |_| {}).is_err());
+        assert!(s.spawn(vec!["x".into()], &std::env::temp_dir().join("omher-no-such-dir-x9"), None, &[], 80, 24, |_| {}).is_err());
+    }
+
+    /// A temp home whose `active.json` picks `active` for claude, with that account's folder made.
+    fn home_with_claude(name: &str, active: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("omher-sess-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let root = home.join(".omher").join("accounts");
+        std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+        std::fs::write(root.join("active.json"), format!(r#"{{"claude":"{active}"}}"#)).unwrap();
+        home
+    }
+
+    #[test]
+    fn a_claude_session_carries_the_stacked_account_home_and_this_computer_carries_none() {
+        let cwd = std::env::temp_dir();
+        let argv = || vec![OsString::from("/x/claude")];
+        let extra = |cmd: &CommandBuilder| -> Vec<(String, String)> {
+            cmd.iter_extra_env_as_str().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let base = extra(&command_for(argv(), &cwd, None, &[]));
+
+        let home = home_with_claude("stacked", "work");
+        let env = crate::accounts::session_env(&home, "claude");
+        let cmd = command_for(argv(), &cwd, None, &env);
+        let work = home.join(".omher").join("accounts").join("claude").join("work");
+        assert_eq!(cmd.get_env("CLAUDE_CONFIG_DIR"), Some(work.as_os_str()));
+        assert_eq!(cmd.get_argv(), &argv(), "the account changes no argument");
+        // the chosen account's home is the only thing added
+        let mut added: Vec<_> = extra(&cmd).into_iter().filter(|p| !base.contains(p)).collect();
+        added.sort();
+        assert_eq!(added, vec![("CLAUDE_CONFIG_DIR".to_string(), work.to_string_lossy().into_owned())]);
+
+        let mine = home_with_claude("this-computer", "default");
+        let cmd = command_for(argv(), &cwd, None, &crate::accounts::session_env(&mine, "claude"));
+        assert_eq!(extra(&cmd), base);
+        assert!(!extra(&cmd).iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
+        let _ = (std::fs::remove_dir_all(home), std::fs::remove_dir_all(mine));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_account_home_reaches_the_program() {
+        let home = home_with_claude("pty", "work");
+        let s = Sessions::default();
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let exit = Arc::new(Mutex::new(None));
+        let (o, x) = (out.clone(), exit.clone());
+        let argv = ["/bin/sh", "-c", "echo \"cfg=${CLAUDE_CONFIG_DIR-unset}\""].iter().map(OsString::from).collect();
+        s.spawn(argv, &std::env::temp_dir().canonicalize().unwrap(), None, &crate::accounts::session_env(&home, "claude"), 80, 24, move |ev| match ev {
+            Output::Data(b) => o.lock().unwrap().extend(b),
+            Output::Exit(c) => *x.lock().unwrap() = Some(c),
+        })
+        .unwrap();
+        assert!(wait_for(|| exit.lock().unwrap().is_some()));
+        let text = String::from_utf8_lossy(&out.lock().unwrap()).to_string();
+        let work = home.join(".omher").join("accounts").join("claude").join("work");
+        assert!(text.contains(&format!("cfg={}", work.display())), "{text:?}");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     /// The real check on a developer machine: `claude --version` / `codex --version` through the same
@@ -875,7 +1043,7 @@ mod tests {
             let exit = Arc::new(Mutex::new(None));
             let (o, x) = (out.clone(), exit.clone());
             let home = PathBuf::from(host_env("HOME").or_else(|| host_env("USERPROFILE")).unwrap());
-            s.spawn(argv, &home, Some(path_env), 80, 24, move |ev| match ev {
+            s.spawn(argv, &home, Some(path_env), &[], 80, 24, move |ev| match ev {
                 Output::Data(b) => o.lock().unwrap().extend(b),
                 Output::Exit(c) => *x.lock().unwrap() = Some(c),
             })

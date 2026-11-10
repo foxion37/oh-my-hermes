@@ -1,3 +1,5 @@
+import { pickTitle, type TitleSource } from "./titles";
+
 // The agent programs a session can run, and the pure helpers the sidebar and the session views share.
 // The list is fixed and mirrors `AGENTS` in src-tauri/src/sessions.rs (the shell refuses anything else).
 // `mode` says how a new session opens: `chat` = the agent's structured mode shown as an omher chat,
@@ -30,6 +32,24 @@ export function terminalNote(agent: AgentId): string {
   if (agent === "claude") return "Terminal view: Claude Code's own terminal, continuing this conversation (--resume). Back to chat continues it too.";
   if (agent === "omh") return "Terminal view: starts oh-my-hermes in a new terminal; this chat stays as it is.";
   return `Terminal view: starts ${agentDef(agent).label} fresh in its own terminal; this chat stays as it is.`;
+}
+
+/** The install line for an agent's CLI, shown as text in the new-session menu's "Not installed" tooltip (omher
+ *  never runs it). Grok has no one-line install, so it points at its docs. Codex also notes that the copy
+ *  inside the ChatGPT (or Codex) desktop app on macOS is detected. */
+export const INSTALL: Record<AgentId, string> = {
+  claude: "npm i -g @anthropic-ai/claude-code",
+  codex: "npm i -g @openai/codex (the Codex bundled in the ChatGPT app is found too)",
+  omh: "curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh",
+  pi: "npm i -g @mariozechner/pi-coding-agent",
+  omp: "npm i -g @oh-my-pi/pi-coding-agent",
+  grok: "see grok docs",
+};
+
+/** Tooltip of an agent that is not installed: what is missing, then how to install it. */
+export function missingNote(agent: AgentId): string {
+  const how = INSTALL[agent];
+  return `${agentDef(agent).program} was not found on this computer · ${how.startsWith("see ") ? how : `install: ${how}`}`;
 }
 
 export const isAgentId = (v: unknown): v is AgentId => typeof v === "string" && AGENTS.some((a) => a.id === v);
@@ -90,6 +110,16 @@ export interface SessionRec {
   model?: string;
   /** Hermes profile a folder chat (oh-my-hermes) runs on. */
   bot?: string;
+  /** The Settings › Accounts login it started with (claude, codex, grok); none = the CLI's own. */
+  account?: string;
+  /** omher restarted while it ran and it does not continue by itself: it starts again on Resume. */
+  paused?: boolean;
+  /** The name the person gave it (Rename); none = the automatic one. */
+  title?: string;
+  /** The title the agent gave its conversation (Claude Code's own title, a Codex thread name). */
+  agentTitle?: string;
+  /** A short summary of the person's first real message, made here (no model is asked). */
+  promptTitle?: string;
 }
 
 /** Live state of a session's chat that the row needs (from the store). */
@@ -100,17 +130,42 @@ export interface ChatLive {
   needsYou: boolean;
 }
 
-/** What one sidebar row shows. */
-export function rowModel(s: SessionRec, chat?: ChatLive): { title: string; sub: string; live: boolean; needsYou: boolean; ts: number } {
+/** The other rows a row is told apart from: every session's folder, and the home folder for `~`. */
+export interface RowContext {
+  cwds: string[];
+  home: string | null;
+}
+
+/** What one sidebar row shows. Line 1 is the session's name ([pickTitle]: the person's, the agent's, a summary of
+ *  the first message, else the folder); line 2 is the folder, the agent and its state (`web-app · Claude Code`).
+ *  `where` is the parent folder (`~/work`), set only when another session's folder has the same name in a
+ *  different place: it follows the folder on line 2 (`web-app · ~/work · Claude Code`), or the name on line 1
+ *  while the name still is the folder. */
+export function rowModel(
+  s: SessionRec,
+  chat?: ChatLive,
+  ctx?: RowContext,
+): {
+  title: string;
+  titleSource: TitleSource;
+  folder: string;
+  where?: string;
+  sub: string;
+  live: boolean;
+  needsYou: boolean;
+  ts: number;
+} {
   const label = agentDef(s.agent).label;
   const alive = s.status === "running" || s.status === "starting";
   const needsYou = alive && !!chat?.needsYou;
-  // While running the ring (chat) or the live dot (terminal) says it, so the line is just the agent.
-  const state = needsYou
-    ? "Needs you"
-    : s.status === "running"
+  // While running the ring (chat) or the live dot (terminal) says it, and while it waits on the person "waiting" and
+  // the amber dot say it, so the line is just the agent.
+  const state =
+    needsYou || s.status === "running"
       ? ""
-      : s.status === "starting"
+      : s.paused
+        ? "Paused"
+        : s.status === "starting"
         ? "Starting…"
         : s.status === "failed"
           ? "Could not start"
@@ -119,9 +174,18 @@ export function rowModel(s: SessionRec, chat?: ChatLive): { title: string; sub: 
             : `Ended · exit ${s.exitCode}`;
   // A chat is live while a turn runs; a terminal while its program runs.
   const live = s.view === "chat" && chat ? alive && chat.turn : alive;
+  const folder = folderName(s.cwd);
+  const clash = !!ctx?.cwds.some((c) => c !== s.cwd && folderName(c) === folder);
+  const where = clash ? parentPath(tildePath(s.cwd, ctx!.home)) : undefined;
+  const { title, source } = pickTitle(s, folder);
+  const agent = state ? `${label} · ${state}` : label;
+  const place = source === "folder" ? "" : `${folder}${where ? ` · ${where}` : ""} · `;
   return {
-    title: folderName(s.cwd),
-    sub: state ? `${label} · ${state}` : label,
+    title,
+    titleSource: source,
+    folder,
+    ...(where && source === "folder" ? { where } : {}),
+    sub: `${place}${agent}`,
     live,
     needsYou,
     ts: s.startedAt / 1000,
@@ -138,7 +202,7 @@ export interface Recent {
 }
 
 export const RECENT_KEY = "omher.sessions.recent";
-export const RECENT_MAX = 4;
+export const RECENT_MAX = 5;
 
 /** Saved recents, defensively: anything malformed is dropped. */
 export function parseRecent(raw: string | null): Recent[] {
@@ -154,7 +218,14 @@ export function parseRecent(raw: string | null): Recent[] {
   }
 }
 
-/** `next` first, the same agent+folder only once, at most RECENT_MAX. */
+/** `next` first, each folder only once (whichever agent used it last), at most RECENT_MAX. */
 export function pushRecent(list: Recent[], next: Recent): Recent[] {
-  return [next, ...list.filter((r) => !(r.agent === next.agent && r.cwd === next.cwd))].slice(0, RECENT_MAX);
+  return [next, ...list.filter((r) => r.cwd !== next.cwd)].slice(0, RECENT_MAX);
+}
+
+/** The folders the new-session menu offers, for any agent: distinct, newest first, at most RECENT_MAX. */
+export function recentFolders(list: Recent[]): string[] {
+  const out: string[] = [];
+  for (const r of [...list].sort((a, b) => b.at - a.at)) if (!out.includes(r.cwd)) out.push(r.cwd);
+  return out.slice(0, RECENT_MAX);
 }

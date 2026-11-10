@@ -1,9 +1,11 @@
 /* SESSIONS: sidebar section, + menu, terminal view. */
 
-/* BOTS and SESSIONS share the sidebar height half and half; each list scrolls on its own. */
+/* BOTS and SESSIONS each take the room their rows need and share what is left; when both are long, each gives
+   way in proportion and scrolls on its own. Neither is squeezed under its header and a row or two: twelve bots
+   beside an empty SESSIONS no longer stop at five with a blank half under them. */
 .side-sec {
-  flex: 1 1 0;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 96px;
   display: flex;
   flex-direction: column;
 }
@@ -40,6 +42,11 @@
 .ss-plus[aria-expanded="true"] {
   background: var(--raise2);
   color: var(--ink);
+}
+/* the header's + menu opens on the row's own bottom edge, 2px above the "New session" button under it, so the
+   button's top edge and corners never show above the menu as a second edge */
+.side-sh-row .ss-pop {
+  top: 100%;
 }
 .ss-pop {
   left: calc(-1 * var(--side-x) + 8px);
@@ -95,6 +102,30 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* an agent row: the menu is at most the sidebar less 8px a side, too narrow for "Claude Code as work@…" and the
+   command on one line, so the account gets its own muted line under the agent; each ellipsizes only if it must
+   (the row's title has both) */
+.ss-n-as {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+}
+.ss-l,
+.ss-as {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ss-item:has(.ss-as) {
+  height: 40px;
+}
+.ss-as {
+  /* which account the session will use: muted, read-only */
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--muted);
+}
 .ss-cmd {
   font-size: 10.5px;
   color: var(--muted);
@@ -121,6 +152,34 @@
   background: var(--line);
   margin: 6px 0 4px;
 }
+/* step 2 of the menu: ← and the agent picked, over its folder choices */
+.ss-agent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 2px;
+  margin-bottom: 2px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.ss-back {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  flex: none;
+}
+.ss-back svg {
+  transform: scaleX(-1);
+}
+.ss-back:hover {
+  background: var(--raise2);
+  color: var(--ink);
+}
 
 /* agent marks */
 .ag-mark {
@@ -139,77 +198,49 @@
 }
 
 /* rows */
-/* empty section: one row-sized button and one muted line of installed agents (BOTS and SESSIONS stay balanced) */
+/* empty section: one "New session" row in the nav rows' look (Automations, Settings): the + in their icon column,
+   the label at their text column. No border, no fill at rest, nothing centred. */
 .ss-none {
   flex: none;
-  padding-top: 2px;
+  padding-top: 2px; /* the header's + menu (top: 100%) then covers the row's top edge */
 }
 .ss-start-w {
-  position: relative; /* the + menu opens right under the button, at the section's width */
+  position: relative; /* the + menu opens right under the row, at the section's width */
 }
-/* a centred, raised button: the search field and the selected row are flat gray fills, so it uses
-   neither look (a fill one step lighter than the sidebar, and an edge) */
 .ss-start {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: 10px;
   width: 100%;
   height: 30px;
   padding: 0 var(--side-x);
-  border: 1px solid color-mix(in srgb, var(--quiet) 90%, var(--side)); /* 3:1 on the sidebar, both themes */
   border-radius: var(--r);
-  background: var(--pop);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink);
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: left;
   transition: background 0.12s;
 }
-/* the same + as the header's, in the same --muted */
+/* the + in the nav icons' 18px column, so "New session" starts where "Settings" does */
 .ss-start > svg {
   flex: none;
-  color: var(--muted);
+  width: 18px;
+  height: 16px;
+  color: var(--quiet);
+}
+.ss-start:hover,
+.ss-start[aria-expanded="true"] {
+  color: var(--ink);
 }
 .ss-start:hover > svg,
 .ss-start[aria-expanded="true"] > svg {
   color: var(--ink);
 }
-.ss-start:hover,
+.ss-start:hover {
+  background: var(--hover);
+}
 .ss-start[aria-expanded="true"] {
   background: var(--raise2);
 }
-/* the installed agents' official marks (up to 4) with their names */
-.ss-start-ag {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 17px;
-  margin-top: 8px;
-  padding: 0 var(--side-x);
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.ss-start-a {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-.ss-start-a .ag-mark,
-.ss-start-dot {
-  flex: none;
-}
-.ss-start-dot {
-  margin: 0 2px 0 6px; /* even space either side once the mark's own gap is added */
-  font-weight: 700;
-}
-.ss-start-n {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .ss-row.bot {
   padding: 0;
   gap: 0;
@@ -235,25 +266,17 @@
   place-items: center;
   flex: none;
 }
-/* SESSIONS owns its live dot: the bot row's dot styles may change (the answer ring replaced them) */
+/* SESSIONS owns its live dot: the bot row's dot styles may change (the answer ring replaced them). A terminal row
+   says "running" only with it, so it is solid and inside the tile's corner: a pulse fading to 30% or a dot astride
+   the tile's edge read as nothing. */
 .ss-row .live-dot {
   position: absolute;
-  left: 26px;
-  top: 26px;
-  width: 9px;
-  height: 9px;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--spin);
-  border: 2px solid var(--side);
-  animation: pulse 1.4s infinite;
-}
-.ss-row.active .live-dot {
-  border-color: var(--active-row);
-}
-@media (prefers-reduced-motion: reduce) {
-  .ss-row .live-dot {
-    animation: none;
-  }
 }
 .ss-x {
   position: absolute;
@@ -316,8 +339,16 @@
   width: 26px;
   height: 26px;
 }
+/* the session's name: it can be a long sentence, so it gives way to the path and the controls */
+.head .head-title[data-testid="session-title"] {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 46%;
+}
 .ss-head-path {
-  font-family: var(--mono);
   font-size: 11.5px;
   color: var(--quiet);
   white-space: nowrap;
@@ -325,6 +356,7 @@
   text-overflow: ellipsis;
   min-width: 0;
 }
+
 .ss-head-st {
   margin-left: 4px;
   font-size: 11.5px;
@@ -384,18 +416,21 @@
   align-items: center;
   gap: 6px;
 }
+/* icon only, no fill at rest: it must not read as a second model chip next to the filled one */
 .ss-toggle {
-  height: 26px;
-  padding: 0 9px;
-  border-radius: var(--r);
-  font-size: 12px;
-  color: var(--body);
-  background: var(--raise);
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  background: none;
 }
 .ss-toggle:hover,
 .ss-toggle.on {
   color: var(--ink);
-  background: var(--raise2);
+  background: var(--raise);
 }
 .ss-head-st.idle::before {
   animation: none;
@@ -406,11 +441,32 @@
   margin: 0 auto 8px;
   font-size: 11.5px;
   color: var(--quiet);
-  text-align: center;
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ss-ended-t {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+.ss-restart {
+  flex: none;
+  font: inherit;
+  font-weight: 560;
+  color: var(--body);
+  background: var(--raise2);
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.ss-restart:hover {
+  color: var(--ink);
 }
 /* an approval or question waits: amber, the app's "needs attention" colour (never the brand gradient) */
 :root {
@@ -419,9 +475,10 @@
 [data-theme="light"] {
   --needs: #9a6200;
 }
-.bot-p.ss-needs {
-  color: var(--needs-text, var(--needs));
-  font-weight: 600;
+/* line 2 carries the folder now (it used to be the name): muted, not quiet, so it reads at 4.5:1 or better on the
+   sidebar and on the selected row in both themes */
+.ss-row .bot-p {
+  color: var(--muted);
 }
 /* typing dots end the agent name like they end a bot's live step */
 .ss-row .bot-p.live {
@@ -441,4 +498,39 @@
   border-radius: var(--r-sm);
   background: var(--bg);
   box-shadow: inset 0 0 0 1px var(--line);
+}
+/* a second folder of the same name: its parent, muted, after the name */
+.ss-where {
+  color: var(--quiet);
+  font-weight: 400;
+}
+/* Rename: the name becomes a field of the same size in the row; the row is not a button meanwhile */
+.ss-open.ss-editing {
+  cursor: default;
+}
+.ss-name-in {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  margin: -1px 0;
+  padding: 0 5px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  outline: 0;
+}
+.ss-name-in:focus {
+  border-color: var(--spin);
+}
+.ss-name-in::placeholder {
+  color: var(--quiet);
+  font-weight: 400;
+}
+.ss-row.menu-open .ss-x {
+  display: none;
 }

@@ -41,6 +41,7 @@ async function open(page: Page, folder = "/Users/you/code/omher") {
 async function start(page: Page, agent: string) {
   await page.getByTestId("session-new").click();
   await page.getByTestId(`session-agent-${agent}`).click();
+  await page.getByTestId("session-choose").click();
   await expect(page.getByTestId("session-chat")).toBeVisible();
   await expect(page.getByTestId("session-status")).toHaveText("Ready");
 }
@@ -58,7 +59,9 @@ test("Claude Code opens as a chat: bubbles, one progress line, no terminal", asy
   await open(page);
   await start(page, "claude");
   await expect(page.getByTestId("terminal")).toHaveCount(0);
-  await expect(page.getByTestId("session-title")).toHaveText("Claude Code");
+  // before any message the session's name is its folder; the agent and the full path sit next to it
+  await expect(page.getByTestId("session-title")).toHaveText("omher");
+  await expect(page.getByTestId("session-agent")).toHaveText("Claude Code");
   await expect(page.getByTestId("session-cwd")).toHaveText("~/code/omher");
   await expect(page.getByTestId("model-label")).toHaveText("Opus 5.5");
   await expect(page.getByTestId("timeline")).toContainText("Say hi to Claude Code");
@@ -89,18 +92,38 @@ test("Claude Code opens as a chat: bubbles, one progress line, no terminal", asy
   expect((await bridgeCalls()).filter((c) => c.op === "chat.send")).toHaveLength(0);
 });
 
-test("the empty section's New session button starts a chat session, then gives way to the session row", async ({ page }) => {
+test("a file in a session's answer sits under its bubble in the same column, one face per run", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await open(page);
-  await expect(page.getByTestId("session-start-agents")).toContainText("Claude Code");
+  await start(page, "claude");
+  // the mock agent echoes the text: a MEDIA line in it comes back as a file under the answer
+  await page.getByTestId("composer").fill("here\nMEDIA:/w/media/report.zip");
+  await page.getByTestId("composer").press("Enter");
+  const chat = page.getByTestId("session-chat");
+  const msg = chat.getByTestId("bubble-bot").filter({ has: page.getByTestId("media") });
+  await expect(msg).toHaveCount(1);
+  await expect(msg).not.toContainText("MEDIA:");
+  const [bub, tile] = await Promise.all(
+    [msg.locator(".b"), msg.getByTestId("media").locator(":scope > *").first()].map((l) => l.evaluate((e) => e.getBoundingClientRect().toJSON() as DOMRect)),
+  );
+  expect(Math.abs(tile.left - bub.left)).toBeLessThanOrEqual(1);
+  expect(tile.top).toBeGreaterThan(bub.bottom);
+  await expect(msg.locator(".msg-face:not(.blank)")).toHaveCount(1);
+});
+
+test("the empty section's New session row starts a chat session, then gives way to the session row", async ({ page }) => {
+  await open(page);
+  await expect(page.getByTestId("session-start")).toHaveAttribute("title", /Claude Code/);
   await page.getByTestId("session-start").click();
   await page.getByTestId("session-agent-claude").click();
+  await page.getByTestId("session-choose").click();
   await expect(page.getByTestId("session-chat")).toBeVisible();
   await expect(page.getByTestId("session-none")).toHaveCount(0);
   await expect(page.locator("[data-testid=session-list] .ss-row")).toHaveCount(1);
   expect((await calls(page)).find((c) => c.op === "chat.start")).toMatchObject({ agent: "claude", cwd: "/Users/you/code/omher" });
 });
 
-test("an approval card in a session: Deny first, answered with Allow for session, row says Needs you", async ({ page }) => {
+test("an approval card in a session: Deny first, answered with Allow for session, the row waits", async ({ page }) => {
   await open(page);
   await start(page, "claude");
   await page.getByTestId("composer").fill("/approve");
@@ -113,7 +136,8 @@ test("an approval card in a session: Deny first, answered with Allow for session
   expect(await card.locator(".card-btn").allInnerTexts()).toEqual(["Deny", "Allow once", "Allow for session"]);
   const row = page.locator("[data-testid=session-list] .ss-row").first();
   await expect(row).toHaveAttribute("data-needs-you", "true");
-  await expect(row.getByTestId("session-sub")).toHaveText("Claude Code · Needs you");
+  // one amber signal pair in the row ("waiting" and the dot): the line under the name stays the gray agent name
+  await expect(row.getByTestId("session-sub")).toHaveText("Claude Code");
   await expect(page.getByTestId("session-status")).toHaveText("Needs you");
   // the bot row's waiting state: amber dot and "waiting", the ring stops
   await expect(row.getByTestId("needs")).toBeVisible();
@@ -134,7 +158,7 @@ test("an approval card in a session: Deny first, answered with Allow for session
 test("Esc and Stop send the agent's own interrupt; the model button switches the agent's model", async ({ page }) => {
   await open(page);
   await start(page, "codex");
-  await expect(page.getByTestId("model-label")).toHaveText("GPT-5.5 Codex");
+  await expect(page.getByTestId("model-label")).toHaveText("GPT-6.1 Sol");
   await page.getByTestId("composer").fill("/slow");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("bubble-streaming")).toContainText("line 2");
@@ -144,10 +168,10 @@ test("Esc and Stop send the agent's own interrupt; the model button switches the
   expect((await calls(page)).filter((c) => c.input?.kind === "interrupt")).toHaveLength(1);
 
   await page.getByTestId("model-pill").click();
-  await expect(page.getByTestId("model-opt")).toHaveText(["GPT-5.5 Codex", "GPT-5.5"]);
+  await expect(page.getByTestId("model-opt")).toHaveText(["GPT-6.1 Sol", "GPT-6.1 Terra"]);
   await page.getByTestId("model-opt").nth(1).click();
-  await expect(page.getByTestId("model-label")).toHaveText("GPT-5.5");
-  expect((await calls(page)).find((c) => c.input?.kind === "model")!.input).toEqual({ kind: "model", model: "gpt-5.5" });
+  await expect(page.getByTestId("model-label")).toHaveText("GPT-6.1 Terra");
+  expect((await calls(page)).find((c) => c.input?.kind === "model")!.input).toEqual({ kind: "model", model: "gpt-6.1-terra" });
   // the header keeps the toggle and the model button only
   await page.keyboard.press("Escape");
   expect(await page.locator("[data-testid=head-right] > *").count()).toBe(2);
@@ -178,8 +202,8 @@ test("Terminal toggle: Claude Code's terminal resumes the same conversation, and
   await expect(page.getByTestId("bubble-bot")).toBeVisible();
   await expect(page.getByTestId("activity")).toHaveAttribute("data-state", "done");
   const toggle = page.getByTestId("session-terminal-toggle");
-  await expect(toggle).toHaveText("Terminal");
-  await expect(toggle).toHaveAttribute("title", /continuing this conversation/);
+  await expect(toggle).toHaveAttribute("aria-label", "Open in Terminal");
+  await expect(toggle).toHaveAttribute("aria-description", /continuing this conversation/);
   await toggle.click();
   await expect(page.getByTestId("terminal")).toBeVisible();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
@@ -201,7 +225,7 @@ test("Codex's terminal view starts its TUI fresh and the chat keeps running", as
   await open(page);
   await start(page, "codex");
   const toggle = page.getByTestId("session-terminal-toggle");
-  await expect(toggle).toHaveAttribute("title", /starts Codex fresh/);
+  await expect(toggle).toHaveAttribute("aria-description", /starts Codex fresh/);
   await toggle.click();
   await expect(page.getByTestId("terminal")).toBeVisible();
   // xterm loads on this first terminal view, and the terminal starts after it
@@ -219,7 +243,8 @@ test("Codex's terminal view starts its TUI fresh and the chat keeps running", as
 test("oh-my-hermes opens as a Hermes chat in the folder through the bridge", async ({ page }) => {
   await open(page, "/Users/you/work/api");
   await start(page, "omh");
-  await expect(page.getByTestId("session-title")).toHaveText("oh-my-hermes");
+  await expect(page.getByTestId("session-title")).toHaveText("api");
+  await expect(page.getByTestId("session-agent")).toHaveText("oh-my-hermes");
   await expect(page.getByTestId("model-label")).toHaveText("Opus 5.5");
   const opened = (await bridgeCalls()).find((c) => c.op === "folder.open")!;
   expect(opened.params).toEqual({ bot: "kami", cwd: "/Users/you/work/api" });
@@ -249,7 +274,7 @@ test("close stops the agent; an agent that exits ends the session with its reaso
   await page.getByTestId("composer").fill("/exit");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("session-status")).toHaveText("Ended");
-  await expect(page.getByTestId("session-ended")).toHaveText("Ended");
+  await expect(page.getByTestId("session-ended")).toContainText("Ended");
   await expect(page.getByTestId("composer")).toBeDisabled();
   await expect(page.getByTestId("composer")).toHaveAttribute("placeholder", "Claude Code has ended");
   const row = page.locator("[data-testid=session-list] .ss-row").first();
@@ -259,9 +284,72 @@ test("close stops the agent; an agent that exits ends the session with its reaso
   const row2 = page.locator("[data-testid=session-list] .ss-row").first();
   await row2.hover();
   await row2.getByTestId("session-close").click();
+  // the question names the session it stops, agent and folder
+  await expect(page.locator("[data-testid^=session-confirm-]")).toHaveAttribute("aria-label", "Stop Codex in omher?");
   await page.getByTestId("session-stop").click();
   await expect(page.locator("[data-testid=session-list] .ss-row")).toHaveCount(1);
   expect((await calls(page)).filter((c) => c.op === "chat.close")).toHaveLength(1);
+});
+
+test("an ended session restarts in the same chat; Claude Code and Codex continue their conversation", async ({ page }) => {
+  await open(page);
+  await start(page, "codex");
+  await expect(page.getByTestId("session-status")).toHaveText("Ready");
+  await page.getByTestId("composer").fill("/exit");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("session-status")).toHaveText("Ended");
+  await page.getByTestId("session-restart").click();
+  await expect(page.getByTestId("session-status")).toHaveText("Ready");
+  await expect(page.getByTestId("session-ended")).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeEnabled();
+  const starts = (await calls(page)).filter((c) => c.op === "chat.start");
+  expect(starts).toHaveLength(2);
+  // the second start continues the Codex thread the first one reported
+  expect(starts[0].resume).toBeUndefined();
+  expect(starts[1].resume).toMatch(/^codex-mock-/);
+  await page.getByTestId("composer").fill("hello again");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("bubble-bot").last()).toContainText("You said: hello again");
+  // the earlier exchange is still on screen
+  await expect(page.getByTestId("bubble-user").first()).toHaveText("/exit");
+});
+
+test("a session's question becomes a question card; a failed command and a missing login stay calm", async ({ page }) => {
+  await open(page);
+  await start(page, "claude");
+  await page.getByTestId("composer").fill("/ask");
+  await page.keyboard.press("Enter");
+  const card = page.getByTestId("card-clarify");
+  await expect(card).toContainText("Which greeting should go in greet.txt?");
+  const row = page.locator("[data-testid=session-list] .ss-row").first();
+  await expect(row.getByTestId("bot-time")).toHaveText("waiting");
+  await card.getByRole("button", { name: "hi", exact: true }).click();
+  await expect(page.getByTestId("bubble-bot").last()).toHaveText("Wrote hi to greet.txt.");
+  const answer = (await calls(page)).find((c) => c.op === "chat.input" && c.input?.kind === "clarify")!;
+  expect(answer.input).toMatchObject({ kind: "clarify", answer: "hi" });
+  await expect(row).not.toHaveAttribute("data-needs-you", "true");
+
+  await page.getByTestId("composer").fill("/bad");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("bubble-bot").last()).toHaveText("Exit code: 127.");
+  await expect(page.getByTestId("session-status")).toHaveText("Ready");
+
+  await page.getByTestId("composer").fill("/signedout");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("activity").last()).toContainText("not signed in");
+  await expect(page.getByTestId("session-status")).toHaveText("Ready");
+  await expect(page.getByTestId("composer")).toBeEnabled();
+});
+
+test("the approval card says which folder the command runs in", async ({ page }) => {
+  await open(page, "/Users/you/code/web-app");
+  await start(page, "claude");
+  await page.getByTestId("composer").fill("/approve");
+  await page.keyboard.press("Enter");
+  const card = page.getByTestId("card-approval");
+  await expect(card.locator(".card-cmd")).toHaveText("rm -rf ./build");
+  await expect(card.getByTestId("card-cwd")).toHaveText("in /Users/you/code/web-app");
+  await expect(card.getByRole("button")).toHaveText(["Deny", "Allow once", "Allow for session"]);
 });
 
 test("screenshots: a chat session with an approval, dark and light", async ({ page }) => {
@@ -308,7 +396,7 @@ test("screenshots: a chat session with an approval, dark and light", async ({ pa
   await page.getByTestId("session-terminal-toggle").click();
   await expect(page.getByTestId("session-chat")).toBeVisible();
   await page.locator("[data-testid=session-list] .ss-row").nth(2).locator(".ss-open").click();
-  await expect(page.getByTestId("session-title")).toHaveText("oh-my-hermes");
+  await expect(page.getByTestId("session-agent")).toHaveText("oh-my-hermes");
   await page.getByTestId("composer").fill("what is in this folder?");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("bubble-bot")).toBeVisible();

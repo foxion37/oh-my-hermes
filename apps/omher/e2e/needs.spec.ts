@@ -129,6 +129,36 @@ test("asks on bots you are not looking at: amber dot, strip shows 2, click jumps
   await expect(page.getByTestId("timeline").getByTestId("card-approval")).toBeFocused();
 });
 
+test("a command in the row preview never breaks across lines: one line box, whole or ellipsized as one", async ({ page }) => {
+  await open(page);
+  const ask = (request_id: string, command: string) =>
+    mock("mock.emit", { events: [{ event: "approval.request", bot: "friren", request_id, title: "Run shell command", command, choices: ["once", "deny"] }] });
+  const sub = page.getByTestId("bot-friren").getByTestId("bot-sub");
+  const geo = () =>
+    sub.evaluate((el) => {
+      const code = el.querySelector("code")!;
+      return {
+        rects: code.getClientRects().length,
+        ws: getComputedStyle(code).whiteSpace,
+        clipped: el.scrollHeight > el.clientHeight + 1,
+        whole: code.scrollWidth <= code.clientWidth + 1,
+        inside: code.getBoundingClientRect().right <= el.getBoundingClientRect().right + 0.5,
+      };
+    });
+  // `git status --short` used to split at "--": two line rects that read as two commands
+  await ask("approval-wrap-1", "git status --short");
+  await expect(sub).toHaveText("Allow git status --short?");
+  expect(await geo()).toEqual({ rects: 1, ws: "nowrap", clipped: false, whole: true, inside: true });
+  // longer than the row: still one line box, ellipsized inside the row
+  await ask("approval-wrap-2", "git log --oneline --decorate --graph --all --since=two.weeks.ago -- apps/omher/src/sidebar");
+  await expect(sub).toContainText("git log --oneline");
+  const long = await geo();
+  expect(long.rects).toBe(1);
+  expect(long.whole).toBe(false);
+  expect(long.inside).toBe(true);
+  expect(await sub.locator("code").evaluate((e) => getComputedStyle(e).textOverflow)).toBe("ellipsis");
+});
+
 test("1/2/3 answer an approval only while its card has focus", async ({ page }) => {
   await open(page);
   await mock("mock.ask", { bot: "friren", kind: "approval" });
@@ -276,7 +306,7 @@ test("a timed-out ask shows Timed out and the dot clears", async ({ page }) => {
 test("row menu: pin moves a bot to the top (and ⌘1 follows), hide removes it, Show hidden brings it back", async ({ page }) => {
   await open(page);
   const order = () => page.locator(".bot-list button.bot").evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
-  expect(await order()).toEqual(["bot-kami", "bot-friren", "bot-default"]);
+  expect(await order()).toEqual(["bot-kami", "bot-friren", "bot-default", "bot-omh-tui"]);
 
   // right-click opens the menu; it offers no New thread, Duplicate or Delete
   await page.getByTestId("bot-default").click({ button: "right" });
@@ -284,7 +314,7 @@ test("row menu: pin moves a bot to the top (and ⌘1 follows), hide removes it, 
   await expect(menu.getByRole("menuitem")).toHaveText(["Pin to top", "Edit bot", "Hide from sidebar"]);
   await page.screenshot({ path: join(SHOTS, "T12-menu-dark.png"), animations: "disabled" });
   await menu.getByRole("menuitem", { name: "Pin to top" }).click();
-  expect(await order()).toEqual(["bot-default", "bot-kami", "bot-friren"]);
+  expect(await order()).toEqual(["bot-default", "bot-kami", "bot-friren", "bot-omh-tui"]);
   await expect(page.getByTestId("bot-default").getByTestId("pinned")).toBeVisible();
   await page.keyboard.press(`${await mod(page)}+1`);
   await expect(page.getByTestId("bot-default")).toHaveAttribute("aria-current", "true");
@@ -293,10 +323,10 @@ test("row menu: pin moves a bot to the top (and ⌘1 follows), hide removes it, 
   await page.getByTestId("bot-friren").hover();
   await page.getByTestId("bot-more-friren").click();
   await page.getByTestId("row-menu").getByRole("menuitem", { name: "Hide from sidebar" }).click();
-  expect(await order()).toEqual(["bot-default", "bot-kami"]);
+  expect(await order()).toEqual(["bot-default", "bot-kami", "bot-omh-tui"]);
   await page.reload();
   await expect(page.getByTestId("bot-kami")).toBeVisible();
-  expect(await order()).toEqual(["bot-default", "bot-kami"]);
+  expect(await order()).toEqual(["bot-default", "bot-kami", "bot-omh-tui"]);
 
   await page.getByTestId("bot-kami").click({ button: "right" });
   await page.getByTestId("row-menu").getByRole("menuitem", { name: "Show hidden…" }).click();
@@ -304,7 +334,7 @@ test("row menu: pin moves a bot to the top (and ⌘1 follows), hide removes it, 
   await expect(hidden).toContainText("Friren");
   await hidden.getByRole("button", { name: "Show Friren" }).click();
   await expect(hidden).toHaveCount(0);
-  expect(await order()).toEqual(["bot-default", "bot-kami", "bot-friren"]);
+  expect(await order()).toEqual(["bot-default", "bot-kami", "bot-friren", "bot-omh-tui"]);
 
   // Edit bot opens that bot's page in Settings
   await page.getByTestId("bot-friren").click({ button: "right" });

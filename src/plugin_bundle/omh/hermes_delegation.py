@@ -57,17 +57,20 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
     # table.
     #
     # Claude vendor order (owner decision, 2026-10-13): Opus 5.5 before Fable
-    # 5.1 inside any chain, reversing the 2026-09-06 Fable -> Opus rule.
-    # `ultrabrain` is the one exception (below).
-    # Claude Mythos 5.1 is Fable 5.1 under Project Glasswing access, so no
-    # shipped chain names it; it stays recognized, priced, and routable for a
-    # user who asks for it by name.
+    # inside any chain, reversing the 2026-09-06 Fable -> Opus rule.
+    # `ultrabrain` and `visual-engineering` are the exceptions (below). Fable 5.2 took every Fable
+    # 5.1 slot at the same effort on 2026-11-10 (owner decision), and Fable
+    # 5.1 left the shipped chains under the superseded-generation rule.
+    # Claude Mythos 5.1 and 5.2 are their Fable siblings served only to
+    # organizations Anthropic has verified, so no shipped chain names them;
+    # they stay recognized, priced, and routable for a user who asks by name.
     #
     # Two heads collide in `mixture_category_for`, which labels a child by the
     # first category in canonical order whose head matches (model, effort).
-    # The owner accepted both (2026-10-13):
-    #   (claude-opus-5-5, high)   heads deep and visual-engineering -> "deep"
-    #   (claude-opus-5-5, medium) heads writing and capable         -> "writing"
+    # The owner accepted the collision (2026-10-13):
+    #   (claude-opus-5-5, medium) heads writing and capable -> "writing"
+    # (claude-opus-5-5, high) headed deep and visual-engineering too, labelled
+    # "deep", until Fable 5.2 took visual-engineering's head on 2026-11-10.
     # Routing is unaffected, and so is a lane routed through
     # `omh_delegate_route`: its route-provenance record overrides the
     # projection (see the reader below), so that row keeps the lane's own
@@ -79,15 +82,18 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
     # artistry projects to x-search since 2026-10-28 (to deep before), where
     # it sits second; (gpt-6-luna, low) and (claude-haiku-5-5, low) reached
     # through quick project to simple-work.
-    # Fable 5.1 heads ultrabrain ahead of Astra (owner decision, 2026-11-09):
-    # the chain was Astra alone, so a user without OpenAI access fell straight
-    # back to the parent model, against the cross-ecosystem rule (2026-08-19,
-    # below). This is an explicit choice for this category; it does not change
-    # the 2026-10-13 Opus 5.5 -> Fable 5.1 order anywhere else. Claude Mythos
-    # stays out of every shipped chain (above).
-    # Over the shipped chains, (claude-fable-5-1, xhigh) now heads ultrabrain
-    # and labels "ultrabrain" (it projected to architect, where it sits
-    # third, before); Astra at xhigh now heads only forensics and labels
+    # Fable heads ultrabrain ahead of Astra (owner decision, 2026-11-09, for
+    # Fable 5.1; Fable 5.2 took the head on 2026-11-10): the chain was Astra
+    # alone, so a user without OpenAI access fell straight back to the parent
+    # model, against the cross-ecosystem rule (2026-08-19, below). This is an
+    # explicit choice for this category; it does not change the 2026-10-13
+    # Opus 5.5 -> Fable order elsewhere (visual-engineering is the other
+    # exception, 2026-11-10). Claude Mythos stays out of every shipped chain
+    # (above).
+    # Over the shipped chains, (claude-fable-5-2, xhigh) heads ultrabrain and
+    # labels "ultrabrain" (Fable at xhigh projected to architect, where it
+    # sits third, before 2026-11-09); Astra at xhigh now heads only
+    # forensics and labels
     # "forensics" (see forensics below). Opus 5.5 at xhigh, third here, keeps
     # the architect label of the chain it heads. No other shipped pair's
     # label moves. The reader labels against the effective chains, which
@@ -95,13 +101,14 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
     # but not Anthropic, shaped ultrabrain leads with Astra, so Astra at
     # xhigh still labels "ultrabrain" there.
     "ultrabrain": (
-        ("claude-fable-5-1", "xhigh"),
+        ("claude-fable-5-2", "xhigh"),
         ("gpt-6-astra", "xhigh"),
         ("claude-opus-5-5", "xhigh"),
     ),
     # DeepSeek V4.1 Flash left `deep`: a Flash budget model does not fit the
     # strong tier, and Opus 5.5 and Kimi K3.1 Pro now carry its cross-ecosystem
-    # fallback. visual-engineering children are labelled "deep" (above).
+    # fallback. (claude-opus-5-5, high), second in visual-engineering, labels
+    # "deep".
     "deep": (("claude-opus-5-5", "high"), ("gpt-6.1-sol", "high"), ("kimi-k3.1-pro", "high")),
     # Architecture/system-design lanes: full-depth effort across three
     # provider ecosystems. A fall-through child is labelled by the chain its
@@ -110,7 +117,7 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
     "architect": (
         ("claude-opus-5-5", "xhigh"),
         ("gpt-6-astra", "xhigh"),
-        ("claude-fable-5-1", "xhigh"),
+        ("claude-fable-5-2", "xhigh"),
         ("kimi-k3.1-pro", "xhigh"),
     ),
     # The one placement here backed by a measurement, of its predecessor: on
@@ -135,7 +142,7 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
         ("gpt-6.1-sol", "low"),
         ("claude-sonnet-5-5", "low"),
     ),
-    # Fable 5.1 left the tail for the same cost-order reason; Haiku 5.5 is
+    # Fable left the tail for the same cost-order reason; Haiku 5.5 is
     # the Claude entry at this tier.
     "quick": (
         ("glm-5.3-flash", "low"),
@@ -151,17 +158,21 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
         ("kimi-k3.1-pro", "medium"),
         ("gemini-4-argon", "medium"),
     ),
-    # Labelled "deep" by projection: its head is deep's (accepted collision).
+    # Fable 5.2 heads visual-engineering ahead of Opus 5.5 (owner decision,
+    # 2026-11-10), the second exception to the Opus 5.5 -> Fable order. No
+    # other chain heads (claude-fable-5-2, high), so it labels
+    # "visual-engineering" (it did before too, from second place); Opus 5.5
+    # at high, now second here, keeps deep's label.
     "visual-engineering": (
+        ("claude-fable-5-2", "high"),
         ("claude-opus-5-5", "high"),
-        ("claude-fable-5-1", "high"),
         ("gemini-4-argon", "high"),
         ("kimi-k3.1-pro", "high"),
     ),
     "artistry": (
         ("gemini-4-argon", "high"),
         ("claude-opus-5-5", "high"),
-        ("claude-fable-5-1", "high"),
+        ("claude-fable-5-2", "high"),
         ("kimi-k3.1-pro", "high"),
     ),
     # The three categories below were added on 2026-09-11 and are APPENDED
@@ -176,7 +187,7 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
     "capable": (
         ("claude-opus-5-5", "medium"),
         ("gpt-6.1-sol", "medium"),
-        ("claude-fable-5-1", "medium"),
+        ("claude-fable-5-2", "medium"),
         ("kimi-k3.1-pro", "medium"),
     ),
     # simple-work: small tasks rather than fast ones. It leads with the GPT
@@ -209,7 +220,7 @@ HERMES_MIXTURE_CATEGORY_CHAINS: dict[str, tuple[tuple[str, str], ...]] = {
     # keeps its own category through the route-provenance record; only a
     # child with no matching record is labelled by projection, so synthesize
     # is a label only a routed lane carries. (gpt-6-astra, xhigh) collided
-    # with ultrabrain's head the same way until 2026-11-09, when Fable 5.1
+    # with ultrabrain's head the same way until 2026-11-09, when Fable
     # took that head; forensics now carries the Astra xhigh label.
     # Six projections move (diffed over every shipped (model, effort) pair):
     # (deepseek-flash, low) unspecified-low -> swarm and (gemini-4-argon,
@@ -456,13 +467,16 @@ HERMES_MIXTURE_ALIAS_PROVIDER_FAMILIES: dict[str, tuple[str, ...]] = {
     # No family is claimed for a relay nobody observed serving it.
     "kimi-k3.1-pro": ("kimi-coding", "openrouter", "opencode"),
     "claude-opus-5-5": ("ccapi", "anthropic", "openrouter"),
-    "claude-fable-5-1": ("ccapi", "anthropic", "openrouter"),
+    "claude-fable-5-2": ("ccapi", "anthropic", "openrouter"),
     "claude-sonnet-5-5": ("ccapi", "anthropic", "openrouter"),
     "claude-haiku-5-5": ("ccapi", "anthropic", "openrouter"),
     # Recognition-only: no shipped chain names Claude Mythos 5.1, but a user
     # who asks for it still deserves "which of my providers serves this"
     # answered rather than unknown. The parity gate lists it explicitly.
     "claude-mythos-5-1": ("ccapi", "anthropic", "openrouter"),
+    # Recognition-only on the same terms: Claude Mythos 5.2 is Fable 5.2
+    # served only to verified organizations (2026-11-10).
+    "claude-mythos-5-2": ("ccapi", "anthropic", "openrouter"),
     # Recognition-only: no shipped chain names the Highspeed tier. Moonshot's
     # own API (`kimi-coding` in Hermes) is the one family observed serving it
     # (2026-10-24); OpenRouter and OpenCode list only the base id.
@@ -552,6 +566,8 @@ HERMES_MIXTURE_ALIAS_PROVIDER_FAMILIES: dict[str, tuple[str, ...]] = {
     "gemini-3.8-flash": ("google", "gemini", "openrouter"),
     "gemini-3.6-flash": ("google", "gemini", "openrouter"),
     "gemini-3.5-flash-lite": ("google", "gemini", "openrouter"),
+    # Recognition-only, retired 2026-11-10 behind claude-fable-5-2.
+    "claude-fable-5-1": ("ccapi", "anthropic", "openrouter"),
     # Retired on 2026-10-13 under the same rule: Claude Haiku 4.5 behind
     # claude-haiku-5-5, and the 2025 Qwen3-Coder with no Qwen successor.
     "claude-haiku-4-5": ("ccapi", "anthropic", "openrouter"),
@@ -564,7 +580,8 @@ HERMES_MIXTURE_ALIAS_PROVIDER_FAMILIES: dict[str, tuple[str, ...]] = {
 EXACT_MODEL_CONTRACT_ALIASES: frozenset[str] = frozenset(
     {
         "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-cyber", "gpt-6-luna",
-        "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "deepseek-v4.1-flash",
+        "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-fable-5-2",
+        "deepseek-v4.1-flash",
         "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "gemini-4-argon", "grok-4.7",
         "jev-1.13.0",
     }
@@ -609,6 +626,8 @@ DECLARED_MODEL_ALIAS_PROJECTIONS: dict[str, tuple[str, str, str]] = {
     # Claude Fable 5.1's dotted spelling (Hermes' static model catalog,
     # 2026-11-08), on the same terms.
     "claude-fable-5.1": ("claude-fable-5-1", "thinking", "standard"),
+    # Claude Fable 5.2's dotted spelling, on the same terms (2026-11-10).
+    "claude-fable-5.2": ("claude-fable-5-2", "thinking", "standard"),
     # TypeSafe publishes two aliases for Jev (docs.typesafe.ai/models,
     # 2026-09-21); both point at `jev-1.13.0` today and both move on the next
     # release, so each is a declared projection with a read date.
@@ -1586,6 +1605,10 @@ APPROX_PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
     "claude-fable-5-1": (10.0, 50.0),
     "claude-mythos-5-1": (10.0, 50.0),
+    # Anthropic list price (the Fable 5.2 what's-new page, read 2026-11-10):
+    # Fable 5.2 and Mythos 5.2 share 8/40, below the 5.1 generation's 10/50.
+    "claude-fable-5-2": (8.0, 40.0),
+    "claude-mythos-5-2": (8.0, 40.0),
     "claude-sonnet-5": (2.0, 10.0),
     # Anthropic list price (platform.claude.com pricing, read 2026-10-01):
     # Sonnet 5.5 2/10. The same page says Sonnet 5's 2/10 launch price is now
@@ -1866,6 +1889,10 @@ APPROX_CACHE_READ_RATIO: dict[str, float] = {
     "claude-sonnet-5-5": 0.05,
     "claude-fable-5-1": 0.025,
     "claude-mythos-5-1": 0.025,
+    # Fable 5.2 and Mythos 5.2 read cache at $0.20 against $8 input, the
+    # same 0.025x (the Fable 5.2 what's-new page, read 2026-11-10).
+    "claude-fable-5-2": 0.025,
+    "claude-mythos-5-2": 0.025,
     # DeepSeek V4.1 Flash cache hit 0.006 vs cache miss 0.30 per MTok input
     # (api-docs.deepseek.com/quick_start/pricing, 2026-09); the Ultrafast
     # serving of the same model carries the same cache-hit ratio, or a run on
@@ -1934,7 +1961,7 @@ _DEFAULT_CACHE_READ_RATIO = 0.1
 # follow ("Chain customization is a config edit, not a source edit").
 #
 #   {"schema_version": "model_price_overrides/v1",
-#    "models": {"claude-fable-5-1": {"input_per_mtok": 8.0,
+#    "models": {"claude-fable-5-2": {"input_per_mtok": 8.0,
 #                                    "output_per_mtok": 40.0,
 #                                    "cache_read_ratio": 0.025}}}
 #

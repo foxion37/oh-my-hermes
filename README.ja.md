@@ -27,7 +27,7 @@ Hermes にパッチを当てたり置き換えたりせず、計画しただけ�
 ## インストール
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh
+curl -fsSL https://omher.app/install | sh
 omh setup
 ```
 
@@ -80,6 +80,15 @@ omh setup
   <img src="assets/omh-dag-ulw-tui.gif" alt="/dag-ulw を実行する OMH TUI: プロンプトを入力すると 7 レーンのボックスグラフが定義され、レーンが Claude Opus 5.5、GPT-6.1 Sol、DeepSeek V4.1 Flash、GLM 5.3、Kimi K3.1 Pro でレイヤーごとに走り、すべて accepted で終わります" width="900">
 </p>
 
+> **ベースにしたプロジェクト**
+>
+> <table>
+> <tr><td width="88" align="center"><a href="https://github.com/NousResearch/hermes-agent"><img src="assets/hermes-agent-icon.png" alt="Hermes Agent" width="56"></a></td>
+> <td><a href="https://nousresearch.com">Nous Research</a> の <b><a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a></b><br>OMH が動くエージェントです。OMH はその上の非公式な独立レイヤーです。</td></tr>
+> <tr><td width="88" align="center"><a href="https://github.com/code-yeongyu/oh-my-openagent"><img src="https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/a05f240727d985e574404430d8d40c80eb912bc2/.github/assets/omo-icon-light.svg" alt="OmO" width="64"></a></td>
+> <td><a href="https://github.com/code-yeongyu">@code-yeongyu</a> の <b><a href="https://github.com/code-yeongyu/oh-my-openagent">OmO</a></b><br>ultrawork コンセプトの原点。OMH が Hermes に持ち込みました。</td></tr>
+> </table>
+
 > [!TIP]
 > 一緒に参加しましょう！
 >
@@ -127,13 +136,13 @@ omh setup
 **macOS / Linux:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh
+curl -fsSL https://omher.app/install | sh
 ```
 
 **Windows (PowerShell 5.1+):**
 
 ```powershell
-irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1 | iex
+irm https://omher.app/install.ps1 | iex
 ```
 
 **または、次の内容を AI エージェントに貼り付けます:**
