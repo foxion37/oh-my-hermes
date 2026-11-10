@@ -320,9 +320,66 @@ NON_SKILL_BACKTICKS = frozenset(
 # `show-reel`'s idea-video lane defers a recording that already exists
 # (summary, transcript, captions, trim) to `media-input-operator`; one case,
 # one pair, no new owner.
-EXPECTED_DEFERENCE_CASES = 407
-EXPECTED_DEFERENCE_PAIRS = 423
-EXPECTED_DEFERRING_OWNERS = 120
+# `systematic-review` defers topic discovery to `source-finder`, one supplied
+# paper to `paper-learning` and a HellaSwag log check to `repro-audit`; no
+# sibling gains a statement pointing back. Three cases, three pairs, one owner.
+# Research-lane boundaries: `data-analysis` defers polygon overlay to
+# `geospatial-analysis`, accounting-period work to `finance-analysis` and a
+# deck or workbook to `materials-package`; `live-info-operator` defers a
+# broad current-facts question to `web-research`, a ledger to `finance-analysis`
+# and an app write to `connector-operator`; `research-brief` defers recurring
+# multi-role research to `research-department`; `source-finder` and
+# `research-department` defer a cited lookup to `web-research`, and
+# `research-brief` defers fresh links or current facts to it as well. Seven cases,
+# eleven pairs, two new owners.
+# The operations-and-boards audit adds six statements, each with a statement pointing back:
+# `gateway-intent-card` <-> `automation-blueprint` (a scheduled delivery against a single
+# in-session one), `harness-session-inventory` <-> `workspace-audit` (cross-harness drift
+# against one workspace's own surfaces) and `agent-board` <-> `running-work-board` (changing a
+# task against only seeing what runs). Six cases, six pairs, four new owners.
+# The business-operations skill audit adds six cases, eight pairs and one
+# owner (internal-audit now defers an engagement plan; people-ops, meeting-brief, cto-loop,
+# report-package and operating-rhythm gain boundaries); re-derived from the catalog.
+# The coding-core skill audit adds declining statements: `plan` defers a risky change to `ralplan`,
+# vague requirements to `deep-interview` and a decided refactor to `refactor-plan`; `ralplan` defers an
+# ordinary change to `plan`; `strategy-brief` defers technical choices to `decision-prototype`, `plan`
+# and `adversarial-consensus`; `ask` defers a multi-perspective attack to `adversarial-consensus`;
+# `ultrawork` defers an unplanned request to `ralplan`; `ultraperf` is rewritten to name `maestro`.
+# Eight cases, ten pairs (`ultrawork` also defers to `plan`), one new owner (`plan`).
+# `voice-operator` and `media-input-operator` each name the other (a spoken
+# instruction versus spoken material), `connector-operator` sends a local
+# desktop application to `command-operator`, and `show-reel` sends trimming or
+# caption burn-in to `command-operator`: three cases, four pairs, two new
+# owners.
+# `model-optimization` defers weight-level optimization to `inference-serving`
+# (serving format and quantization) and `model-finetuning` (distillation); no
+# sibling gains a statement pointing back. Two cases, two pairs, one owner.
+# `reliability-review` defers a go or hold verdict before launch to
+# `production-audit`; one case, one pair, no new owner.
+# `executor-runtime-readiness` defers a named plugin or API to
+# `external-connector-readiness` and a missing tool to `toolbelt-readiness`;
+# `provider-profile-posture` defers connector adoption, the tool inventory and
+# a model-provider login to those two and `model-setup`; no sibling gains a
+# statement pointing back. Five cases, five pairs, two new owners.
+# The code-quality skills fix round adds Do Not Use When lines that name a sibling: `code-review` defers the
+# evidence matrix to `verification-gate`, `agent-debug` defers application code to `app-debugging` and install
+# health to `doctor`, `repro-audit` defers bug reproduction to `app-debugging`, `codebase-onboarding` defers a
+# picture to `codebase-uml` and the index to `codegraph-refresh`, `github-issue-intake` names `feedback-triage` and
+# `github-event-ops` with their labels, and `github-event-ops` defers a patch or minor bump to `verification-gate`;
+# no sibling gains a pointing-back statement. Seven cases, nine pairs, four new owners.
+# Web-research and research-brief then defer to market-research for sizing: two cases, two pairs.
+# `model-compression` defers serving to `inference-serving`, training for new
+# behavior to `model-finetuning`, session rules to `rules-distill` and model
+# onboarding to `model-optimization`, and each of the four gains one line
+# pointing back. `model-optimization`'s old quantize/distill line named
+# `inference-serving` and `model-finetuning`; it now names only the new skill.
+# Eight new cases less that one, eight new pairs less its two, one new owner.
+# Its review round gives model-optimization back one line each for serving
+# (`inference-serving`) and training (`model-finetuning`): two cases, and the
+# two pairs it had lost.
+EXPECTED_DEFERENCE_CASES = 469
+EXPECTED_DEFERENCE_PAIRS = 496
+EXPECTED_DEFERRING_OWNERS = 139
 
 # The ratchet. Recording a new inversion must be a visible edit to this number,
 # not one more dict line with a plausible sentence attached.
@@ -381,11 +438,25 @@ _SPEND_GATE_BY_DESIGN = (
     "request marker; a Do-Not-Use line is not such a request, so it cannot surface spend-gate. A person's "
     "marked request ('please pay ... with my card') reaches it."
 )
+_MARKET_RESEARCH_BY_DESIGN = (
+    "by design: market-research is offered only to a request that opens on one of its method phrases "
+    "(_market_research_offers_itself); a Do-Not-Use line is not one. 'do market sizing for dental clinics' "
+    "reaches it."
+)
 DELIBERATELY_UNREACHABLE: dict[tuple[str, str], str] = {
+    ("web-research", "market-research"): _MARKET_RESEARCH_BY_DESIGN,
+    ("research-brief", "market-research"): _MARKET_RESEARCH_BY_DESIGN,
     ("automation-blueprint", "spend-gate"): _SPEND_GATE_BY_DESIGN,
     ("browser-operator", "spend-gate"): _SPEND_GATE_BY_DESIGN,
+    ("systematic-review", "repro-audit"): (
+        "by design (#2242 review): repro-audit is offered only to a whole request that is one comparison of the "
+        "person's own HellaSwag record with a paper, every word from its allow list (_repro_audit_offers_itself); "
+        "a Do-Not-Use line is not such a request. 'Compare my HellaSwag log with the paper' reaches it."
+    ),
 }
-EXPECTED_DELIBERATELY_UNREACHABLE_COUNT = 2
+# systematic-review's repro-audit statement adds the third pair (+1), and the
+# market-research lines in web-research and research-brief two more.
+EXPECTED_DELIBERATELY_UNREACHABLE_COUNT = 5
 
 
 def _deference_cases() -> list[tuple[str, tuple[str, ...], str]]:

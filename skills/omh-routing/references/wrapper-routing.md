@@ -31,12 +31,14 @@ Two host-side consequences follow, both accepted. Host slash commands derive fro
 When a chat message is implementation-shaped and a wrapper wants a concrete executor handoff, run `omh coding delegate` after or instead of generic chat routing:
 
 ```sh
-omh coding delegate --source discord --executor codex --record "risky refactor"
+omh coding delegate --source discord --executor <owner> --record "risky refactor"
 ```
 
 The payload is deterministic local adapter data: recommended workflow, harness, executor/runtime profile, acceptance criteria, verification expectations, and handoff prompt template. Hermes still narrates the user-facing state.
 
 Implementation-shaped has a floor. A settings-only or single configuration change (a gateway channel policy, a mention rule, one config key) that the wrapper or Hermes can apply directly is a direct configuration action: apply it, verify the new value, and report it. Do not open a durable goal ledger, start a goal loop, or prepare an executor handoff for it. Escalate to a coding handoff only when the request needs code edits, tests, or multi-step implementation work that configuration cannot express.
+
+Who chose the coding owner is part of the payload (`executor_resolution.source`). `explicit` (`--executor`) and `message_mention` (named in the message) are a choice made in this request. `setup_profile` is the default the person set: it stands as the owner, but it is not a choice made in this request, so it does not bypass the genre veto and is not recorded as an explicit choice. Pass `--executor` only when the person named the owner; leave it out to use the profile default. An owner named in the message as the one to do the work ("use codex", "with claude code", "codex로") beats the profile default, and `--executor` beats both; a CLI named only as what the work is about ("fix the codex adapter tests") is no owner choice.
 
 Check `executor_readiness/v1` for Codex, Claude Code, Hermes, or oh-my runtime profiles before first dispatch. If readiness is `missing` or `blocked`, ask the user to choose another coding agent, configure PATH, continue in Hermes, or use prompt/runtime handoff; retry only after that state changes. A readiness probe is not dispatch, execution, verification, review, CI, or merge evidence.
 
@@ -104,7 +106,7 @@ artifacts; pass only event summaries and refs into Hermes chat context.
 
 Wrappers can run `omh memory inspect`, `omh memory pack`, and `omh memory apply` to review OMH-local or wrapper-supplied context before preparing a handoff. This emits `memory_review_card/v1` and `handoff_context_pack/v1` artifacts only; it does not read or mutate opaque Hermes internal memory.
 
-For planning-shaped requests, wrappers or operators can run `omh hermes plan` to create a deterministic `hermes_plan/v1` scaffold. The stdout `wrapper_contract` is the adapter contract for follow-on work; after acceptance, pass the accepted plan artifact or generated context pack to `omh coding delegate --from-plan` instead of treating Discord/channel summary text as the executor plan.
+For planning-shaped requests, wrappers or operators can run `omh hermes plan` to create a deterministic `hermes_plan/v1` scaffold. Record the reviewed plan with `omh hermes plan --record --plan-file <reviewed-plan.md> "<task>"`: `omh hermes plan-accept` refuses a scaffold-only file (stdout `quality_gate.readiness: needs_reviewed_body`) unless `--allow-scaffold` is passed because the user asked to accept the scaffold. The stdout `wrapper_contract` is the adapter contract for follow-on work; after acceptance, pass the accepted plan artifact or generated context pack to `omh coding delegate --from-plan <artifact> --executor <the owner the user chose>` (leaving `--executor` out resolves the same default as without `--from-plan`: the setup profile's default executor, else `generic`) instead of treating Discord/channel summary text as the executor plan.
 
 ## Backend Boundary
 

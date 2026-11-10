@@ -632,13 +632,35 @@ legacy v1 artifact fails closed with a reason code.
 ### The model-driven loop
 
 Hermes writes into this store itself, with no operator step in the normal
-loop. When the user states a lasting preference, a decision, a fact about
-their setup or project, or a lesson, the model calls
-`omh_remember(action="save", summary=..., record_type=..., subject=...)`.
+loop. When the user states, in their own words, a lasting preference, a
+decision, a fact about their setup or project, or a lesson, the model calls
+`omh_remember(action="save", summary=..., record_type=..., subject=...)` in
+that same turn, before other tools, even when the message also asks for work.
+Pasted or quoted text and anything that only matters for the current task are
+not saved.
+
+When a record already shown to the conversation states the same rule or
+preference in other words, the model passes that record's id as `replaces`
+with one merged summary. The save then goes through the correction path:
+the merged fact is admitted like any capture, the replaced record moves to
+`history/` with `superseded_by` naming its successor, and only the merged
+record recalls afterwards. The replaced record must be reachable through this
+session's lens (on Discord, an auto-thread reaches records its parent channel
+holds), and writes stay disabled on cron and subagent surfaces. An id that
+names no replaceable record in the lens does not lose the fact: it is saved
+as a new record and the result carries `replace_skipped` with the reason.
+
 The memory provider exposes this small, always-visible tool for `save` and
 `recall` (`action="recall", query=...`). Hermes' `tool_search` can defer plugin
 tools such as `omh_memory`; tools returned by a memory provider are never
 deferred, so saving a fact does not require a tool search first.
+
+`save` also takes optional `tags`: a few topic words in the user's own
+language. They are stored like capture tags and the selector matches them like
+summary words, so a later message that names the topic in that language can
+recall the fact even when it shares no word with the summary. With `replaces`,
+new tags (including an empty list) replace the old record's tags; without
+them the old tags carry over.
 
 The full `omh_memory(action="capture", summary=..., record_type=..., tags=...,
 scope=..., retention_class=..., subject=...)` entry point remains available for
@@ -654,6 +676,72 @@ adapters), with duplicates skipped, and map the result to one `status`:
 | `already_remembered` | A live record has the same normalized summary; `duplicate_of` names it and nothing was written. |
 | `refused` | Nothing was written: invalid input (including an `invalid_subject`), a session that may not write (`shared_surface_writes_refused` on a shared surface, `writes_disabled` in a background run, `session_lens_unavailable` with no provider lens; see [Surface classes](#surface-classes)), memory turned off, a project scope this session cannot resolve, or an `instruction_shaped_summary` (a second-person order or a Korean request ending, outside `procedure` records), whose `next_action` asks for the fact restated as an observation. |
 | `error` | Admission raised (an unreadable store, a lock held past its 10 s wait); `reason` names the exception class and nothing is confirmed saved. |
+
+A capture that persists a candidate retires every earlier held candidate
+(`pending_review` or `blocked_review_required`) with the same normalized
+summary, the key the duplicate check reads, inside the same confinement (scope,
+subject principal, audience, perspective) and with the same `correction_of`.
+It runs after any auto-safe approval of the new candidate, so an approval that
+fails retires nothing. The earlier candidate gets `status: retired`,
+`retirement_reason: recaptured` and `recaptured_as` naming the new candidate.
+Approval and rejection both refuse it, the review queue no longer lists it, and
+a demotion of the same Hermes entry still reads it as held. Admission returns the ids as
+`retired_held_candidates`, and the tool result returns them as
+`retired_candidate_ids`. No person is asked: the newer capture is the one that
+stands. Approved, rejected, superseded and lifecycle candidates are never
+touched, so recapturing an approved fact still stamps `duplicate_of` as before.
+
+A `remembered` save whose summary states a point-in-time snapshot also
+carries `point_in_time`. It holds the new `record_id` and a `next_action` that
+asks the model to pass that id as `replaces` when it saves the changed state,
+so the old snapshot moves to `history/` instead of being recalled beside the
+newer one. The advice limits `replaces` to that same thing changing.
+Something newly added, such as a later release's new feature, is its own
+record and is saved without `replaces`. A `corrected` result whose new
+summary is still a snapshot carries the same field for the new id, so the
+chain continues. The capture itself is unchanged: it stays `durable`, gets no
+review deadline, and nothing is hidden.
+
+A summary counts as a snapshot only when all of these hold:
+
+- Its `record_type` is `fact`, `episode` or `decision`.
+- It carries one of these phrasings:
+  - a dated or versioned "as of" (`As of 2026-10-30 ...`, `as of v0.1.7`);
+  - "in" a version (`in v0.1.14`);
+  - a version followed by a change verb (`v0.1.13 added ...`, also `removed`,
+    `introduced`, `ships`);
+  - a leading name and version (`nanran v0.1.16: ...`).
+- It carries no constraint wording (`requires`, `minimum`, `or newer`, `pin`,
+  `must`, `never`, `stay`, `frozen`, `compatible`, `prefer` and similar).
+
+So a version stated as a rule never qualifies ("OMH requires Hermes v0.22.5 or
+newer", "Stay on React v18.3"), and neither do a bare `v1`, "since v0.1.12", or
+a Korean dated phrase (`2026-10-30 기준`).
+
+The save result reaches only the session that saved the record, and the state
+usually changes weeks later in another one. So recall marks snapshot records
+with the same cue, for `fact` and `decision` records only. An `episode` is an
+event, which never changes, so recall leaves it unmarked even though its save
+was advised. In the provider's `<memory_records>` pack, a marked record's
+element carries `snapshot="as-of"`, and a section holding at least one marked
+record ends with one shared line, never one per record:
+
+```text
+  <snapshots>Records marked snapshot="as-of" describe something as it stood on a date or version, and still hold until it changes. When that same thing changes, save its new state with replaces set to that id; something newly added is its own record, saved without replaces.</snapshots>
+```
+
+`omh_remember` / `omh_memory` recall rows carry `"snapshot": "as-of"`, and
+the result's `next_action` states the same rule once. A record the live pack
+withholds (see below) is not in the text, so nothing about it is marked.
+
+The mark is advisory and never costs a record. The section admits records
+exactly as it would unmarked. The attributes and the line are added only when
+the whole section still fits its character bound; otherwise the section is
+rendered unmarked. Selection, ranking, dedup and the receipt's record
+digests are unchanged.
+
+The cue is English only: a Korean snapshot (`2026-10-30 기준`) is neither
+advised at capture nor marked at recall.
 
 `subject` is optional: a short slug the model chooses for what the fact is
 about (`deploy-branch`, `reply-language`), in the closed shape
@@ -691,6 +779,10 @@ redacted to `[redacted]` never matches anything, for hints or duplicates.
   running the selector, so a same-second tie on a subject (approval stamps
   whole seconds, and the smaller record id wins) or a held record that is
   stale is reported as it is. The `next_action` sentence is built from it.
+  Where no turn is served records unasked (`recall_mode` `on_demand` or `off`
+  in the provider's profile), `recalls_now` is empty and the sentence says
+  per-turn recall is off, so neither recalls. Whether the held record can
+  stand in for a `correct` does not change with the setting.
 
 Neither hint holds or refuses the capture: refusing a capture that only
 resembles a held record would lose the new fact whenever the resemblance is
@@ -777,7 +869,7 @@ them writes anything.
 
 | Action | Arguments | What it does | `status` values |
 | --- | --- | --- | --- |
-| `recall` | `query`, optional `limit` (1-6) | Runs the prefetch selector over the lens's homes, allowlist, and principal, so the order is the order a prefetch for that query serves. Returns record ids, summaries, types, tags, approval dates, and the subject when a record declares one. Counts no use; the returned ids join the session's seen list. | `found`, `nothing_found`, `refused`, `error` |
+| `recall` | `query`, optional `limit` (1-6) | Runs the prefetch selector over the lens's homes, allowlist, and principal, so the order is the order a prefetch for that query serves. Returns record ids, summaries, types, tags, approval dates, and the subject when a record declares one. A query that matches nothing, or an empty one, returns `stored_records` labels (id, type, subject) instead. Counts no use; the returned ids join the session's seen list. | `found`, `nothing_found`, `refused`, `error` |
 | `confirm` | `record_id` | `omh memory confirm`'s rewrite: the review deadline moves to the record's stored cadence (else the policy default, else 90 days), an open record is answered `resolved`, and `revalidation.confirmed_by` is `hermes_model`. Then one `used` count, at most once per record per session. A record with no review deadline (a durable capture) is not refused; only the use is counted. Expired, superseded, and source-changed records are refused like the operator verb. | `confirmed`, `refused`, `error` |
 | `correct` | `record_id`, `summary`, optional `tags`, optional `subject` | Admits the corrected fact through the model capture gates (instruction-shaped refusal, safety, relative-time review). The new record keeps the old record's type, scope, retention, perspective, cited source, review cadence day count, TTL day count, subject, and tags unless new tags or a new subject are given. The candidate carries `derived_from: [<old id>]`, `correction_of: <old id>`, and `correction_of_revision`, the revision the model read. Whichever approval admits it supersedes the old record inside its store lock: auto-safe at once, or an operator's `omh memory approve` later. If the old record was rewritten to another revision in between, nothing is superseded and the approval reports `revision_moved`. The old revision moves to `history/<record-id>.r<revision>.json` with `superseded_by`, leaves `records/`, and its source candidate becomes `superseded`, which approval refuses. Until then the old record stays active. When the corrected summary is already held as another record in the old record's scope and principal, which is what happens after a capture hint, that record is the replacement, if it can stand in: it must recall under the session's lens now (eligible, not archived, not itself replaced by a newer subject value), keep the fact at least as long (retention class and expiry), and not declare a different subject than the correction carries. Then the old revision moves to history with `superseded_by` naming it, under the store lock and pinned to the revision read; the correction's subject is written onto the held record when it has none; the result says `replacement: already_held`; and nothing new is captured. Otherwise nothing changes, and the result is `already_remembered` with `supersede_skipped` naming why (`held_not_recallable`, `held_retention_shorter`, `held_expires_sooner`, `subject_conflict`, `record_absent`, or a supersession skip such as `revision_moved`). | `corrected`, `pending_review`, `already_remembered`, `refused`, `error` |
 | `retire` | `record_id`, `reason` (`no_longer_true`, `superseded`, `user_asked`) | `omh memory retire --apply`'s move for one record: `records/` to `archive/<record-id>.<stamp>.json`, a `retirements.jsonl` line carrying the reason, `retired_by: hermes_model`, and the `session_id`, and the source candidate flipped to `retired`. Never a delete; `omh memory restore` finds the archived revision and brings it back through review. Unlike the operator verb it may retire a record that has not expired, but only one this session was served or recalled; an unseen live record is refused as `record_not_seen_this_session`. That rule is not a defence against a model told to retire something, since a recall adds the id. What it guarantees is narrower: no blind retire of an id the conversation never saw, attribution to the session in the journal, and an archive that can always be restored. If a step after the archive move fails, the result says the record was archived. | `retired`, `refused`, `error` |
@@ -1342,7 +1434,10 @@ the unrelated one. The collapse reads two structured fields and never the
 summaries. A record with no subject never joins a group, different scopes
 never merge, and a pin does not hold an older value in place.
 
-A query that matches nothing does not empty the pack. When a query has
+A query that matches nothing does not empty the selection. (Tool recall,
+`omh_remember`/`omh_memory` `action="recall"`, passes `query_fallback=False`
+and does not fall back; the live prefetch withholds the fallback, below.)
+When a query has
 indexable tokens and no eligible record overlaps it, not even on a
 store-common term, and no pin applies, every `active`-tier record that was held
 out as `no_query_overlap` is served the way an unqueried pack serves it —
@@ -1367,6 +1462,31 @@ and whitespace collapse — the same normalization capture uses for
 `approved_at`, else the smaller record id stays, and the other is excluded as
 `duplicate_record` with `duplicate_of` naming the record kept. The collapse
 runs after eligibility and before ranking, so a duplicate never spends budget.
+
+The memory provider's prefetch pack does not inject that fallback. When
+`query_fallback` is set, the readmitted records are withheld: no summary, no
+name, no line about them. With nothing else to serve, the provider returns an
+empty pack and Hermes builds no `<memory-context>` block for the turn. Records
+captured in the same conversation are the exception and still render in full:
+a record whose `source_ref` is `hermes-session:<id>` for this session or one
+of its verified compaction ancestors, and pinned records.
+
+Until 2026-11 the provider listed withheld records by name in one English
+`<record_index>` line. Measured on live Hermes turns (2026-11-08, persona with
+no reply language, Korean-writing user, one stored record unrelated to the
+request), that line alone, inside Hermes' "should inform all responses"
+fence, took Korean replies from 14/20 to 5/20 (Fisher p=0.010), and no turn
+read the listed record. The model reaches a withheld record on purpose:
+`omh_remember(action="recall", query=...)` reads it in full when the query is
+its subject slug or record id, or matches its words. The CLI
+`omh memory recall` and coding-handoff packs never withhold and still serve
+the active tier in full; tool recall never falls back.
+The prefetch receipt lists the withheld ids as `rendering.indexed_records`
+(the key keeps its earlier name; always present on new receipts, read as
+empty on older ones); rendered ids must equal the selected ids with the
+withheld ids removed, as a prefix, and `selected_not_rendered` never names a
+withheld id. A withheld record is not rendered, so it counts as neither
+served nor seen.
 
 Two per-record counters exist, and only one of them is a ranking input:
 
@@ -1782,7 +1902,8 @@ writing unreviewed updates.
 The Hermes memory provider (`memory.provider: omh`) is the lane through which
 reviewed memory reaches a Hermes turn without being asked for. Before every
 model call Hermes takes the provider's prefetch text; OMH serves one pack,
-rendered off the hot path and re-ranked after each turn:
+rendered for the new message in `on_turn_start`, before the turn's model call,
+and re-ranked after each turn:
 
 1. system-tier memory blocks in full, under the block render budget;
 2. reference-tier blocks as a label index (values stay behind `omh_memory
@@ -1809,6 +1930,80 @@ inside any repository (owner decision 2026-10-13; before it, the allowlist was
 empty there, so a capture made outside a repository was stored and never
 recalled). A shared surface outside a repository still reads nothing.
 
+A live turn serves only what it asked for, and only once per conversation
+(2026-11-03 audit: 89% of live-served records shared no word with the turn,
+and 84% repeated a record the session already held):
+
+- A query that matches no record gets none of the active-tier fallback (see
+  [Recall Ranking and Delivery Usage](#recall-ranking-and-delivery-usage) above):
+  the records are withheld and named nowhere. A query with no indexable terms
+  ("야", an empty message) gets the same: pinned records in full, every other
+  record it would serve withheld. Records captured in this conversation stay
+  in full in both. With nothing else to serve, the pack is empty. #2001's
+  rule that a pack never goes silent while approved active memory exists no
+  longer holds for the live turn; the selection still falls back, and the
+  receipt names what the pack withheld.
+- A turn that was only host framing or a host notice (a background-process
+  or delegation-completion notice, a bare skill invocation; the sanitizer's
+  `host_only`) considers no record at all: no records and no pins, and so
+  no recall line. A notice is not a message from the person, Hermes runs the
+  prefetch for it anyway, and on a messenger the line it posted was noise
+  nobody asked for (2026-11-03 audit: 55 of 126 messenger recall lines). The
+  person's next message gets the pack as usual.
+- Hermes stamps each turn's injected block onto that turn's stored message and
+  replays it for the rest of the session, so a record served once is still in
+  context. Mixture-of-agents (MoA) turns are the exception: Hermes does not
+  stamp the block there (`agent/turn_context.py`), and the provider cannot tell
+  such a turn apart, so a record first served on a MoA turn is held as served
+  without staying in context until the next compaction or `/new`. (The
+  `codex_app_server` mode calls no prefetch at all.) The provider keeps the
+  `recall_revision` of each record it served (the stored `revision` plus the
+  summary, type and open/settled state it renders) and the selector skips a
+  record still at that revision as `served_this_session`. A revised record is
+  served again. A record an unanswered turn withheld is held as `listed:`:
+  later unanswered turns skip it (`listed_this_session`) at no cost, but a
+  query that matches it still gets it in full. For a matched query the skip
+  runs before the budget cut, so the slot goes to the next match; for an
+  unmatched or term-less one after it, so a withheld record never pulls a
+  further one in turn by turn. Every session switch Hermes reports
+  clears the list: a compaction, rotated or in place, summarises away the
+  blocks that carried the records, so each may be served once more. A new
+  provider starts empty as well. When Hermes reports `/new` only after the
+  next turn's prefetch already moved to the new session id, that prefetch
+  started the new conversation empty and renders again if its pack had left a
+  held record out; the late report then clears nothing. A queued render never
+  marks a record served; only `prefetch` does.
+- Blocks are still rendered every turn on a console; they count toward the
+  recall line only when their rendered text changed since the last serve.
+
+`omh_remember` and `omh_memory` recall pass `query_fallback=False`: a query
+that matches nothing is `nothing_found`, never the unrelated records in
+full. It names them instead: `stored_records` lists every record the lens can
+recall (`record_id`, `record_type`, and `subject` when it has one; at most
+20, with `stored_count` saying how many exist), without their text, and the
+next action says to recall one by its subject or record id when it bears on
+the request. An empty query does only that. So a question about the past
+("what did we decide last time?") whose words match no record still reaches
+the record in two calls. The list is a tool result the model asked for, not
+the per-turn pack under Hermes' `<memory-context>` fence, which names nothing
+it withholds. A query made only of record ids looks those records up, and
+nothing else, through the same lens and eligibility. A query word that is a
+subject slug puts that record first while the words still search as usual,
+since a subject can also be a plain topic word. The live prefetch, coding
+handoffs, `omh memory recall` and the retrieval suite keep the selector's
+default configuration.
+
+A message that met the store only through a suffix rule ("tickets" for a
+record about the "ticket" tool) falls back like one that matched nothing,
+and the readmitted record keeps its own score. The live pack shows such a
+record in full when the stemmed word is one of its declared topic words (the
+parts of its subject slug, or its tags), as the singular would have shown
+it; a stemmed hit only in its summary ("Write a commit message" on "50
+writes per day") stays withheld.
+
+When a pin is in scope, a message that matches nothing gets the pin and
+nothing else: a pin counts as a match, so the fallback does not fire.
+
 ### The recall query
 
 The pack is ranked against a query built from the person's turn, and that
@@ -1827,7 +2022,11 @@ the same markers and first/last rule as Hermes' own
 `extract_user_instruction_from_skill_message`; a bare invocation gives an
 empty query. A host notice (a background-process, delegation-completion or
 gateway-provenance notice) ends the person's words at the line where it
-starts, and a turn that is only a notice gives an empty query. A turn that
+starts, and a turn that is only a notice gives an empty query marked
+`host_only`, for which the provider serves no records. A background-process
+notice is one bracketed block, so a turn with text after its closing bracket
+(a pasted notice followed by "why did it fail?") is not `host_only` and is
+served as an empty query (pins in full, the rest listed). A turn that
 only mentions one of these phrases mid-sentence keeps it, backfill with no
 `[New message]` boundary is kept whole, and a relay with two or more
 distinct speakers keeps its prefixes.
@@ -1915,17 +2114,24 @@ recall, and incident commands now accept `--scope-kind user-global`; changing
 an old fact's audience still requires normal reviewed capture and approval.
 See [store rollout](MEMORY-PREFETCH.md#store-rollout) before changing labels.
 
-When the served pack is non-empty Hermes prints its deterministic recall line
-through its status channel, so it appears on every surface Hermes speaks
-through (CLI, TUI, and each gateway platform) whether or not the model mentions
-memory:
+When the served pack carries memory, Hermes can print its deterministic recall
+line through its status channel, whether or not the model mentions memory:
 
 ```text
 🧠 OMH — recalled 2 memories
 ```
 
+Hermes prints it whenever the provider's `recall_status()` returns a value.
+On a gateway it posts the line into the channel or thread; Discord gets a new
+message each time. By default OMH returns a value on an operator console only
+(CLI, TUI, Desktop), so the line no longer reaches Discord, Slack or any other
+messenger.
+
 The count is rendered full blocks plus rendered record elements in the last
-pack returned by `prefetch`, not the number selected for a queued pack. Record
+pack returned by `prefetch`, not the number selected for a queued pack, and
+only what is new to the conversation: records it did not already hold, and
+blocks whose text changed since the last serve. A turn that adds nothing new
+prints no line. Record
 summaries are bounded projections, not a promise of full source content. A
 reference-only block index reports content without a discrete count.
 Initialization, a newly served empty pack, and shutdown don't retain an old
@@ -1938,6 +2144,67 @@ claims, not host delivery or model use. The recall line is aggregate status,
 not record-bound evidence that a memory entered a model request. Receipt
 integrity checks detect inconsistent edits but don't authenticate the sender.
 See [receipt privacy and identity](MEMORY-PREFETCH.md#receipt-privacy-and-identity).
+
+### Turning the recall line or recall off
+
+Two settings in the profile's own `config.yaml`, beside `dreaming_mode`, are
+read on every render, so a change applies from the next turn:
+
+```yaml
+plugins:
+  entries:
+    omh:
+      settings:
+        recall_line: console   # or: all, off
+        recall_mode: auto      # or: on_demand, off
+```
+
+| Setting | Value | What it silences |
+| --- | --- | --- |
+| `recall_line` | `console` (default) | The line on every platform but `cli`, `tui` and `desktop`: messengers (Discord, Slack, Telegram and the rest, the owner's own DM included) and `api_server` clients such as Open WebUI |
+| | `all` | Nothing: every surface shows the line, as before |
+| | `off` | The line everywhere |
+| `recall_mode` | `auto` (default) | Nothing: memory is recalled every turn |
+| | `on_demand` | Per-turn records and blocks, and so the line. `omh_remember` / `omh_memory` recall and saving still work |
+| | `off` | The same, and tool recall too, which refuses with `reason: recall_disabled`. Saving still works |
+
+`recall_line` hides the line, never the memory. On a messenger, the owner's
+DM included, or an `api_server` client under the default, memory still reaches the turn and can shape a reply with no visible
+sign that it did. To see what a turn was given, read the prefetch receipt
+(`omh memory status` shows the last one under `last_prefetch`; the full
+receipt is the file it names) or ask the model to recall.
+
+Tool recall reads `recall_mode` from the same profile `config.yaml` the
+provider reads: the profile home Hermes initialized the provider with, which
+it publishes in the session lens, not the tool process's `HERMES_HOME`. The
+capture hint's "recalls", the `origin` handles a recall returns and `demote`
+read that same profile, so one call never mixes two profiles.
+
+`recall_mode` is about recall only. The consolidation brief keeps its own
+`dreaming_mode`, and the "since your last session" digest is a count, not
+recall, so both are unchanged. Under `recall_mode: off` the provider's save
+reminder in the system prompt no longer says "Use recall later".
+
+A `memory_mode` of `off`, or a disabled `retain_knowledge` capability family,
+turns recall off whatever `recall_mode` says: per-turn recall serves nothing
+and tool recall refuses with `recall_disabled`. Because capture is off too,
+nothing asks for a save either: the consolidation brief is not served and the
+save reminder is left out of the system prompt. If `setup-profile.json` cannot
+be read, OMH treats the profile as `off`. The receipt lists the file under
+`store.unreadable`, and tool recall returns `memory_policy_unreadable`.
+
+Set them with `omh memory recall-line [all|console|off]` and `omh memory
+recall-mode [auto|on_demand|off]`. Each writes only
+`plugins.entries.omh.settings.<name>` in the profile's `config.yaml`, never
+Hermes' `memory.provider` slot. Without a value they print the setting in force;
+`--dry-run` reports a change without writing it, and a write the editor refuses
+exits 1 with the old value still in force. `omh memory status` reports both
+under `recall_settings`. As with `dreaming_mode`, `off`, `false` and `no` all
+mean `off`. Any other value, or a config this reader cannot follow, keeps the
+default and carries `issue: recall_setting_unrecognized` with a `reason` of
+`unknown_value` or `config_unreadable`. `omh doctor` prints the same as a
+`recall_setting_unrecognized` advice line, which never changes the doctor
+status.
 
 ### The `omh reminder:` line
 
@@ -2140,6 +2407,17 @@ Only an attended operator console evaluates at these points
 ([Surface classes](#surface-classes)); a shared surface, a background run and a
 Kanban worker raise no brief and move no counter.
 
+The session-ending points (`session_end`, `shutdown`, `session_start_recovery`)
+share the turn interval's threshold: a session with fewer than five
+unconsolidated turns raises no brief (it once raised one at a single turn, which
+put a capture request on nearly every console turn). Those turns are not lost:
+the counter persists in the dreaming state and carries into the next session's
+interval. A brief is also served at most once per session: on the modes where
+Hermes replays provider context for the rest of the session, the same brief
+(`raised_at` and trigger) would otherwise ride every later turn, so it is not
+rendered again. `/new` and `/reset` start a new conversation and are served a
+still-due brief again; a same-conversation session rebind is not.
+
 ### Per-profile dreaming state and the mode setting
 
 The counters and the brief belong to one Hermes profile, not to the OMH home.
@@ -2295,7 +2573,7 @@ this on the CLI surface), the provider also prints one line when a brief
 fires and one when it is honoured:
 
 ```text
-💤 OMH — memory consolidation due (session_end: session_ending_with_unconsolidated_turns:1)
+💤 OMH — memory consolidation due (session_end: session_ending_with_unconsolidated_turns:5)
 🧹 OMH — memory consolidated (replace on memory)
 ```
 

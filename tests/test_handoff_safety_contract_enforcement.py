@@ -292,8 +292,10 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
     "src/commands/bare_launch.py": (
         "bare `omh` with a tty -- the operator's own launch of `hermes` (as `hermes --tui` "
         "with the OMH frontend when it can run, otherwise Hermes' own `hermes --tui`, or plain "
-        "`hermes` without Node), the same launch as typing it themselves; never reached from any "
-        "prepared-handoff path."
+        "`hermes` without Node), the same launch as typing it themselves; and, only after the person "
+        "picked Restart in that TUI's own question once `omh update` installed another generation under "
+        "it, one `<installer root>/current/venv/bin/python -P -m omh.cli [homes, profile] [--resume <id>]` "
+        "that opens the TUI again on the installed generation. Never reached from any prepared-handoff path."
     ),
     "src/tui/gateway.py": (
         "the OMH TUI's single gateway child: Hermes' own `tui_gateway`, spawned with the interpreter "
@@ -321,9 +323,21 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
         "socket, no network call. Reached only from the TUI's title state and exit; never from a "
         "prepared-handoff path."
     ),
+    "src/tui/gateway_restart.py": (
+        "the OMH TUI's `/gateway restart`, only after the person typed it and picked Restart in the slot: one fixed "
+        "`<HERMES_PYTHON> -m hermes_cli.main [-p <profile>] gateway restart --yes --detach`, Hermes' own restart "
+        "command as Hermes' updater runs it, on the interpreter and import path Hermes' launcher handed the TUI; the "
+        "profile is the one Hermes named for the session, or `default` when the person picked the whole shared gateway, "
+        "checked against Hermes' profile id rule. It signals no process itself and is never reached from a "
+        "prepared-handoff path."
+    ),
     "src/commands/setup.py": (
-        "`omh setup` / `omh update` -- pip self-update, CLI re-entry after update, and the "
-        "opt-in GitHub star (see GH_INVOCATION_EXCEPTIONS in INVARIANT 3)."
+        "`omh setup` / `omh update` -- pip self-update, CLI re-entry after update, the "
+        "opt-in GitHub star (see GH_INVOCATION_EXCEPTIONS in INVARIANT 3), and after an activated update "
+        "in the process the person started, only on their yes at a terminal or an explicit "
+        "`--restart-gateway`: the person's `hermes -p <profile> gateway restart --yes --detach` for each "
+        "running gateway still on the old OMH plugin code (`commands/update_gateway.py` builds the argv), "
+        "in a session of its own with no stdin."
     ),
     "src/quality/cross_harness_adapter_sandbox.py": (
         "sandboxed child process for the cross-harness benchmark lane."
@@ -636,7 +650,9 @@ PATH_MODULE_LOAD_ALLOWLIST: dict[str, str] = {
         "one file, `<bundle_root>/runtime_reader.py`, under the private parent `omh_desktop_bundle` "
         "whose `__path__` is the bundle root; the one route passes no root at all and takes the "
         "default, `Path(__file__).resolve().parent.parent`, the installed bundle this file ships "
-        "in. Everything the load reaches is a sibling of this file, which `_source_modules()` "
+        "in. `delegation_drawing` then reaches `delegation_view` with a static "
+        "`from omh_desktop_bundle import delegation_view`, through that same package's `__path__`. "
+        "Everything the load reaches is a sibling of this file, which `_source_modules()` "
         "already parses under `src/plugin_bundle/omh/`."
     ),
 }
@@ -883,21 +899,35 @@ PARSING_ONLY_URLLIB_REQUEST_FILES: dict[str, str] = {
 }
 
 
-# The one opt-in network client in `src/`. Its whole surface is these names:
-# a request object, an opener, the HTTPS handler, and the redirect handler it
-# subclasses to refuse every 3xx. Each entry must still import from
-# `urllib.request` (stale check), and only its named importer may import it.
+# The scoped network clients in `src/`. Their whole surface is these names:
+# a request object, an opener, the HTTPS handler, and the redirect handler each
+# subclasses to refuse a 3xx (every one for Jev; any off the registry's host for
+# the update notice). Each entry must still import from `urllib.request` (stale
+# check), and only its named importer may import it.
 NETWORK_CLIENT_BRIDGES: dict[str, str] = {
     "src/plugin_bundle/omh/jev_ask_client.py": (
         "omh_jev_ask -- the one opt-in bridge that POSTs typed questions to Jev with the user's own "
         "key; reached only from an explicit tool call, after the user named Jev in that turn and a "
-        "route resolved; fixed two-host HTTPS route table, redirects refused, bounded both ways; "
+        "route resolved; fixed route identities, TypeSafe host optionally configured through "
+        "TYPESAFE_BASE_URL as an HTTPS base URL without credentials/query/fragment, OpenRouter host fixed; "
+        "redirects refused, bounded both ways; "
+        "documented as a scoped exception in CLAUDE.md and AGENTS.md."
+    ),
+    "src/tui/update_notice.py": (
+        "the OMH TUI's update notice -- GETs npm's `latest` oh-my-hermes version from the one fixed host "
+        "registry.npmjs.org, on a background thread, at most once a day per OMH home (cached under "
+        "`<omh_home>/tui/update-check.json`); HTTPS only, a 3 s socket timeout, redirects off that host refused, the "
+        "reply bounded and only its version kept; sends nothing about the person; off with "
+        "OMH_TUI_UPDATE_CHECK=0, `omh theme update-check off`, or `omh update-check` stored as off. Its one other "
+        "caller is the explicit `omh update` on an installer-managed stable install, which calls `fetch_latest` "
+        "once to pick the release wheel it is about to download (`commands/setup.py:_installer_self_update_release`); "
         "documented as a scoped exception in CLAUDE.md and AGENTS.md."
     ),
 }
 NETWORK_CLIENT_BRIDGE_URLLIB_NAMES = frozenset({"Request", "build_opener", "HTTPSHandler", "HTTPRedirectHandler"})
 NETWORK_CLIENT_BRIDGE_IMPORTERS: dict[str, frozenset[str]] = {
     "src/plugin_bundle/omh/jev_ask_client.py": frozenset({"src/plugin_bundle/omh/tools/jev_ask_tool.py"}),
+    "src/tui/update_notice.py": frozenset({"src/tui/app.py", "src/commands/setup.py"}),
 }
 
 
@@ -996,7 +1026,10 @@ HERMES_INTERPRETER_SCRIPTS: dict[str, HermesScriptPolicy] = {
         dial=("dial", "grant"),
         # Hermes' own client dials with `proxy=None` (`hermes_cli/gateway_client.py`): without it websockets sends
         # the session-ticket upgrade through HTTP(S)_PROXY.
-        dial_pinned={"proxy": None},
+        # `ping_interval=None`: Hermes keeps no keepalive ping on loopback (`hermes_cli/web_server.py`), since a busy
+        # gateway answers it late and websockets' default then closes a connection whose turn still runs. A liveness
+        # policy rather than a safety one, pinned here because this is where the dial's keywords are held.
+        dial_pinned={"proxy": None, "ping_interval": None},
         private_attributes={},  # it reads no private attribute of anything but itself
         environ_key="TERMINAL_CWD",  # set for Hermes' path helper and restored (`HermesFiles.image`)
         # What Hermes' own bootstrap removes before it may start a gateway (`ui-tui/scripts/gateway_bootstrap.py`).
@@ -1680,6 +1713,11 @@ class NoNetworkClientInSource(unittest.TestCase):
             "def go(api):\n    url, protocols = api.grant()\n    return api.dial(url, proxy='http://evil:8080')":
             "without `proxy=None`",
             "def go(api, how):\n    url, protocols = api.grant()\n    return api.dial(url, proxy=how)": "without `proxy=None`",
+            # and no keepalive ping, as Hermes' loopback policy
+            "def go(api):\n    url, protocols = api.grant()\n    return api.dial(url, proxy=None)":
+            "without `ping_interval=None`",
+            "def go(api):\n    url, protocols = api.grant()\n    return api.dial(url, proxy=None, ping_interval=20)":
+            "without `ping_interval=None`",
             # the launch-policy removal: its constant is the pinned literal, bound once, and its loop name kept
             "LAUNCH_POLICY_ENV = ('PATH', 'HERMES_HOME')": "as the pinned literal tuple",
             "LAUNCH_POLICY_ENV = ('HERMES_MODEL',) + ('HERMES_HOME',)": "as the pinned literal tuple",
@@ -1731,7 +1769,7 @@ class NoNetworkClientInSource(unittest.TestCase):
             "receipt = object()\ngetattr(receipt, 'state', None)\n"
             "os.environ.get('X')\nos.environ['TERMINAL_CWD'] = '/w'\nos.environ.pop('TERMINAL_CWD', None)\n"
             "copy = dict(os.environ)\nfor name in LAUNCH_POLICY_ENV:\n    os.environ.pop(name, None)\n"
-            "def relay(api, url):\n    return api.dial(url, proxy=None)\n"
+            "def relay(api, url):\n    return api.dial(url, proxy=None, ping_interval=None)\n"
             "def main():\n    api = attach_api()\n    url, protocols = api.grant()\n    return relay(api, url)\n"
             "class C:\n    def m(self):\n        self._serial = 1\n        return lambda: self._serial\n"
         )

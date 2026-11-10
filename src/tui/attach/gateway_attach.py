@@ -46,7 +46,7 @@ the stdio entry's in a closed set of places. `Adapter` translates those, after
   Hermes' message for a guarded target; the owner's one-time token for that
   target is kept and rides the same switch sent again with
   `confirm_expensive_model`. Every other `config.set` passes.
-* `session.steer` gets the execution generation of the turn it steers,
+* `session.steer` and `session.redirect` get the execution generation of the turn they steer,
   `shell.exec` the session it runs in, and `session.list` is the owner's live
   listing followed by its stored one.
 * `session.interrupt` gets the execution generation of the turn it stops, as
@@ -167,6 +167,17 @@ TEXT_PARTS = frozenset({"input_text", "output_text", "text"})
 # Ink's `/reload-mcp now`: the words that confirm a reload of every chat of the profile.
 RELOAD_MCP_CONFIRM_WORDS = frozenset({"always", "approve", "now", "once", "yes"})
 ENSURE_TIMEOUT_SECONDS = 30
+# What this child exits with when the gateway is there but not answering yet, so the TUI waits and tries again
+# instead of falling back (`omh.tui.gateway.GATEWAY_NOT_READY_EXIT`, the same number): Hermes' verdict that the
+# gateway is starting or draining (a restart), or a control socket or WebSocket that is missing, refuses, or is
+# silent. EX_UNAVAILABLE. A refusal of this client (a bad ticket, an upgrade turned down) stays 1.
+NOT_READY_EXIT = 69
+# The socket failures that mean the gateway is not answering yet: refused or reset, silent, or its socket not there
+# (a restart removes and recreates it). A denied socket (PermissionError) and any other OSError stay 1.
+NOT_READY_OS_ERRORS = (ConnectionError, TimeoutError, FileNotFoundError)
+GOING_AWAY = 1001  # the WebSocket close code of a server going down (RFC 6455): a gateway that restarts
+NOT_READY_STATES = frozenset({"starting", "draining"})
+NOT_READY_REASONS = frozenset({"control_timeout", "runtime_exited"})
 OPEN_TIMEOUT_SECONDS = 10
 STDIN_READ_BYTES = 64 * 1024
 # After the TUI closes its input: how long the answers to calls already sent (the last session's detach) may take.
@@ -552,6 +563,7 @@ class Adapter:
             "session.close": self._close,
             "prompt.submit": self._submit,
             "session.steer": self._steer,
+            "session.redirect": self._redirect,
             "session.interrupt": self._interrupt,
             "config.set": self._config_set,
             "shell.exec": self._shell,
@@ -679,12 +691,15 @@ class Adapter:
 
         return [self._call("session.mutate", mutate, on_rewound)]
 
-    def _steer(self, request_id: object, params: dict[str, Any]) -> list[Action]:
+    def _steer(self, request_id: object, params: dict[str, Any], method: str = "session.steer") -> list[Action]:
         state = self._state(params)
         if state is None or not _whole(state.generation):
             return [_reply(request_id, {"status": "rejected"})]  # no turn known to steer: the TUI queues the text
         params["execution_generation"] = state.generation
-        return [self._forward(request_id, "session.steer", params, translated=False)]
+        return [self._forward(request_id, method, params, translated=False)]
+
+    def _redirect(self, request_id: object, params: dict[str, Any]) -> list[Action]:
+        return self._steer(request_id, params, "session.redirect")
 
     def _interrupt(self, request_id: object, params: dict[str, Any]) -> list[Action]:
         state = self._state(params)
@@ -1431,6 +1446,9 @@ def attach_api() -> AttachApi | None:
         home = get_hermes_home().resolve()
         receipt = ensure_gateway_runtime(home, timeout=ENSURE_TIMEOUT_SECONDS, idle_exit=True)
         if not attachable(receipt):
+            if (getattr(receipt, "state", None) in NOT_READY_STATES
+                    or getattr(receipt, "reason_code", None) in NOT_READY_REASONS):
+                raise GatewayNotReady(failure_message(receipt))
             raise RuntimeError(failure_message(receipt))
         endpoint = receipt.endpoint
         request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
@@ -1441,6 +1459,8 @@ def attach_api() -> AttachApi | None:
             peer.sendall(request)
             with peer.makefile("rb") as stream:
                 raw = stream.readline(65537)
+        if not raw:  # the control socket closed without an answer: a gateway going down or not up yet
+            raise GatewayNotReady("Hermes' gateway closed its control socket without answering")
         answer = json.loads(raw)
         granted = answer.get("result") if isinstance(answer, dict) else None
         if (not isinstance(granted, dict) or answer.get("ok") is not True or answer.get("id") != 1
@@ -1452,6 +1472,10 @@ def attach_api() -> AttachApi | None:
         return url, list(protocols)
 
     return AttachApi(grant=grant, dial=connect, protocol=GATEWAY_WS_PROTOCOL, errors=(WebSocketException,))
+
+
+class GatewayNotReady(RuntimeError):
+    """Hermes says the gateway is starting or draining, or cannot be asked yet: worth waiting for."""
 
 
 def failure_message(receipt: object) -> str:
@@ -1514,10 +1538,14 @@ async def relay(api: AttachApi, url: str, protocols: list[str], adapter: Adapter
     """Relay the TUI's stdio and the owner's WebSocket through `adapter` until either side ends.
 
     0 when the TUI closed its input (the person left); 1 when the owner's side
-    ended first, which the TUI reads as a gateway that exited on its own.
+    ended first, which the TUI reads as a dropped connection to a gateway that
+    may still run the turn: it resumes the session over a new one.
     """
+    # No keepalive ping, as Hermes' own loopback policy (`hermes_cli/web_server.py`): the gateway answers a ping on its
+    # event loop, which a busy worker can hold for minutes, and websockets' default (20 s + 20 s) then closes a healthy
+    # connection while the turn runs on. A gateway that dies closes the loopback socket itself.
     async with api.dial(url, subprotocols=protocols, open_timeout=OPEN_TIMEOUT_SECONDS,
-                           max_size=None, proxy=None) as socket:
+                           max_size=None, proxy=None, ping_interval=None) as socket:
         if socket.subprotocol != api.protocol:
             _say(f"Hermes' gateway answered with protocol {socket.subprotocol!r}, not {api.protocol!r}")
             return 1
@@ -1575,7 +1603,8 @@ async def relay(api: AttachApi, url: str, protocols: list[str], adapter: Adapter
                 task.cancel()
         error = next((task.exception() for task in done if task.exception() is not None), None)
         _say(f"the connection to Hermes' gateway ended ({error or f'close code {socket.close_code}'})")
-        return 1
+        # A gateway going down closes with going-away: the TUI may wait for it to come back. Any other end stays 1.
+        return NOT_READY_EXIT if error is None and socket.close_code == GOING_AWAY else 1
 
 
 def _say(text: str) -> None:
@@ -1616,13 +1645,19 @@ def main() -> int:
         os.environ.pop(name, None)
     try:
         url, protocols = api.grant()
+    except (GatewayNotReady, *NOT_READY_OS_ERRORS) as error:  # a restart's verdict; a socket missing, refused, silent
+        _say(str(error))
+        return NOT_READY_EXIT
     except (OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as error:
-        # The failures Hermes' own bootstrap reports: discovery, socket I/O and timeouts, bad JSON, a refused grant.
+        # The failures Hermes' own bootstrap reports: discovery, socket I/O, bad JSON, a refused grant.
         _say(str(error))
         return 1
     try:
         return asyncio.run(relay(api, url, protocols, Adapter(options, tool_progress, cwd=cwd)))
-    except (OSError, TimeoutError, *api.errors) as error:  # a refused upgrade or ticket is the client's own error
+    except NOT_READY_OS_ERRORS as error:  # refused, reset or silent: a gateway that is not answering yet
+        _say(f"could not reach Hermes' gateway: {error}")
+        return NOT_READY_EXIT
+    except (OSError, *api.errors) as error:  # a refused upgrade or ticket is the client's own error
         _say(f"could not reach Hermes' gateway: {error}")
         return 1
 

@@ -11,8 +11,9 @@ none goes missing, and nothing already in scrollback would need a repaint.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 import time
+from typing import get_origin, get_type_hints
 import unicodedata
 import unittest
 from unittest.mock import patch
@@ -24,12 +25,14 @@ from omh.tui.style import Line, Span
 from omh.tui import transcript as transcript_module
 from omh.skin_pack import default_theme
 from omh.tui.theme import DEFAULT_THEME as THEME
+from omh.tui.theme import Theme
 from omh.tui.theme import with_launch_look
 from omh.tui.transcript import (
     STEER_QUEUED,
     STEER_TAKEN,
     GUTTER,
     OUTPUT_PREVIEW_ROWS,
+    AgentDoneBlock,
     AssistantBlock,
     CommandBlock,
     SteerBlock,
@@ -201,6 +204,47 @@ class SpacingTests(LoopTestCase):
         self.assertEqual(lines_text(self.taken), expected)
         self.assertEqual(self.history(details=False), expected)
 
+    def test_two_blank_rows_between_two_calls_one_between_other_blocks_none_over_a_calls_output(self) -> None:
+        """Owner, 2026-11-09: two calls of a turn read apart, two blank rows between them (a folded run of loads is a
+        call of its group); every other pair of blocks keeps one, and what a call printed hangs under it."""
+        self.user("go")
+        self.step(ev("message.start"))
+        self.step(ev("reasoning.delta", text="look first"))
+        self.step(ev("message.delta", text="Looking.\n"))
+        self.step(ev("tool.start", tool_id="a", name="terminal", context="ls"))
+        self.step(ev("tool.complete", tool_id="a", name="terminal", result={"output": "a.py", "exit_code": 0}))
+        self.step(ev("tool.start", tool_id="b", name="read_file", context="a.py"))
+        self.assertEqual(self.live()[-3:], ["", "", "┃ ○ read_file(a.py)"])  # the live tail as scrollback has it
+        self.assertTrue(self.live()[-4], self.live())  # two blank rows, not three
+        self.step(ev("tool.complete", tool_id="b", name="read_file", result={"content": "x"}))
+        self.step(ev("tool.start", tool_id="c", name="skill_view", context="dag-ulw"))
+        self.step(ev("tool.complete", tool_id="c", name="skill_view", result={"success": True, "name": "dag-ulw"}))
+        self.step(ev("message.delta", text="Done.\n"))
+        self.transcript.add_aside(AgentDoneBlock("explore", facts=("5s",)))
+        self.transcript.add_notice("gateway reconnected")
+        self.step(ev("message.complete", status="complete"))
+        self.transcript.add_turn_summary(3.0, None)
+        self.user("next")
+        heads = [(index, text) for index, text in enumerate(lines_text(self.taken)) if text]
+        gaps = [(above[:9], below[:9], at - over - 1) for (over, above), (at, below) in zip(heads, heads[1:])]
+        self.assertEqual(gaps, [
+            ("┃ ❯ go", "▸ thought", 1),           # prompt → thinking
+            ("▸ thought", "┃ ⚚ Herme", 1),         # thinking → reply
+            ("┃ ⚚ Herme", "┃   Looki", 0),
+            ("┃   Looki", "┃ ● termi", 1),          # reply → call
+            ("┃ ● termi", "┃   ⎿  a.", 0),          # call → its output
+            ("┃   ⎿  a.", "┃ ● read_", 2),          # call → call
+            ("┃ ● read_", "┃   ⎿  Re", 0),
+            ("┃   ⎿  Re", "┃ ● Loade", 2),          # call → folded run of loads, in the same group
+            ("┃ ● Loade", "┃ ⚚ Herme", 1),          # call → reply
+            ("┃ ⚚ Herme", "┃   Done.", 0),
+            ("┃   Done.", "● explore", 1),          # reply → briefing
+            ("● explore", "· gateway", 1),          # briefing → notice
+            ("· gateway", "  ✻ 3s · ", 1),          # notice → done line
+            ("  ✻ 3s · ", "┃ ❯ next", 1),           # done line → prompt
+        ])
+        self.assertEqual(lines_text(self.taken), self.history(details=False))
+
     def test_a_resumed_reply_renders_like_a_streamed_one(self) -> None:
         self.user("hi")
         self.transcript.add_assistant("**hello** there\n\n```sh\nls\n```")
@@ -263,7 +307,7 @@ class RetakeTailTests(LoopTestCase):
         self.session(20)
         self.transcript.retake_tail(WIDTH, THEME, max_rows=10)
         again = lines_text(self.transcript.take_stable_lines(WIDTH, THEME))
-        self.assertEqual(again[0], "⋯ 37 earlier messages · /history shows all")
+        self.assertEqual(again[0], "⋯ 37 earlier entries · /history shows all")
         self.assertEqual(again[1:], self.history(details=False)[-10:])  # reply 18, prompt 19, reply 19: 4 + 2 + 4
         self.assertEqual(again[2], "┃ ⚚ Hermes")
         self.assertEqual(lines_text(self.transcript.take_stable_lines(WIDTH, THEME)), [])
@@ -281,7 +325,7 @@ class RetakeTailTests(LoopTestCase):
         self.step(ev("message.complete", text=reply, status="complete"))
         self.transcript.retake_tail(WIDTH, THEME, max_rows=5)
         again = lines_text(self.transcript.take_stable_lines(WIDTH, THEME))
-        self.assertEqual(again[0], "⋯ 1 earlier message · /history shows all")
+        self.assertEqual(again[0], "⋯ 1 earlier entry · /history shows all")
         self.assertEqual(len(again), 33)  # the row, a spacer, the reply's header and all 30 of its rows
 
     def test_the_live_block_stays_live_and_is_never_counted_as_left_out(self) -> None:
@@ -291,7 +335,7 @@ class RetakeTailTests(LoopTestCase):
         self.step(ev("message.delta", text="still streaming"))
         self.transcript.retake_tail(WIDTH, THEME, max_rows=3)
         again = lines_text(self.transcript.take_stable_lines(WIDTH, THEME))
-        self.assertEqual(again, ["⋯ 6 earlier messages · /history shows all", "", "┃ ❯ again"])
+        self.assertEqual(again, ["⋯ 6 earlier entries · /history shows all", "", "┃ ❯ again"])
         self.assertEqual(self.live(), ["", "┃ ⚚ Hermes", "┃   still streaming"])
 
     def test_the_take_after_it_renders_no_kept_block_again(self) -> None:
@@ -330,6 +374,95 @@ class RetakeTailTests(LoopTestCase):
                          lines_text(self.transcript.history_lines(30, THEME, details=False)))
 
 
+class KeptReplyRowsTests(unittest.TestCase):
+    """A finished reply a full redraw measured is wrapped once per width and theme: measured again, its rows are the
+    kept ones, the rows a reply never drawn before gets. Only replies inside the redraw's tail keep any."""
+
+    TEXT = ("## Answer\n\n한국어 문장입니다 — 폭이 두 칸인 글자 🎉 ✅\n\n- item **bold** with `code`\n- [a link](https://example.com)\n\n"
+            "```python\ndef fib(n: int) -> int:\n    return n\n```\n\n" + "lorem ipsum dolor sit amet " * 8)
+
+    def rows(self, block: AssistantBlock, width: int, theme: object = THEME) -> tuple[list[Line], int]:
+        """The rows a full redraw measures for `block`, and how many times it wrapped markdown for them."""
+        with patch("omh.tui.transcript.render_lines", wraps=transcript_module.render_lines) as wrapped:
+            rows = transcript_module._tail_rows(block, width, theme)  # type: ignore[arg-type]
+        return rows, wrapped.call_count
+
+    def fresh(self, block: AssistantBlock, width: int, theme: object = THEME) -> list[Line]:
+        """The rows of the same reply never drawn before."""
+        return block_rows(AssistantBlock(block.text, done=True, model=block.model), width, theme)  # type: ignore[arg-type]
+
+    def test_drawn_again_at_the_same_width_and_theme_it_is_not_wrapped_again(self) -> None:
+        block = AssistantBlock(self.TEXT, done=True, model="vendor/model-1")
+        first, wrapped = self.rows(block, WIDTH)
+        self.assertEqual(wrapped, 1)
+        again, wrapped = self.rows(block, WIDTH)
+        self.assertEqual((again, wrapped), (first, 0))
+        again.append(())  # the caller's list is its own
+        self.assertEqual(self.rows(block, WIDTH), (first, 0))
+        self.assertEqual(first, self.fresh(block, WIDTH))
+
+    def test_another_width_theme_text_or_model_is_wrapped_as_a_reply_never_drawn(self) -> None:
+        block = AssistantBlock(self.TEXT, done=True, model="vendor/model-1")
+        self.rows(block, WIDTH)
+        looked = with_launch_look(THEME, default_theme(), None, "ember")
+        changes = (
+            ("width", lambda: None, 40, THEME),
+            ("theme", lambda: None, WIDTH, looked),
+            ("text", lambda: setattr(block, "text", block.text + "\n\nmore"), WIDTH, THEME),
+            ("model", lambda: setattr(block, "model", "vendor/model-2"), WIDTH, THEME),
+        )
+        for name, change, width, theme in changes:
+            with self.subTest(name):
+                self.rows(block, WIDTH)  # kept at WIDTH in THEME first
+                change()
+                rows, wrapped = self.rows(block, width, theme)
+                self.assertEqual(wrapped, 1)
+                self.assertEqual(rows, self.fresh(block, width, theme))
+
+    def test_a_reply_still_streaming_keeps_nothing(self) -> None:
+        block = AssistantBlock("streaming so far", model="m")
+        self.rows(block, WIDTH)
+        self.assertIsNone(block.kept)
+        block.text += ", and more"
+        block.done = True
+        rows, wrapped = self.rows(block, WIDTH)
+        self.assertEqual((rows, wrapped), (self.fresh(block, WIDTH), 1))
+
+    def replies(self, count: int) -> Transcript:
+        transcript = Transcript()
+        transcript.blocks.extend(AssistantBlock(f"reply {index}\n\n" + self.TEXT, done=True) for index in range(count))
+        return transcript
+
+    def test_a_reply_above_the_redraw_tail_lets_go_of_its_rows(self) -> None:
+        transcript = self.replies(20)
+        transcript.retake_tail(WIDTH, THEME, max_rows=100_000)  # the whole session in the tail: every reply keeps
+        self.assertTrue(all(block.kept is not None for block in transcript.blocks))
+        tall = len(block_rows(transcript.blocks[0], WIDTH, THEME)) + 1
+        transcript.retake_tail(WIDTH, THEME, max_rows=3 * tall)
+        cut = transcript.left_out
+        self.assertEqual(cut, 17)
+        self.assertEqual([block.kept is not None for block in transcript.blocks], [False] * cut + [True] * 3)
+
+    def test_history_and_a_take_keep_nothing(self) -> None:
+        # /history pages through `block_rows` at the pager's own width (the full screen under the edge frame), so
+        # keeping rows there would grow with every reply viewed and evict the redraw's.
+        transcript = self.replies(5)
+        transcript.history_lines(WIDTH, THEME)
+        transcript.history_lines(WIDTH, THEME, details=False)
+        for block in transcript.blocks:
+            block_rows(block, WIDTH + 4, THEME)
+        transcript.take_stable_lines(WIDTH, THEME)
+        self.assertEqual([block.kept for block in transcript.blocks], [None] * 5)
+
+    def test_the_theme_the_rows_are_kept_for_cannot_change_in_place(self) -> None:
+        # `kept` matches its theme by identity: sound only while a theme is frozen and holds nothing mutable.
+        self.assertTrue(Theme.__dataclass_params__.frozen)  # type: ignore[attr-defined]
+        hints = get_type_hints(Theme)
+        mutable = [name for name, hint in hints.items() if hint in (list, dict, set) or get_origin(hint) in (list, dict, set)]
+        self.assertEqual(mutable, [])
+        self.assertEqual({field.name for field in fields(Theme)}, set(hints))
+
+
 class BlockCapTests(LoopTestCase):
     """At most `BLOCK_CAP` blocks are held; the oldest ones already printed go first."""
 
@@ -358,7 +491,7 @@ class BlockCapTests(LoopTestCase):
                 self.transcript.take_stable_lines(WIDTH, THEME)
         self.transcript.retake_tail(WIDTH, THEME, max_rows=4)
         again = lines_text(self.transcript.take_stable_lines(WIDTH, THEME))
-        self.assertEqual(again, ["⋯ 23 earlier messages · /history shows the last 10", "", "· notice 23", "", "· notice 24"])
+        self.assertEqual(again, ["⋯ 23 earlier entries · /history shows the last 10", "", "· notice 23", "", "· notice 24"])
 
     def test_blocks_past_the_cap_go_once_printed_without_waiting_for_a_new_block(self) -> None:
         with patch("omh.tui.transcript.BLOCK_CAP", 10):
@@ -373,7 +506,7 @@ class BlockCapTests(LoopTestCase):
                 self.transcript.add_notice(f"notice {number}")
             self.transcript.retake_tail(WIDTH, THEME, max_rows=4)
             again = lines_text(self.transcript.take_stable_lines(WIDTH, THEME))
-        self.assertEqual(again, ["⋯ 23 earlier messages · /history shows the last 10", "", "· notice 23", "", "· notice 24"])
+        self.assertEqual(again, ["⋯ 23 earlier entries · /history shows the last 10", "", "· notice 23", "", "· notice 24"])
         self.assertEqual(len(self.transcript.blocks), 10)
 
     def test_a_turns_answer_is_still_known_after_its_own_blocks_push_older_ones_out(self) -> None:
@@ -733,7 +866,7 @@ class ReasoningAndToolTests(LoopTestCase):
         self.step(ev("tool.generating", name="read_file"))
         self.step(ev("tool.generating", name="search_files"))
         self.step(ev("tool.start", tool_id="a", name="read_file", context="src/a.py"), at=1.0)
-        self.assertEqual(self.live(), ["┃ ○ read_file(src/a.py)", "", "┃ ◌ search_files"])
+        self.assertEqual(self.live(), ["┃ ○ read_file(src/a.py)", "", "", "┃ ◌ search_files"])
         self.step(ev("tool.start", tool_id="b", name="search_files", args={"pattern": "needle"}), at=1.1)
         self.step(ev("tool.complete", tool_id="a", name="read_file", duration_s=0.5, result={"content": "x"}))
         self.step(ev("tool.complete", tool_id="b", name="search_files", duration_s=0.7, result={"error": "rg failed"}))
@@ -746,8 +879,10 @@ class ReasoningAndToolTests(LoopTestCase):
                 "┃ ● read_file(src/a.py)  0.5s",
                 "┃   ⎿  Read 1 line",
                 "",
+                "",
                 "┃ ✗ search_files(needle)  0.7s",
                 "┃   ⎿  rg failed",
+                "",
                 "",
                 "┃ ✗ terminal(pytest)  2.0s",
                 "┃   ⎿  1 failed",
@@ -755,8 +890,8 @@ class ReasoningAndToolTests(LoopTestCase):
         )
         self.assertEqual(self.taken[0][0], rail_cell(THEME.accent))  # the launch look's rail; the mark says done
         # A failure's first line is grey like any result; its rail and its `✗` say it failed.
-        self.assertEqual(self.taken[4][-1].style, THEME.faint)
-        self.assertEqual([self.taken[row][0] for row in (3, 4)], [rail_cell(THEME.error)] * 2)  # search_files' rail
+        self.assertEqual(self.taken[5][-1].style, THEME.faint)
+        self.assertEqual([self.taken[row][0] for row in (4, 5)], [rail_cell(THEME.error)] * 2)  # search_files' rail
         self.step(ev("message.complete", text="Done.", status="complete"))
         self.assertIn("┃   ⎿  rg failed", self.history())
         self.assertIn("┃   ⎿  1 failed", self.history())
@@ -768,8 +903,8 @@ class ReasoningAndToolTests(LoopTestCase):
         self.step(ev("tool.start", tool_id="b", name="read_file", context="b.py"))
         self.step(ev("tool.complete", tool_id="b", name="read_file", duration_s=0.1, result={"content": ""}))
         flushed = self.step(ev("message.complete", text="", status="complete"))
-        self.assertEqual(flushed, ["┃ ● read_file(a.py)  0.1s", "┃   ⎿  Read 0 lines", "", "┃ ● read_file(b.py)  0.1s",
-                                   "┃   ⎿  Read 0 lines"])  # a blank row between two calls
+        self.assertEqual(flushed, ["┃ ● read_file(a.py)  0.1s", "┃   ⎿  Read 0 lines", "", "",
+                                   "┃ ● read_file(b.py)  0.1s", "┃   ⎿  Read 0 lines"])  # two blank rows between two calls
 
     def test_a_denied_approval_shows_as_denied(self) -> None:
         self.user("Use your terminal tool to run exactly this shell command: rm -rf ./omh-m0-probe-dir")
@@ -881,9 +1016,9 @@ class ToolDraftTests(LoopTestCase):
         self.step(ev("tool.generating", name="tool_call"))
         self.step(ev("tool.generating", name="read_file"))
         self.step(ev("tool.start", tool_id="a", name="read_file", context="a.py"))
-        self.assertEqual(self.live(), ["┃ ◌ tool_call", "", "┃ ○ read_file(a.py)"])
+        self.assertEqual(self.live(), ["┃ ◌ tool_call", "", "", "┃ ○ read_file(a.py)"])
         self.step(ev("tool.start", tool_id="b", name="todo_list", context="planning 1 task(s)"))
-        self.assertEqual(self.live(), ["┃ ○ todo_list(planning 1 task(s))", "", "┃ ○ read_file(a.py)"])
+        self.assertEqual(self.live(), ["┃ ○ todo_list(planning 1 task(s))", "", "", "┃ ○ read_file(a.py)"])
 
     def test_two_bridge_drafts_become_their_calls_in_the_order_they_started(self) -> None:
         # Each start claims the first unclaimed bridge draft, so the rows keep the order the calls began in.
@@ -891,9 +1026,9 @@ class ToolDraftTests(LoopTestCase):
         self.step(ev("tool.generating", name="tool_call"))
         self.step(ev("tool.generating", name="tool_call"))
         self.step(ev("tool.start", tool_id="a", name="todo_list", context="planning 1 task(s)"))
-        self.assertEqual(self.live(), ["┃ ○ todo_list(planning 1 task(s))", "", "┃ ◌ tool_call"])
+        self.assertEqual(self.live(), ["┃ ○ todo_list(planning 1 task(s))", "", "", "┃ ◌ tool_call"])
         self.step(ev("tool.start", tool_id="b", name="web_search", context="hermes agent"))
-        self.assertEqual(self.live(), ["┃ ○ todo_list(planning 1 task(s))", "", "┃ ○ web_search(hermes agent)"])
+        self.assertEqual(self.live(), ["┃ ○ todo_list(planning 1 task(s))", "", "", "┃ ○ web_search(hermes agent)"])
 
     def test_a_streamed_attempt_hermes_discards_leaves_no_row_and_no_count(self) -> None:
         self.step(ev("message.start"))
@@ -1262,8 +1397,10 @@ class InlineDiffTests(LoopTestCase):
                 "┃ ✗ patch(src/app.py)  0.3s",
                 "┃   ⎿  denied",
                 "",
+                "",
                 "┃ ✗ patch(src/app.py)  0.3s",
                 "┃   ⎿  old_string not found in src/app.py",
+                "",
                 "",
                 "┃ ✗ patch(src/app.py)  0.3s",
                 "┃   ⎿  no change",

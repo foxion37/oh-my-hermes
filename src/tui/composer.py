@@ -115,6 +115,8 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import accumulate
+import re
 import unicodedata
 
 from .keys import (
@@ -132,6 +134,7 @@ from .keys import (
     UP,
     Key,
     Paste,
+    is_leader_key,
 )
 from .style import DEFAULT_STYLE, Line, Span, Style
 from .width import TAB_CELLS, cell_width, cluster_width, clusters, is_control, truncate
@@ -233,13 +236,17 @@ class _Shape:
     widths: list[int | None]  # `None` for a newline
 
 
-def _shape(text: str, masked: bool, labels: Mapping[str, str]) -> _Shape:
+# Where `_shape` may cut the text into chunks that segment apart: after a newline (no cluster spans one), and after
+# a space when the next character is ASCII, a Hangul syllable or a CJK ideograph (none of them joins the space).
+_CHUNK_EDGE = re.compile("(?<=\n)|(?<= )(?=[\x00-\x7f\uac00-\ud7a3\u4e00-\u9fff])")
+_Chunk = tuple[list[str], list[str], list[int | None]]  # a chunk's clusters, what each draws as, and its widths
+
+
+def _chunk(text: str, masked: bool, labels: Mapping[str, str]) -> _Chunk:
     units = clusters(text)
-    bounds = [0]
     shown: list[str] = []
     widths: list[int | None] = []
     for unit in units:
-        bounds.append(bounds[-1] + len(unit))
         if unit == NEWLINE:
             shown.append("")
             widths.append(None)
@@ -255,6 +262,26 @@ def _shape(text: str, masked: bool, labels: Mapping[str, str]) -> _Shape:
         else:
             shown.append(unit)
             widths.append(cluster_width(unit))
+    return units, shown, widths
+
+
+def _shape(text: str, masked: bool, labels: Mapping[str, str], kept: dict[tuple[str, bool], _Chunk]) -> _Shape:
+    """`text` measured chunk by chunk; `kept` holds the chunks measured last time, so an edit measures only its own.
+
+    `kept` is replaced by the chunks of `text`, and must be emptied when `labels` change."""
+    now: dict[tuple[str, bool], _Chunk] = {}
+    units: list[str] = []
+    shown: list[str] = []
+    widths: list[int | None] = []
+    for piece in _CHUNK_EDGE.split(text):
+        key = (piece, masked)
+        chunk = now[key] = now.get(key) or kept.get(key) or _chunk(piece, masked, labels)
+        units += chunk[0]
+        shown += chunk[1]
+        widths += chunk[2]
+    kept.clear()
+    kept.update(now)
+    bounds = list(accumulate(map(len, units), initial=0))
     return _Shape(text, masked, units, bounds, shown, widths)
 
 
@@ -382,6 +409,46 @@ def _first_blank_free(units: Sequence[str], start: int, end: int) -> int:
     return index if index < end else max(end - 1, start)
 
 
+_QUOTE_CHARS = ('"', "'", "`")
+_BRACKET_PAIRS = {"(": ")", ")": "(", "[": "]", "]": "[", "{": "}", "}": "{"}
+_BRACKET_OPENERS = {"(": "(", ")": "(", "[": "[", "]": "[", "{": "{", "}": "{"}
+_BRACKET_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+
+
+def _backslashes_before(units: Sequence[str], line_start: int, index: int) -> int:
+    """How many backslashes run back from just before `index`, not past `line_start`."""
+    count = 0
+    at = index - 1
+    while at >= line_start and units[at] == "\\":
+        count += 1
+        at -= 1
+    return count
+
+
+def _raw_quote(units: Sequence[str], start: int, line_end: int, quote: str) -> int | None:
+    """The first `quote` from `start` before `line_end`, escaped or not."""
+    at = start
+    while at < line_end:
+        if units[at] == quote:
+            return at
+        at += 1
+    return None
+
+
+def _closing_quote(units: Sequence[str], start: int, line_end: int, quote: str) -> int | None:
+    """The first `quote` from `start` before `line_end` that no backslash escapes."""
+    at = start
+    while at < line_end:
+        unit = units[at]
+        if unit == "\\":
+            at += 2
+            continue
+        if unit == quote:
+            return at
+        at += 1
+    return None
+
+
 @dataclass(frozen=True)
 class _Register:
     """What a NORMAL deletion, change or yank took, for `p` and `P`: the text, its chips and images, and whether it
@@ -416,6 +483,9 @@ class Composer:
     _operator: str = field(default="", init=False, repr=False, compare=False)
     _op_count: str = field(default="", init=False, repr=False, compare=False)
     _prefix: str = field(default="", init=False, repr=False, compare=False)
+    _leader: bool = field(default=False, init=False, repr=False, compare=False)
+    # Successful search memory is per draft, separate from transient prefixes and undo.
+    _last_search: tuple[str, str] | None = field(default=None, init=False, repr=False, compare=False)
     _register: _Register | None = field(default=None, init=False, repr=False, compare=False)
     _changing: bool = field(default=False, init=False, repr=False, compare=False)  # a change went to INSERT
     _paste_count: int = field(default=0, init=False, repr=False, compare=False)
@@ -426,6 +496,9 @@ class Composer:
     _scroll: int = field(default=0, init=False, repr=False, compare=False)
     # The text measured, and its rows at one width: a caret move or a redraw reuses them until the text changes.
     _shaped: _Shape | None = field(default=None, init=False, repr=False, compare=False)
+    # The chunks of that text, and the image labels they were measured with (`_shape` reuses them across an edit).
+    _chunks: dict[tuple[str, bool], _Chunk] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _chunk_labels: dict[str, str] = field(default_factory=dict, init=False, repr=False, compare=False)
     # (measured, cells, rows, the measured text as drawn at that width: a token wider than a row cut to it)
     _laid: tuple[_Shape, int, list[_Row], _Shape] | None = field(default=None, init=False, repr=False, compare=False)
     # Undo and redo: (text, caret, paste chips, image tokens) before each step, newest last.
@@ -447,7 +520,10 @@ class Composer:
         shape = self._shaped
         if shape is None or shape.masked != self.masked or shape.text != self.text:
             labels = {token: label for token, (label, _image) in self.images.items()}
-            shape = self._shaped = _shape(self.text, self.masked, labels)
+            if labels != self._chunk_labels:
+                self._chunks.clear()
+                self._chunk_labels = labels
+            shape = self._shaped = _shape(self.text, self.masked, labels, self._chunks)
         return shape
 
     def _rows(self, avail: int) -> tuple[_Shape, list[_Row]]:
@@ -506,6 +582,10 @@ class Composer:
             if start < self.caret < end:
                 self.caret = end if forward else start
                 return
+
+    def shown(self) -> str:
+        """The composer's text as its row shows it: a chip as its label, an image token as its label."""
+        return self._labelled(self.text)
 
     def expanded(self, text: str | None = None) -> str:
         """`text` (the composer's own by default) with every chip replaced by the text it holds, every image token by
@@ -649,6 +729,7 @@ class Composer:
         self._scroll = 0
 
     def _clear(self) -> None:
+        self._last_search = None
         self._load("")
         self.history_index = None
         self._draft, self._draft_images = "", {}
@@ -659,6 +740,10 @@ class Composer:
     # -- key handling ---------------------------------------------------------
 
     def handle(self, event: Key | Paste) -> ComposerAction:
+        # Followers are consumed before even the shared undo/redo chords can dispatch.
+        if self._leader and isinstance(event, Key):
+            self._drop_pending()
+            return NOTHING
         if isinstance(event, Key) and event.name == CHAR and event.ctrl and not event.alt:
             redo = event.char == REDO_CHAR or (self.normal and event.char == VIM_REDO_CHAR)
             if event.char in UNDO_CHARS or redo:
@@ -692,6 +777,7 @@ class Composer:
     def set_vim(self, on: bool) -> None:
         """Modal editing on or off; either way the composer is in INSERT with no command half typed."""
         self.vim = on
+        self._last_search = None
         self.normal = False
         self._drop_pending()
 
@@ -700,14 +786,22 @@ class Composer:
         """`VIM_INSERT` or `VIM_NORMAL` while vim mode is on, else ""."""
         if not self.vim or self.masked:
             return ""
+        if self.normal and self._leader:
+            return f"{VIM_NORMAL} · SPC"
         return VIM_NORMAL if self.normal else VIM_INSERT
 
     @property
+    def leader(self) -> bool:
+        """Whether a Vim leader sequence is waiting for its next key."""
+        return self._leader
+
+    @property
     def pending(self) -> bool:
-        """Whether a NORMAL command is half typed (a count, an operator, a `g` or an `r`), which Esc drops."""
-        return bool(self._count or self._operator or self._op_count or self._prefix)
+        """Whether a NORMAL command or leader is half typed, which Esc drops."""
+        return bool(self._count or self._operator or self._op_count or self._prefix or self._leader)
 
     def _drop_pending(self) -> None:
+        self._leader = False
         self._count = self._operator = self._op_count = self._prefix = ""
 
     def _modal(self, event: Key | Paste) -> ComposerAction | None:
@@ -728,6 +822,21 @@ class Composer:
                 self._enter_normal()
                 return self._normal_char(event.char)
             return None
+        if self._prefix in ("f", "F", "t", "T"):
+            if event.name == CHAR and not (event.ctrl or event.alt):  # a reported Shift is in the char already
+                return self._normal_char(event.char)
+            self._drop_pending()
+            return NOTHING
+        if self._operator and self._prefix in ("i", "a"):
+            if event.name == CHAR and not (event.ctrl or event.alt):
+                return self._normal_char(event.char)
+            self._drop_pending()
+            # A legacy Alt chord is Esc and the key in one read: the Esc drops the object, then the key is a fresh one.
+            return self._normal_char(event.char) if legacy_alt else NOTHING
+        if is_leader_key(event) and not (self._operator or self._prefix):
+            self._drop_pending()  # a count does not carry into a leader sequence
+            self._leader = True
+            return NOTHING
         if event.name == CHAR and ((not event.ctrl and not event.alt) or legacy_alt):
             return self._normal_char(event.char)
         if event.name in (BACKSPACE, DELETE) and not (event.ctrl or event.alt or event.shift):
@@ -791,6 +900,19 @@ class Composer:
     def _normal_char(self, char: str) -> ComposerAction:
         """A character typed in NORMAL: part of a command, or the key that completes one."""
         prefix, self._prefix = self._prefix, ""
+        if prefix in ("f", "F", "t", "T"):
+            self._search(prefix, char, self._take_count() or 1, self._operator)
+            return NOTHING
+        if prefix in ("i", "a"):
+            count, operator = self._take_count() or 1, self._operator
+            self._drop_pending()
+            if char == "w" and operator:
+                self._operate_span(operator, self._text_object_span(prefix, count))
+            elif char in _QUOTE_CHARS and operator:
+                self._operate_span(operator, self._quote_object_span(prefix, count, char))
+            elif char in _BRACKET_PAIRS and operator:
+                self._operate_span(operator, self._bracket_object_span(prefix, count, char))
+            return NOTHING
         if prefix == "r":
             self._replace_chars(char, self._take_count() or 1)
             return NOTHING
@@ -806,11 +928,26 @@ class Composer:
             else:
                 self._count = str(min(int(self._count + char), VIM_COUNT_CAP))
             return NOTHING
+        if char in ("f", "F", "t", "T"):
+            self._prefix = char
+            return NOTHING
+        if char in (";", ","):
+            count, operator = self._take_count() or 1, self._operator
+            self._drop_pending()
+            if self._last_search is not None:
+                kind, target = self._last_search
+                if char == ",":
+                    kind = {"f": "F", "F": "f", "t": "T", "T": "t"}[kind]
+                self._search(kind, target, count, operator, repeat=True)
+            return NOTHING
         if char == "g" or (char == "r" and not self._operator):
             self._prefix = char
             return NOTHING
         if char in _VIM_OPERATORS and not self._operator:
             self._operator = char
+            return NOTHING
+        if self._operator and char in ("i", "a"):
+            self._prefix = char
             return NOTHING
         count = self._take_count()
         operator, self._operator = self._operator, ""
@@ -934,12 +1071,222 @@ class Composer:
             return index, (min(target, end) if index < end else target)  # `dw` stops at the end of the line
         return None
 
+    def _search_motion(self, kind: str, target: str, times: int, *, repeat: bool = False) -> tuple[int, int] | None:
+        """Resolve a complete line-local search without committing partial counted progress."""
+        target = _nfc(target)
+        if (len(clusters(target)) != 1 or cluster_width(target) <= 0
+                or any(is_control(ch) or ch in (NEWLINE, TAB_CHAR) or _is_token(ch) for ch in target)):
+            return None
+        units, _bounds, index = self._atoms()
+        start, end = _line_of(units, index)
+        direction = 1 if kind in ("f", "t") else -1
+        till = kind in ("t", "T")
+        cursor = index
+        remaining = times
+        for match in range(index + direction, end if direction > 0 else start - 1, direction):
+            unit = units[match]
+            if unit in self.pastes or any(_is_token(ch) for ch in unit) or _nfc(unit) != target:
+                continue
+            landing = match - direction if till else match
+            if repeat and till and landing == cursor:
+                continue  # explicit till accepts this success; repeats must progress
+            remaining -= 1
+            if remaining == 0:
+                return landing, match
+            if repeat:
+                cursor = landing
+        return None
+
+    def _search(self, kind: str, target: str, times: int, operator: str, *, repeat: bool = False) -> None:
+        """Commit one successful motion/span; a miss must never enter INSERT or replace memory."""
+        result = self._search_motion(kind, target, times, repeat=repeat)
+        self._drop_pending()
+        if result is None:
+            return
+        if not repeat:
+            self._last_search = kind, _nfc(target)
+        landing, match = result
+        _units, bounds, index = self._atoms()
+        if not operator:
+            self.caret = bounds[landing]
+            return
+        span = {"f": (index, match + 1), "t": (index, match),
+                "F": (match, index), "T": (match + 1, index)}[kind]
+        self._operate_span(operator, span)
+
+    def _text_object_span(self, descriptor: str, times: int) -> tuple[int, int] | None:
+        """Line-local `iw` runs or `aw` words, using space/tab breaks on whole NORMAL atoms."""
+        if descriptor not in ("i", "a"):
+            return None
+        units, _bounds, index = self._atoms()
+        line_start, line_end = _line_of(units, index)
+        if index >= line_end:
+            return index, index
+        blank = units[index] in WORD_BREAKS
+        start = index
+        while start > line_start and (units[start - 1] in WORD_BREAKS) == blank:
+            start -= 1
+        end = start
+        last_word_end = None
+        remaining = times
+        while end < line_end and remaining:
+            run_blank = units[end] in WORD_BREAKS
+            while end < line_end and (units[end] in WORD_BREAKS) == run_blank:
+                end += 1
+            if not run_blank:
+                last_word_end = end
+            if descriptor == "i" or not run_blank:
+                remaining -= 1
+        if descriptor == "a" and blank and last_word_end is not None:
+            end = last_word_end  # blank-start objects never add trailing padding, even with excess counts
+        if descriptor == "a" and not blank:
+            if end < line_end:  # prefer all trailing blanks after the aggregate word span
+                while end < line_end and units[end] in WORD_BREAKS:
+                    end += 1
+            elif last_word_end == end:  # no trailing padding: take the leading blank run, if any
+                while start > line_start and units[start - 1] in WORD_BREAKS:
+                    start -= 1
+        return start, end
+
+    def _quote_object_span(self, descriptor: str, times: int, q: str) -> tuple[int, int] | None:
+        """Line-local quoted text object (`i` or `a` with `"`, `'`, or `` ` ``) using atom indexes."""
+        if descriptor not in ("i", "a") or q not in _QUOTE_CHARS:
+            return None
+        units, _bounds, index = self._atoms()
+        line_start, line_end = _line_of(units, index)
+
+        if index < line_end and units[index] == q:
+            # On a quote: the pair, enumerated from the line's start, that holds the caret.
+            found_pair: tuple[int, int] | None = None
+            scan_pos = line_start
+            while scan_pos < line_end:
+                open_pos = _raw_quote(units, scan_pos, line_end, q)
+                if open_pos is None:
+                    break
+                close_pos = _closing_quote(units, open_pos + 1, line_end, q)
+                if close_pos is None:
+                    break
+                if open_pos <= index <= close_pos:
+                    found_pair = (open_pos, close_pos)
+                    break
+                scan_pos = close_pos + 1
+            if found_pair is None:
+                return None
+            open_idx, close_idx = found_pair
+        else:
+            # Off a quote: the nearest unescaped one strictly before the caret opens, else the line's first.
+            cand = index - 1
+            open_idx: int | None = None
+            while cand >= line_start:
+                if units[cand] == q and (_backslashes_before(units, line_start, cand) % 2 == 0):
+                    open_idx = cand
+                    break
+                cand -= 1
+            if open_idx is None:
+                open_idx = _raw_quote(units, line_start, line_end, q)
+            if open_idx is None:
+                return None
+            close_idx = _closing_quote(units, open_idx + 1, line_end, q)
+            if close_idx is None:
+                return None
+
+        if descriptor == "i":
+            if times >= 2:
+                return open_idx, close_idx + 1
+            return open_idx + 1, close_idx
+
+        # descriptor == "a"
+        # Includes delimiters plus contiguous trailing ASCII space/tab run;
+        # only if no trailing run, include contiguous preceding ASCII space/tab run.
+        start = open_idx
+        end = close_idx + 1
+        trailing_end = end
+        while trailing_end < line_end and units[trailing_end] in _BLANKS:
+            trailing_end += 1
+
+        if trailing_end > end:
+            return start, trailing_end
+
+        leading_start = start
+        while leading_start > line_start and units[leading_start - 1] in _BLANKS:
+            leading_start -= 1
+        return leading_start, end
+
+    def _bracket_object_span(self, descriptor: str, times: int, target: str) -> tuple[int, int] | None:
+        """Balanced bracket text object (`i` or `a` with `()`, `[]`, `{}`) using atom indexes."""
+        if descriptor not in ("i", "a") or target not in _BRACKET_PAIRS or times < 1:
+            return None
+        open_char = _BRACKET_OPENERS[target]
+        close_char = _BRACKET_CLOSERS[open_char]
+        units, _bounds, index = self._atoms()
+
+        # Plain stack/parent scan over full composer units:
+        # Each entry tracks its parent index in open_stack, open atom index, and matched close atom index.
+        open_stack: list[int] = []  # indices into records
+        # record: [parent_rec_idx, open_idx, close_idx]
+        records: list[list[int | None]] = []
+        active_at_caret: int | None = None
+        caret_record: int | None = None
+
+        for idx, u in enumerate(units):
+            if u == open_char:
+                parent = open_stack[-1] if open_stack else None
+                rec_idx = len(records)
+                records.append([parent, idx, None])
+                open_stack.append(rec_idx)
+                if idx == index:
+                    caret_record = rec_idx
+            elif u == close_char and open_stack:
+                rec_idx = open_stack.pop()
+                records[rec_idx][2] = idx
+                if idx == index and caret_record is None:
+                    caret_record = rec_idx
+
+            if idx == index and caret_record is None:
+                active_at_caret = open_stack[-1] if open_stack else None
+
+        # Determine starting candidate record:
+        cand_rec = caret_record if caret_record is not None else active_at_caret
+
+        if cand_rec is None:
+            # No active opener at caret; select first opener strictly forward across composer.
+            # An unmatched forward opener must be chosen (and will fail), blocking child substitution.
+            for rec_idx, rec in enumerate(records):
+                if rec[1] is not None and rec[1] > index:
+                    cand_rec = rec_idx
+                    break
+
+        if cand_rec is None:
+            return None
+
+        # Effective count N selects the Nth same-family ancestor (candidate is level 1)
+        cur: int | None = cand_rec
+        depth = 1
+        while cur is not None and depth < times:
+            cur = records[cur][0]
+            depth += 1
+
+        if cur is None or depth < times:
+            return None
+
+        rec = records[cur]
+        open_idx, close_idx = rec[1], rec[2]
+        if open_idx is None or close_idx is None:
+            return None
+
+        if descriptor == "i":
+            return open_idx + 1, close_idx
+        return open_idx, close_idx + 1
+
     def _operate(self, operator: str, motion: str, times: int) -> None:
         """`d`, `c` or `y` over `motion` (`times` of it), or over `times` whole lines when `motion` is the operator."""
         if motion == operator:
             self._lines(operator, times)
             return
-        span = self._motion_span(motion, times, operator)
+        self._operate_span(operator, self._motion_span(motion, times, operator))
+
+    def _operate_span(self, operator: str, span: tuple[int, int] | None) -> None:
+        """Shared characterwise register, edit and change effects for motions and objects."""
         if span is None:
             return
         _units, bounds, _index = self._atoms()

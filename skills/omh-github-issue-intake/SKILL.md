@@ -10,7 +10,7 @@ metadata:
     phase: issue-intake
     role: operator
     quality_tier: workflow-surface-gated
-    related_skills: [github]
+    related_skills: [omh-feedback-triage, omh-github-event-ops, github]
 ---
 
 # Github Issue Intake
@@ -23,8 +23,8 @@ This is a Hermes-native `github-issue-intake` workflow skill.
 
 ## Do Not Use When
 
-- The report only wants classification or signal clustering; use feedback-triage instead.
-- The event concerns an already-existing issue, PR, review, or CI run; use github-event-ops instead.
+- The report only wants classification or signal clustering; use `omh-feedback-triage` instead.
+- The event concerns an already-existing issue, PR, review, or CI run; use `omh-github-event-ops` instead.
 - The user wants implementation; coding stays a separate follow-up lane with its own maintainer authority.
 - The report describes a security vulnerability; redirect to the private SECURITY.md path.
 - The issue is already decided and the user only wants it filed or edited with the gh CLI, with no chat report to classify, question, or de-duplicate; load Hermes' bundled `github` skill instead of this one.
@@ -45,19 +45,20 @@ Bad example:
 
 ## Completion Checklist
 
-- Confirm the workflow target, evidence boundary, and stop condition are named.
-- Report which outputs are prepared, observed, blocked, or missing.
-- Name the smallest next verification or handoff instead of claiming completion from narration.
+- github_issue_intake/v1 carries the report type, smallest outcome, scope, evidence versus inference, and the duplicate query with its result.
+- Confirmation was taken on the complete direction check before any connector handoff.
+- Creation is reported only with the connector's read-back URL; otherwise it is stated as prepared, not created.
 
 ## Recovery Notes
 
-- If required context is missing, ask one blocking question or route back to the narrower workflow.
-- If runtime or wrapper evidence is unavailable, keep the status as not_observed and expose the next observable action.
+- If reproduction evidence is still missing after three questions, retain the report classification and observed facts, mark the direction unresolved, and hand back the missing steps, versions, or logs without filing.
+- If duplicate search cannot finish, retain the scoped report summary, mark duplicate status unresolved, and hand back the explicit repository and pending search; do not confirm or dispatch creation.
+- If connector read-back lacks request binding or issue fields, retain the confirmed direction and duplicate status, mark creation not_observed, and hand back the idempotency key and missing read-back fields without redispatching.
 
 ## Workflow Lane
 
-- Current lane: **Automation and status** (`achievements`, `workspace-audit`, `production-audit`, `live-incident-response`, `automation-blueprint`, `github-event-ops`, `github-issue-intake`, `buzz`, `+40 more`) - schedules, status, health, and ops review.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Automation and status** - schedules, status, health, and ops review.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -79,6 +80,7 @@ Quality bar:
 - Classify the report from supplied or observed facts and separate observation from inference.
 - Ask at most three unresolved, decision-changing questions; stop with a specific missing-evidence request instead of filing a vague issue.
 - Present the direction check, require confirmation, and keep prepared packages distinct from observed creation.
+- Search open and closed issues and PRs for duplicates (`gh issue list --repo <r> --state all --search '<keywords> in:title,body'` and the same with `gh pr list`, since `gh issue list` returns issues only), record the query and the top hits, and build the body from the matching `.github/ISSUE_TEMPLATE/` form.
 
 Handoff policy:
 
@@ -122,7 +124,7 @@ Safety rules:
 - No external mutation before the direction check and an explicit confirmation; a maintainer file-now requires authenticated-wrapper actor/evidence identity and never bypasses duplicate, template, security, or read-back gates.
 - Confirmation requires a complete direction check - type, user-visible problem, source summary, smallest desired outcome, included and excluded scope, observed evidence versus inference, and duplicate status - plus a completed duplicate search; any blocker (security redirect, missing evidence, connector unavailable, or credentials missing) stops confirmation and handoff and cannot be cleared by a later observed result.
 - A public reporter authorizes exactly one scoped create_issue against an explicit repository; code, configuration, branch, commit, PR, merge, deployment, and coding-executor mutations stay in their own maintainer-gated lanes.
-- Security vulnerability reports redirect to the private SECURITY.md reporting path instead of a public issue.
+- Security vulnerability reports redirect to the private SECURITY.md reporting path instead of a public issue. When the repository has no SECURITY.md and private vulnerability reporting is off (`gh api repos/{owner}/{repo}/private-vulnerability-reporting`), point the reporter to a private maintainer contact, file nothing publicly, and do not restate the exploit details in the reply.
 - Core OMH never calls GitHub; only a checked-in issue-form builder can produce an authorized create_issue request. An authorized connector receives one stable idempotency-keyed request, must enforce that key externally, and returns observed result evidence bound to that request; dispatch consumes the core handoff, so dispatched or observed artifacts cannot hand off again.
 - A prepared issue package is not creation evidence; only connector read-back of repository, author, title, body, labels, and URL is observed evidence.
 - The target repository must be explicit or safely configured; never infer a cross-repository target from context.
@@ -140,7 +142,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

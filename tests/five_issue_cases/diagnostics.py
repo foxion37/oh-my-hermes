@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -22,22 +23,9 @@ from omh.coding.fanout_failure_diagnostics import is_object_list, is_string_map
 from omh.runtime.artifacts import show_run
 from omh.system.paths import OmhPaths
 from _fanout_host_fence import host_cannot_fence_fanout
+from _verification_python import verification_python_path
 
 from . import CaseResult, JsonValue
-
-
-def _fixture_interpreter() -> str:
-    """An interpreter path that does not grow with the checkout's location.
-
-    The verification command is capped at MAX_UNIT_VERIFICATION_COMMAND_CHARS,
-    and `sys.executable` inside a project venv sits UNDER the checkout, so a
-    deep worktree path used to decide whether this fixture passed (#1474).
-    The base interpreter that created the venv lives outside the checkout and
-    runs a stdlib-only script just as well; a non-venv run resolves to the
-    same path it already used.
-    """
-    base = getattr(sys, '_base_executable', '') or ''
-    return base if base and Path(base).exists() else sys.executable
 
 
 def exercise_dispatch(*, stdout: bytes = b'', stderr: bytes = b'', exit_code: int = 3,
@@ -89,7 +77,7 @@ def exercise_dispatch(*, stdout: bytes = b'', stderr: bytes = b'', exit_code: in
                 encoding='utf-8',
             )
             unit['verification_commands'] = [
-                shlex.join([_fixture_interpreter(), str(failing_script)])
+                shlex.join([verification_python_path(), str(failing_script)])
             ]
         contract = write_fanout_contract(paths, build_fanout_contract(goal, [unit]))
         fanout_id = str(contract['fanout_id'])
@@ -118,9 +106,14 @@ def exercise_dispatch(*, stdout: bytes = b'', stderr: bytes = b'', exit_code: in
                 argv += ['--fenced-result'] if sidecar == 'fenced' else ['--result-path', match[1]]
             commands.append(argv)
             return argv
+        codex_state = root / 'codex-state'
+        codex_state.mkdir()
         def ready(_paths: OmhPaths, _owner: str) -> dict[str, object]:
             return {'status': 'ready'}
-        with patch('omh.coding.fanout_dispatch.build_dispatch_argv', argv_for_fixture):
+        with (
+            patch('omh.coding.fanout_dispatch.build_dispatch_argv', argv_for_fixture),
+            patch.dict(os.environ, {'CODEX_HOME': str(codex_state)}),
+        ):
             summary = dispatch_fanout(paths, contract, goal_text=goal, repo_root=repo,
                                       base_sha=base, concurrency=1, readiness=ready,
                                       max_retries=0, run_verification=verification,

@@ -1,10 +1,10 @@
 """`coding_owner_preference/v1`: the closed schema of the explicit coding-owner choice, and who it names.
 
 The one validator of the record. The router's reader and writer
-(`omh.routing.owner_preference`) import it from here, and so does `omh_dag`'s
-export, so a record means the same thing to every reader: a missing,
-malformed, reset or hand-written record names no owner, and no external
-coding CLI may be selected from it.
+(`omh.routing.owner_preference`) import it from here: a missing, malformed,
+reset or hand-written record names no owner, and no external coding CLI may
+be selected from it. `omh_dag` reads no record: a dag-ulw run's owners are
+the ones named in the request that defined it (`named_owner_choice`).
 
 Pure and stdlib only, and it imports nothing from `omh`: Hermes loads this
 directory with its own interpreter (#1623). The opaque-reference check is
@@ -16,9 +16,12 @@ patterns equal.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
+from pathlib import Path
 import re
 from typing import Any, Final
 from .iso_datetime import strict_fromisoformat
+from .pi_family_names import LEGACY_RUNTIME_RECORD_VALUES
 
 OWNER_PREFERENCE_SCHEMA_VERSION: Final = "coding_owner_preference/v1"
 OWNER_PREFERENCE_RECORD_TYPE: Final = "coding_owner_preference"
@@ -35,6 +38,9 @@ OWNER_PREFERENCE_PATH_SEGMENTS: Final = ("routing", "owner-preference.json")
 # selected owner only when route state carries one of these provenances:
 # the user answered the coding-owner question (`record_accepted_explicit_choice`)
 # or named the CLI in their own words (`record_in_message_explicit_naming`).
+# The route families keep only those two router writers. A dag-ulw run reads
+# none of them: its owners are the ones named in the request that defined it
+# (`named_owner_choice`).
 # Deriving an external owner from a message that does NOT name that CLI —
 # topic, language, history, or heuristics — stays forbidden.
 OWNER_PREFERENCE_EXPLICIT_CHOICE_PROVENANCES: Final = (
@@ -193,18 +199,30 @@ def route_errors(key: object, route: object) -> list[str]:
     return errors
 
 
-def explicit_choice(state: object, *, route_family: str) -> tuple[str, str]:
-    """(provenance, owner) an explicit-choice writer recorded for one route family, or ("", "").
+SETUP_PROFILE_FILE: Final = "setup-profile.json"
+# The executor profile ids a setup profile may name, copied from `omh.coding_delegation.CODING_EXECUTOR_TARGETS`
+# (the bundle cannot import it); `tests/test_profile_default_owner.py` holds the two equal. "choose" is unset.
+SETUP_PROFILE_EXECUTORS: Final = frozenset(
+    {"codex", "claude-code", "omx-runtime", "pi-family-runtime", "omc-runtime", "generic", "hermes"}
+)
 
-    ("", "") for a missing, malformed, reset or raw-written state: then no
-    external coding CLI may appear as the selected owner.
+
+def setup_profile_owner(omh_home: str | Path | None) -> str:
+    """The default coding owner `<omh_home>/setup-profile.json` names, or "", read as the wrapper reads it.
+
+    Read per call, so a profile edit counts on the next turn. An id an older
+    release stored is mapped to the current one (`LEGACY_RUNTIME_RECORD_VALUES`);
+    a missing, unreadable or malformed profile, "choose", or a value that is not
+    an executor profile id names no owner, and the hint then asks, as the
+    wrapper does.
     """
-    if not isinstance(state, Mapping) or validate_owner_preference(state):
-        return "", ""
-    route = state["routes"].get(route_family)
-    if not route or not route.get("selected_owner"):
-        return "", ""
-    provenance = str(route.get("provenance", "") or "")
-    if provenance not in OWNER_PREFERENCE_EXPLICIT_CHOICE_PROVENANCES:
-        return "", ""
-    return provenance, str(route["selected_owner"])
+    if omh_home is None or not str(omh_home):
+        return ""
+    try:
+        profile = json.loads((Path(omh_home) / SETUP_PROFILE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return ""
+    owner = profile.get("default_executor") if isinstance(profile, dict) else None
+    owner = owner.strip() if isinstance(owner, str) else ""
+    owner = LEGACY_RUNTIME_RECORD_VALUES.get(owner, owner)
+    return owner if owner in SETUP_PROFILE_EXECUTORS else ""

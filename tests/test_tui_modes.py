@@ -6,7 +6,7 @@ hands back the answer it wants through `App._on_response`, so a refusal, a
 wrong scope or a late answer is one line. Every recorded call is checked
 against the gateway contract the way `GatewayClient` checks it before a byte
 is written. The end-to-end cases run `main` against the replay gateway from
-`test_tui_app`, with `session.steer` and `config.set` answered from the
+`test_tui_app`, with `session.redirect` and `config.set` answered from the
 scenario's answer table in Hermes 6c61c3e27d's shapes.
 """
 
@@ -31,6 +31,7 @@ from test_tui_app import (
     AppTestCase,
     FakePoller,
     ScriptedTerminal,
+    TYPED_AHEAD,
     Step,
     startup_answers,
     info_row_of,
@@ -38,15 +39,19 @@ from test_tui_app import (
 from omh.tui import app as app_module
 from omh.tui import gateway_contract as contract
 from omh.tui import modes as modes_module
+from omh.tui import screen as screen_module
+from omh.tui import transcript as transcript_module
 from omh.tui.app import (
-    ATTACH_LEFT_NOTICE, OSC52_COPY, SLOT_ARM_SECONDS, STEER_FALLBACK_KEY, App, QueuedLine, queue_lines,
+    ATTACH_LEFT_NOTICE, OSC52_COPY, RESIZE_SETTLE_SECONDS, SLOT_ARM_SECONDS, STEER_FALLBACK_KEY, App, QueuedLine,
+    queue_lines,
 )
 from omh.tui.frame import MODE_ACCEPT, MODE_ACCEPT_PLAN, MODE_NORMAL, MODE_PLAN
 from omh.tui.gateway import Event, GatewayUnavailable, Response, ServerRequest
-from omh.tui.keys import CHAR, DOWN, ENTER, TAB, UP, Key, KeyDecoder, Paste
+from omh.tui.keys import CHAR, DOWN, ENTER, ESCAPE, TAB, UP, Key, KeyDecoder, Paste
 from omh.tui.layout import MIN_COLS, MIN_ROWS, slot_cap
 from omh.tui.modes import EFFORT_CYCLE
 from omh.tui.pager import Pager
+from omh.tui.screen import CLEAR_SCREEN_AND_SCROLLBACK
 from omh.tui.session_picker import SessionPicker, SessionRow
 from omh.tui.slash import parse_slash, plan_invocation
 from omh.tui.style import Style
@@ -59,6 +64,7 @@ from omh.tui.transcript import (
     CommandBlock,
     NoticeBlock,
     SteerBlock,
+    ThinkingBlock,
     UserBlock,
     block_rows,
 )
@@ -116,9 +122,12 @@ class RecordingClient:
 
 def make_app(*, busy: bool = False, rows: int = 24, cols: int = 80, **options: object) -> tuple[App, RecordingClient]:
     client = RecordingClient()
-    # The working glow's margin moves every row and the living wallpaper paints the blank cells; their own tests
-    # turn them on.
-    environ = {"OMH_TUI_GLOW": "0", "OMH_TUI_WALLPAPER": "0", **options.pop("environ", {})}  # type: ignore[dict-item]
+    # The living wallpaper paints the blank cells and the update notice asks npm; their own tests turn them on (the
+    # update notice's with its fetch injected). The main screen's mouse (a drag selects, the wheel opens the
+    # transcript view) is left to the terminal as `OMH_TUI_MOUSE=0` leaves it, which is the behaviour these tests pin
+    # byte for byte; `tests/test_tui_main_mouse.py` turns it on.
+    environ = {"OMH_TUI_WALLPAPER": "0", "OMH_TUI_UPDATE_CHECK": "0", "OMH_TUI_MOUSE": "0",
+               **options.pop("environ", {})}  # type: ignore[dict-item]
     app = App(ScriptedTerminal(rows, cols), client, environ, poller=FakePoller(), **options)  # type: ignore[arg-type]
     app.sid = SID
     app.turn_pending = busy
@@ -132,8 +141,22 @@ def type_text(app: App, text: str) -> None:
 
 
 def answer(app: App, client: RecordingClient, result: dict | None = None, error: dict | None = None) -> None:
-    """Answer the newest call."""
-    app._on_response(Response(len(client.calls), result, error))
+    """Answer the newest call. A redirect `rejected` while its turn runs goes again as a steer, answered the same
+    (`test_a_redirect_rejected_mid_turn_goes_again_as_a_steer` answers the two apart)."""
+    sent = len(client.calls)
+    app._on_response(Response(sent, result, error))
+    if ((result or {}).get("status") == "rejected" and client.calls[sent - 1][0] == "session.redirect"
+            and len(client.calls) > sent and client.calls[-1][0] == "session.steer"):
+        app._on_response(Response(len(client.calls), result, None))
+
+
+def call_id(client: RecordingClient, method: str) -> int:
+    """The id `client` gave the newest `method` call, for an answer that does not come right after its call."""
+    return max(number for number, (name, _params) in enumerate(client.calls, 1) if name == method)
+
+
+# An agent without active-turn redirect: the send-now key's `session.redirect` goes again as `session.steer`.
+NO_REDIRECT = {"code": 4010, "message": "agent does not support active-turn redirect"}
 
 
 def show_mode(app: App, mode: str) -> None:
@@ -172,7 +195,7 @@ class SteerTests(unittest.TestCase):
         app, client = make_app(busy=True)
         type_text(app, "use the other file")
         app._on_input(CTRL_ENTER)
-        self.assertEqual(client.calls, [("session.steer", {"session_id": SID, "text": "use the other file"})])
+        self.assertEqual(client.calls, [("session.redirect", {"session_id": SID, "text": "use the other file"})])
         self.assertEqual(app.composer.text, "")
         self.assertEqual(steers(app), [])  # nothing is claimed before Hermes answers
         self.assertIn("┃ ❯ use the other file", lines_text(app.transcript.live_lines(80, DEFAULT_THEME)))
@@ -187,7 +210,7 @@ class SteerTests(unittest.TestCase):
         app._on_input(Key(ENTER, shift=True))
         type_text(app, "second line")
         app._on_input(CTRL_ENTER)
-        self.assertEqual(client.named("session.steer"), [{"session_id": SID, "text": "first line\nsecond line"}])
+        self.assertEqual(client.named("session.redirect"), [{"session_id": SID, "text": "first line\nsecond line"}])
         answer(app, client, {"status": "queued", "text": "first line\nsecond line"})
         self.assertEqual(steers(app), ["┃ ❯ first line", "┃   second line"])  # every line, as the prompt it is
 
@@ -220,10 +243,11 @@ class SteerTests(unittest.TestCase):
         self.assertEqual(client.named("prompt.submit"), [])
 
     def test_a_steer_hermes_cannot_take_is_not_lost(self) -> None:
-        # 4010: the agent is still starting, or takes no steer.
+        # 4010 twice: the agent takes neither a redirect nor a steer.
         app, client = make_app(busy=True)
         type_text(app, "keep this")
         app._on_input(CTRL_ENTER)
+        answer(app, client, error=NO_REDIRECT)
         answer(app, client, error={"code": 4010, "message": "agent does not support steer"})
         self.assertEqual([text for text, *_ in app.queued], ["keep this"])
         (warning,) = steers(app)
@@ -240,7 +264,9 @@ class SteerTests(unittest.TestCase):
                     app.busy_mode = mode
                     type_text(app, "and the docs")
                     app._on_input(CTRL_ENTER)
-                    app._on_response(Response(1, frame.get("result"), frame.get("error")))
+                    if name == "4010":
+                        answer(app, client, error=NO_REDIRECT)
+                    answer(app, client, frame.get("result"), frame.get("error"))
                     self.assertEqual(client.named("prompt.submit"), [])
                     self.assertEqual([text for text, *_ in app.queued], ["and the docs"])
                     app._on_event(Event("message.complete", SID, {"text": "done"}))  # the turn ends: it goes now
@@ -256,6 +282,7 @@ class SteerTests(unittest.TestCase):
                 type_text(app, "too late")
                 app._on_input(CTRL_ENTER)
                 app.turn_pending = False
+                answer(app, client, error=NO_REDIRECT)
                 answer(app, client, error={"code": 4010, "message": "agent does not support steer"})
                 self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "too late"}])
                 self.assertIn("sent as a prompt — Hermes refused the steer (agent", steers(app)[0])
@@ -443,7 +470,7 @@ class SteerTests(unittest.TestCase):
                 app, client = make_app(busy=True)
                 queue(app, "first queued", "second queued")
                 app._take_input(data)
-                self.assertEqual(client.calls, [("session.steer", {"session_id": SID, "text": "first queued"})])
+                self.assertEqual(client.calls, [("session.redirect", {"session_id": SID, "text": "first queued"})])
                 self.assertEqual([line.text for line in app.queued], ["second queued"])
                 self.assertIn("┃ ❯ first queued", lines_text(app.transcript.live_lines(80, DEFAULT_THEME)))
                 answer(app, client, {"status": "queued", "text": "first queued"})
@@ -458,6 +485,8 @@ class SteerTests(unittest.TestCase):
                 app.queued.extend([first, QueuedLine("second queued")])
                 app._on_input(CTRL_ENTER)
                 app.plan_mode = True  # a mode switched on since: the line is not wrapped again
+                if "error" in refusal:
+                    answer(app, client, error=NO_REDIRECT)
                 answer(app, client, refusal.get("result"), refusal.get("error"))
                 self.assertIs(app.queued[0], first)
                 self.assertEqual([line.text for line in app.queued], ["first queued", "second queued"])
@@ -505,6 +534,7 @@ class SteerTests(unittest.TestCase):
         app, client = make_app(busy=True)
         queue(app, "first queued", "second queued")
         app._on_input(CTRL_ENTER)
+        answer(app, client, error=NO_REDIRECT)  # held as a steer: the agent takes no redirect
         answer(app, client, {"status": "queued", "text": "first queued"})
         for kind in events:
             app._on_event(Event(kind, SID, {"tool_id": "t1", "name": "terminal", "text": "x"}))
@@ -529,12 +559,432 @@ class SteerTests(unittest.TestCase):
         self.assertEqual(app.composer.text, "second queued")
         self.assertNotIn(app_module.SENT_NOW_DROPPED_NOTICE.format(count=1, s=""), warned)
 
+    def test_send_now_goes_as_a_redirect_so_it_lands_in_the_running_turn(self) -> None:
+        # Owner, 2026-11-06: a Ctrl+Enter steer arrived after the turn. `session.steer` only holds the text for the
+        # end of a tool batch or the next model call; while the model writes its final answer neither comes, and
+        # Hermes sent it as the next prompt. `session.redirect` cuts that model request and retries it with the text.
+        for typed, queued in (("use the other file", ()), ("", ("first queued", "second queued"))):
+            with self.subTest(typed=typed):
+                app, client = make_app(busy=True)
+                queue(app, *queued)
+                type_text(app, typed)
+                app._on_input(CTRL_ENTER)
+                self.assertEqual(client.calls, [("session.redirect", {"session_id": SID, "text": typed or queued[0]})])
+
+    def test_a_redirected_send_now_is_taken_at_once_and_a_stop_does_not_give_it_back(self) -> None:
+        # `redirected`: Hermes appended it as a user message to the turn, or holds it for the tool batch running,
+        # whose results carry it even when the batch is stopped. Nothing is left for the TUI to queue or send again.
+        for typed in ("use the other file", ""):
+            with self.subTest(typed=typed):
+                app, client = make_app(busy=True)
+                queue(app, "first queued", "second queued")
+                if typed:
+                    type_text(app, typed)
+                app._on_input(CTRL_ENTER)
+                text = typed or "first queued"
+                answer(app, client, {"status": "redirected", "text": text})
+                self.assertEqual(steers(app), [f"┃ ❯ {text}"])  # read as any prompt sent, without a tool finishing
+                self.assertEqual((app.unread_steers, app.sent_now), ([], []))
+                app.interrupting = True
+                app._on_event(Event("message.complete", SID, {"text": "stopped"}))
+                left = ["first queued", "second queued"][0 if typed else 1:]
+                self.assertEqual(app.composer.text, "\n".join(left))  # the line sent now is not among them
+                self.assertNotIn(app_module.SENT_NOW_DROPPED_NOTICE.format(count=1, s=""), notices(app, NOTICE_WARN))
+                self.assertEqual(client.named("prompt.submit"), [])
+
+    def test_a_send_now_hermes_queued_as_its_next_prompt_is_never_sent_again(self) -> None:
+        # A redirect while the turn is still being built, or while Hermes compresses the context, is `queued` as
+        # Hermes' own next prompt: the turn ending on its own sends it, so the TUI sends nothing for it, and the
+        # rest of the queue waits for that turn: sent at this turn's end, a queued line could start ahead of it.
+        app, client = make_app(busy=True)
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "queued", "text": "first queued"})
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(client.named("prompt.submit"), [])
+        self.assertEqual([line.text for line in app.queued], ["second queued"])
+        app._on_event(Event("message.start", SID, {}))  # Hermes runs the redirect it queued
+        app._on_event(Event("message.complete", SID, {"text": "redirected answer"}))
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "second queued", "queued": True}])
+        self.assertEqual(client.named("session.redirect"), [{"session_id": SID, "text": "first queued"}])
+
+    def test_a_failed_turn_end_sends_the_queue_on_even_with_a_redirect_hermes_queued(self) -> None:
+        # Hermes answers `queued` mostly while the turn is still being built; a build that fails ends the turn with an
+        # error `message.complete` (agent_init_failed) or a bare `error`, and Hermes drains nothing after either.
+        ends = {
+            "error complete": Event("message.complete", SID, {"status": "error", "text": "", "error": "init failed"}),
+            "bare error": Event("error", SID, {"message": "Session no longer running before the agent was ready"}),
+        }
+        for name, end in ends.items():
+            with self.subTest(end=name):
+                app, client = make_app(busy=True)
+                queue(app, "first queued", "second queued")
+                app._on_input(CTRL_ENTER)
+                answer(app, client, {"status": "queued", "text": "first queued"})
+                app._on_event(end)
+                self.assertEqual(client.named("prompt.submit"),
+                                 [{"session_id": SID, "text": "second queued", "queued": True}])
+                self.assertIsNone(app.hermes_next_due)
+
+    def test_a_held_queue_goes_on_when_hermes_queued_turn_never_starts(self) -> None:
+        # A drain Hermes cancels says nothing: after HERMES_NEXT_TURN_SECONDS without a `message.start` the queue goes.
+        now = [100.0]
+        app, client = make_app(busy=True, clock=lambda: now[0])
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "queued", "text": "first queued"})
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(app.hermes_next_due, 100.0 + app_module.HERMES_NEXT_TURN_SECONDS)
+        now[0] += app_module.HERMES_NEXT_TURN_SECONDS - 0.5
+        app._drain_when_hermes_next_missed()
+        self.assertEqual(client.named("prompt.submit"), [])
+        now[0] += 1.0
+        app._drain_when_hermes_next_missed()
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "second queued", "queued": True}])
+        self.assertIsNone(app.hermes_next_due)
+        # Started in time, Hermes' turn clears the wait: nothing goes until that turn ends.
+        now[0] = 200.0
+        app, client = make_app(busy=True, clock=lambda: now[0])
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "queued", "text": "first queued"})
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        app._on_event(Event("message.start", SID, {}))
+        now[0] += 60.0
+        app._drain_when_hermes_next_missed()
+        self.assertEqual(client.named("prompt.submit"), [])
+
+    def redirect_hermes_queued(self) -> tuple[App, RecordingClient, list[float]]:
+        """A turn ended leaving the queue to the redirect Hermes queued: the App, its client, and its clock."""
+        now = [100.0]
+        app, client = make_app(busy=True, clock=lambda: now[0])
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "queued", "text": "first queued"})
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(app.hermes_next_due, 100.0 + app_module.HERMES_NEXT_TURN_SECONDS)
+        return app, client, now
+
+    def test_the_read_loop_itself_sends_the_held_queue_on_when_the_wait_runs_out(self) -> None:
+        app, client, now = self.redirect_hermes_queued()
+        now[0] = app.hermes_next_due - 1.5
+
+        def read(timeout: float, wake: int | None = None) -> bytes:
+            now[0] += 1.0
+            return b""
+
+        with mock.patch.object(app.terminal, "read", read):
+            app._step()
+            self.assertEqual(client.named("prompt.submit"), [])  # half a second short
+            app._step()
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "second queued", "queued": True}])
+        self.assertIsNone(app.hermes_next_due)
+
+    def test_the_read_loop_wakes_for_the_end_of_the_wait_not_at_its_idle_second(self) -> None:
+        app, _client, now = self.redirect_hermes_queued()
+        now[0] = app.hermes_next_due - 0.25
+        self.assertAlmostEqual(app._read_timeout(), 0.25)
+
+    def steer_left_unread(self, how: str, *lines: str) -> tuple[App, RecordingClient, list[float]]:
+        """A turn running, `lines` queued behind, and a steer Hermes took that the turn has not read: one the person
+        typed, or the queue's head sent now by an agent that takes no redirect."""
+        now = [100.0]
+        app, client = make_app(busy=True, clock=lambda: now[0])
+        app._on_event(Event("message.start", SID, {}))
+        if how == "typed":
+            queue(app, *lines)
+            type_text(app, "/steer use the other file")
+            app._on_input(Key(ENTER))
+            answer(app, client, {"status": "queued", "text": "use the other file"})
+        else:
+            queue(app, "first queued", *lines)
+            app._on_input(CTRL_ENTER)
+            answer(app, client, error=NO_REDIRECT)
+            answer(app, client, {"status": "queued", "text": "first queued"})
+        self.assertEqual(len(app.unread_steers), 1)
+        return app, client, now
+
+    def test_a_steer_left_unread_is_hermes_next_prompt_so_the_queue_waits_for_that_turn(self) -> None:
+        # Hermes hands a steer no tool batch read back from the turn (`pending_steer`) and queues it as its next
+        # prompt as the turn ends: a queued line sent then could start ahead of it, or merge with it.
+        for how in ("typed", "sent now"):
+            with self.subTest(how=how):
+                app, client, _now = self.steer_left_unread(how, "later line")
+                app._on_event(Event("message.complete", SID, {"text": "done"}))
+                self.assertEqual(client.named("prompt.submit"), [])
+                self.assertEqual([line.text for line in app.queued], ["later line"])
+                self.assertEqual(app.hermes_next_due, 100.0 + app_module.HERMES_NEXT_TURN_SECONDS)
+                self.assertEqual(app.unread_steers, [])  # the row still settles at the turn's end
+                app._on_event(Event("message.start", SID, {}))  # Hermes runs the steer
+                self.assertIsNone(app.hermes_next_due)
+                app._on_event(Event("message.complete", SID, {"text": "steered answer"}))
+                self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "later line", "queued": True}])
+
+    def test_a_stopped_end_with_a_steer_unread_sends_the_queue_on_at_once(self) -> None:
+        # Only an end nobody stopped holds the queue. `/stop` asks without setting `interrupting`, and an `interrupted`
+        # status with no stop asked is Hermes' or another client's.
+        for name, stop, payload in (("/stop, interrupted", True, {"text": "stopped", "status": "interrupted"}),
+                                    ("/stop, complete", True, {"text": "done", "status": "complete"}),
+                                    ("not asked, interrupted", False, {"text": "x", "status": "interrupted"})):
+            with self.subTest(end=name):
+                app, client, _now = self.steer_left_unread("typed", "later line")
+                if stop:
+                    type_text(app, "/stop")
+                    app._on_input(Key(ENTER))
+                    self.assertEqual((app.stop_asked, app.interrupting), (True, False))
+                app._on_event(Event("message.complete", SID, payload))
+                self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "later line", "queued": True}])
+                self.assertIsNone(app.hermes_next_due)
+
+    def test_a_line_sent_during_the_wait_stays_behind_the_older_queued_lines(self) -> None:
+        def sent(client: RecordingClient) -> list[str]:
+            return [params["text"] for params in client.named("prompt.submit")]
+
+        for how in ("the turn Hermes runs next", "the wait running out"):
+            with self.subTest(goes_after=how):
+                app, client, now = self.steer_left_unread("typed", "older queued line")
+                app._on_event(Event("message.complete", SID, {"text": "done"}))
+                type_text(app, "new line")
+                app._on_input(Key(ENTER))
+                self.assertEqual(sent(client), [])
+                self.assertEqual([line.text for line in app.queued], ["older queued line", "new line"])
+                if how == "the wait running out":
+                    now[0] += app_module.HERMES_NEXT_TURN_SECONDS
+                    app._drain_when_hermes_next_missed()
+                else:
+                    app._on_event(Event("message.start", SID, {}))
+                    app._on_event(Event("message.complete", SID, {"text": "steered answer"}))
+                self.assertEqual(sent(client), ["older queued line"])
+                app._on_event(Event("message.start", SID, {}))
+                app._on_event(Event("message.complete", SID, {"text": "older answer"}))
+                self.assertEqual(sent(client), ["older queued line", "new line"])
+                self.assertEqual(list(app.queued), [])
+
+    def test_a_line_sent_during_the_wait_with_nothing_queued_goes_when_the_wait_runs_out(self) -> None:
+        app, client, now = self.steer_left_unread("typed")
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        type_text(app, "new line")
+        app._on_input(Key(ENTER))
+        self.assertEqual(client.named("prompt.submit"), [])
+        now[0] += app_module.HERMES_NEXT_TURN_SECONDS
+        app._drain_when_hermes_next_missed()
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "new line", "queued": True}])
+
+    def test_a_line_sent_during_the_wait_is_not_stranded_behind_a_held_queue(self) -> None:
+        # A held queue waits for the person's next prompt to start a turn, so that prompt cannot join it: the backstop
+        # would not send it, and nothing else would.
+        app, client, _now = self.steer_left_unread("typed", "held line")
+        app.queue_held = True
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertIsNotNone(app.hermes_next_due)
+        type_text(app, "new line")
+        app._on_input(Key(ENTER))
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "new line"}])
+        self.assertEqual([line.text for line in app.queued], ["held line"])
+        self.assertFalse(app.queue_held)
+
+    def test_a_shell_line_sent_during_the_wait_stays_behind_the_older_queued_lines(self) -> None:
+        app, client, now = self.steer_left_unread("typed", "older queued line")
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        type_text(app, "!make clean")
+        app._on_input(Key(ENTER))
+        self.assertEqual((client.named("shell.exec"), client.named("prompt.submit")), ([], []))
+        self.assertEqual([line.text for line in app.queued], ["older queued line", "!make clean"])
+        now[0] += app_module.HERMES_NEXT_TURN_SECONDS
+        app._drain_when_hermes_next_missed()
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "older queued line", "queued": True}])
+        self.assertEqual(client.named("shell.exec"), [])
+        app._on_event(Event("message.start", SID, {}))
+        app._on_event(Event("message.complete", SID, {"text": "older answer"}))
+        self.assertEqual([params["command"] for params in client.named("shell.exec")], ["make clean"])
+
+    def test_a_shell_line_sent_during_the_wait_runs_at_once_with_nothing_ahead_of_it_to_keep(self) -> None:
+        for held in (False, True):
+            with self.subTest(queue_held=held):
+                app, client, _now = self.steer_left_unread("typed", *(("held line",) if held else ()))
+                app.queue_held = held
+                app._on_event(Event("message.complete", SID, {"text": "done"}))
+                self.assertIsNotNone(app.hermes_next_due)
+                type_text(app, "!make clean")
+                app._on_input(Key(ENTER))
+                self.assertEqual([params["command"] for params in client.named("shell.exec")], ["make clean"])
+
+    def test_a_steer_the_last_model_call_read_starts_no_turn_so_the_queue_waits_out_the_backstop(self) -> None:
+        # Hermes drains a steer into the request it is about to make, which no `tool.complete` says: the TUI cannot
+        # tell this end from one with a next prompt coming. Nothing starts, and the queue goes when the wait is over.
+        app, client, now = self.steer_left_unread("typed", "later line")
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(client.named("prompt.submit"), [])
+        now[0] += app_module.HERMES_NEXT_TURN_SECONDS
+        app._drain_when_hermes_next_missed()
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "later line", "queued": True}])
+
+    def test_no_steer_left_unread_sends_the_queue_on_at_once(self) -> None:
+        app, client = make_app(busy=True)
+        app._on_event(Event("message.start", SID, {}))
+        queue(app, "later line")
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "later line", "queued": True}])
+        self.assertIsNone(app.hermes_next_due)
+
+    def test_a_steer_a_tool_batch_read_sends_the_queue_on_at_once(self) -> None:
+        for how in ("typed", "sent now"):
+            with self.subTest(how=how):
+                app, client, _now = self.steer_left_unread(how, "later line")
+                app._on_event(Event("tool.complete", SID, {"tool_id": "t1", "name": "terminal", "result": {"output": ""}}))
+                app._on_event(Event("message.complete", SID, {"text": "done"}))
+                self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "later line", "queued": True}])
+                self.assertIsNone(app.hermes_next_due)
+
+    def test_a_stopped_turn_with_a_steer_unread_gives_it_back_and_holds_no_wait(self) -> None:
+        for how, draft, said in (("typed", "later line", False), ("sent now", "first queued\nlater line", True)):
+            with self.subTest(how=how):
+                app, client, _now = self.steer_left_unread(how, "later line")
+                app.interrupting = True
+                app._on_event(Event("message.complete", SID, {"text": "stopped"}))
+                self.assertEqual(app.composer.text, draft)
+                self.assertEqual(app_module.SENT_NOW_DROPPED_NOTICE.format(count=1, s="") in notices(app, NOTICE_WARN), said)
+                self.assertEqual(client.named("prompt.submit"), [])
+                self.assertIsNone(app.hermes_next_due)
+
+    def test_a_failed_turn_with_a_steer_unread_sends_the_queue_on_and_the_next_end_does_not_wait(self) -> None:
+        ends = {
+            "error complete": Event("message.complete", SID, {"status": "error", "text": "", "error": "boom"}),
+            "bare error": Event("error", SID, {"message": "Session no longer running before the agent was ready"}),
+        }
+        for name, end in ends.items():
+            with self.subTest(end=name):
+                app, client, _now = self.steer_left_unread("typed", "second line", "third line")
+                app._on_event(end)
+                self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "second line", "queued": True}])
+                self.assertIsNone(app.hermes_next_due)
+                app._on_event(Event("message.start", SID, {}))
+                app._on_event(Event("message.complete", SID, {"text": "done"}))
+                self.assertEqual(client.named("prompt.submit")[-1], {"session_id": SID, "text": "third line", "queued": True})
+
+    def test_a_queued_answer_after_its_turn_ended_does_not_hold_the_next_turns_queue(self) -> None:
+        # `message.complete` came before the redirect's answer: the queue went on, and the late `queued` belongs to the
+        # turn that ended, not to the one the TUI started since.
+        app, client = make_app(busy=True)
+        queue(app, "first queued", "second queued", "third queued")
+        app._on_input(CTRL_ENTER)
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "second queued", "queued": True}])
+        app._on_response(Response(call_id(client, "session.redirect"), {"status": "queued", "text": "first queued"}, None))
+        self.assertEqual(app.hermes_queued, [])
+        self.assertIn("┃ ❯ first queued", steers(app))
+        app._on_event(Event("message.start", SID, {}))
+        app._on_event(Event("message.complete", SID, {"text": "second done"}))
+        self.assertEqual(client.named("prompt.submit")[-1], {"session_id": SID, "text": "third queued", "queued": True})
+
+    def test_a_turn_end_without_a_redirect_hermes_queued_still_sends_the_next_queued_line(self) -> None:
+        # The negative case: a redirect Hermes took into the turn (`redirected`) leaves Hermes nothing to run next.
+        app, client = make_app(busy=True)
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "redirected", "text": "first queued"})
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "second queued", "queued": True}])
+
+    def test_an_agent_without_redirect_gets_the_send_now_as_a_steer(self) -> None:
+        # 4010 on `session.redirect`: the agent has no active-turn redirect, and may still take a steer.
+        app, client = make_app(busy=True)
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, error=NO_REDIRECT)
+        self.assertEqual(client.calls[1:], [("session.steer", {"session_id": SID, "text": "first queued"})])
+        self.assertEqual(steers(app), [])  # one row, still waiting on the steer's answer
+        answer(app, client, {"status": "queued", "text": "first queued"})
+        self.assertEqual(steers(app), ["┃ ❯ first queued"])
+        self.assertEqual([sent.line.text for sent in app.sent_now], ["first queued"])  # held until a tool finishes
+        self.assertEqual([line.text for line in app.queued], ["second queued"])
+
+    def test_a_redirect_refused_otherwise_is_not_sent_again_as_a_steer(self) -> None:
+        # An error other than 4010: the line goes back to the head of the queue, as a refused steer's did.
+        app, client = make_app(busy=True)
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, error={"code": 5000, "message": "redirect failed: boom"})
+        self.assertEqual(client.named("session.steer"), [])
+        self.assertEqual([line.text for line in app.queued], ["first queued", "second queued"])
+        self.assertIn("back at the head of the queue", steers(app)[0])
+
+    def test_a_redirect_rejected_mid_turn_goes_again_as_a_steer(self) -> None:
+        # Between a tool batch and the next model call no request is under way to cut, so Hermes rejects the
+        # redirect while the turn runs; a steer is read before that next call. Same row, same turn.
+        for status, held in (("queued", ["first queued"]), ("rejected", [])):
+            with self.subTest(status=status):
+                app, client = make_app(busy=True)
+                queue(app, "first queued", "second queued")
+                app._on_input(CTRL_ENTER)
+                app._on_response(Response(call_id(client, "session.redirect"), {"status": "rejected", "text": "first queued"}, None))
+                self.assertEqual(client.calls[1:], [("session.steer", {"session_id": SID, "text": "first queued"})])
+                self.assertEqual(steers(app), [])  # one row, still waiting on the steer's answer
+                app._on_response(Response(call_id(client, "session.steer"), {"status": status, "text": "first queued"}, None))
+                self.assertEqual([sent.line.text for sent in app.sent_now], held)
+                self.assertEqual(len(app.queued), 2 - len(held))
+        app, client = make_app(busy=True)  # idle by the answer: the turn it was meant for ended, nothing to steer
+        type_text(app, "too late")
+        app._on_input(CTRL_ENTER)
+        app.turn_pending = False
+        answer(app, client, {"status": "rejected", "text": "too late"})
+        self.assertEqual(client.calls[1:], [("prompt.submit", {"session_id": SID, "text": "too late"})])
+
+    def test_a_redirect_hermes_queued_comes_back_on_a_stop_even_after_a_tool_finished(self) -> None:
+        # Hermes' own next prompt is read only after the turn, and a stop clears it: no tool finishing settles it.
+        app, client = make_app(busy=True)
+        queue(app, "first queued", "second queued")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "queued", "text": "first queued"})
+        app._on_event(Event("tool.complete", SID, {"tool_id": "t1", "name": "terminal", "result": {"output": ""}}))
+        self.assertEqual(len(app.hermes_queued), 1)
+        app.interrupting = True
+        app._on_event(Event("message.complete", SID, {"text": "stopped"}))
+        self.assertEqual(app.composer.text, "first queued\nsecond queued")  # back at the head, ahead of the rest
+        self.assertIn(app_module.SENT_NOW_DROPPED_NOTICE.format(count=1, s=""), notices(app, NOTICE_WARN))
+        self.assertEqual(app.hermes_queued, [])
+
+    def test_a_redirect_cuts_the_streaming_reply_and_the_retry_streams_under_the_steer(self) -> None:
+        # Hermes sends no boundary between the cut request and its retry: sealed when the redirect is answered, the
+        # cut reply, the steer row and the retried reply read in that order instead of one glued reply.
+        app, client = make_app(busy=True)
+        app._on_event(Event("message.start", SID, {}))
+        app._on_event(Event("message.delta", SID, {"text": "partial"}))
+        type_text(app, "use the other file")
+        app._on_input(CTRL_ENTER)
+        answer(app, client, {"status": "redirected", "text": "use the other file"})
+        app._on_event(Event("message.delta", SID, {"text": "retried"}))
+        app._on_event(Event("message.complete", SID, {"text": "retried"}))
+        shown = [(type(block).__name__, getattr(block, "text", "")) for block in app.transcript.blocks
+                 if isinstance(block, (AssistantBlock, SteerBlock))]
+        self.assertEqual(shown, [("AssistantBlock", "partial"), ("SteerBlock", "use the other file"),
+                                 ("AssistantBlock", "retried")])
+
+    def test_a_redirect_seals_the_reasoning_streaming_and_the_retry_reasons_in_a_block_of_its_own(self) -> None:
+        # As a step's end seals it: the cut reasoning stops counting, and the retry's reasoning does not join it.
+        app, client = make_app(busy=True)
+        now = [10.0]
+        app.transcript._clock = lambda: now[0]
+        app._on_event(Event("message.start", SID, {}))
+        app._on_event(Event("reasoning.delta", SID, {"text": "thinking about it"}))
+        type_text(app, "use the other file")
+        app._on_input(CTRL_ENTER)
+        now[0] = 14.0
+        answer(app, client, {"status": "redirected", "text": "use the other file"})
+        (cut,) = [block for block in app.transcript.blocks if isinstance(block, ThinkingBlock)]
+        self.assertEqual((cut.done, cut.ended_at), (True, 14.0))
+        app._on_event(Event("reasoning.delta", SID, {"text": "the other file"}))
+        shown = [(type(block).__name__, getattr(block, "text", "")) for block in app.transcript.blocks
+                 if isinstance(block, (ThinkingBlock, SteerBlock))]
+        self.assertEqual(shown, [("ThinkingBlock", "thinking about it"), ("SteerBlock", "use the other file"),
+                                 ("ThinkingBlock", "the other file")])
+
     def typed_steer(self, *events: str) -> tuple[App, SteerBlock]:
         """A turn running, a steer typed and taken by Hermes, then `events`: the App and the steer's block."""
         app, client = make_app(busy=True)
         app._on_event(Event("message.start", SID, {}))
-        type_text(app, "use the other file")
-        app._on_input(CTRL_ENTER)
+        type_text(app, "/steer use the other file")  # Hermes' steer, held until a tool carries it
+        app._on_input(Key(ENTER))
         answer(app, client, {"status": "queued", "text": "use the other file"})
         for kind in events:
             app._on_event(Event(kind, SID, {"tool_id": "t1", "name": "terminal", "text": "x"}))
@@ -668,7 +1118,7 @@ class SteerTests(unittest.TestCase):
         queue(app, "queued meanwhile")
         type_text(app, "use the other file")
         app._take_input(CTRL_ENTER_BYTES)  # Ctrl+Enter with text steers the text; the queue stays as it was
-        self.assertEqual(client.calls, [("session.steer", {"session_id": SID, "text": "use the other file"})])
+        self.assertEqual(client.calls, [("session.redirect", {"session_id": SID, "text": "use the other file"})])
         self.assertEqual([line.text for line in app.queued], ["queued meanwhile"])
         app, client = make_app()
         type_text(app, "first")
@@ -691,19 +1141,25 @@ class SteerTests(unittest.TestCase):
         self.assertEqual((app.composer.text, client.calls), ("first\n", []))  # a line, as between turns
 
     def test_only_ctrl_enter_and_the_steer_command_can_steer(self) -> None:
-        # Steer text is what the person typed and sent, so `session.steer` has one sender with two callers.
+        # Steer text is what the person typed and sent, so the main turn's steer has one sender with three callers:
+        # `_steer` sends it, and only a refused redirect sends it again as `session.steer`.
         tree = ast.parse(Path(app_module.__file__).read_text(encoding="utf-8"))
         callers: set[str] = set()
         senders: set[str] = set()
+        methods: set[str] = set()
         for function in ast.walk(tree):
             if not isinstance(function, ast.FunctionDef):
                 continue
             for node in ast.walk(function):
-                if isinstance(node, ast.Constant) and node.value == "session.steer":
-                    senders.add(function.name)
+                if isinstance(node, ast.Constant) and node.value in ("session.steer", "session.redirect"):
+                    methods.add(function.name)
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "_steer":
                     callers.add(function.name)
-        self.assertEqual(senders, {"_steer"})
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "_send_steer":
+                    senders.add(function.name)
+        # `/steer` names Hermes' steer; a redirect refused (4010) or rejected mid-turn goes again as one.
+        self.assertEqual(methods, {"_steer", "_steer_command", "_on_steered", "_on_steer_refused"})
+        self.assertEqual(senders, {"_steer", "_on_steered", "_on_steer_refused"})
         self.assertEqual(callers, {"_steer_or_submit", "_steer_command", "_send_queued_now"})
 
 
@@ -762,7 +1218,7 @@ class DocumentedApprovalsToggleTests(unittest.TestCase):
 @unittest.skipIf(NO_TERMIOS, "the OMH TUI needs termios")
 class SteerReplayTests(AppTestCase):
     def steer_run(self, status: str, *segments: str) -> object:
-        answers = (*startup_answers(UNREAD_DEFAULT), ("session.steer", {"result": {"status": status, "text": "second prompt"}}))
+        answers = (*startup_answers(UNREAD_DEFAULT), ("session.redirect", {"result": {"status": status, "text": "second prompt"}}))
         return self.prepare(Scenario("session", spans("session", "startup", "create", *segments), answers=answers))
 
     def test_ctrl_enter_as_a_key_report_steers_and_the_notice_lands(self) -> None:
@@ -775,7 +1231,7 @@ class SteerReplayTests(AppTestCase):
         )
         self.run_main(run)
         self.assert_clean_run(run)
-        (steer,) = run.calls("session.steer")
+        (steer,) = run.calls("session.redirect")
         self.assertEqual(steer["params"], {"session_id": LIVE_ID, "text": "second prompt"})
         self.assertEqual(len(run.calls("prompt.submit")), 1)
 
@@ -785,12 +1241,12 @@ class SteerReplayTests(AppTestCase):
         terminal.script(
             # One read: a second prompt queued while the first prompt's turn is pending, then Ctrl+J, a bare line
             # feed in raw mode, on the empty composer: it sends the queued prompt now.
-            Step(b"first prompt\rsecond prompt\r\n", when=terminal.idle, label="idle"),
+            Step(TYPED_AHEAD + b"first prompt\rsecond prompt\r\n", when=terminal.idle, label="idle"),
             Step(b"\x04", when=lambda: "┃ ❯ second prompt" in terminal.history() and terminal.idle(), label="steered"),
         )
         self.run_main(run)
         self.assert_clean_run(run)
-        (steer,) = run.calls("session.steer")
+        (steer,) = run.calls("session.redirect")
         self.assertEqual(steer["params"], {"session_id": LIVE_ID, "text": "second prompt"})
         self.assertEqual(len(run.calls("prompt.submit")), 1)
 
@@ -1131,7 +1587,8 @@ class ModeCycleTests(unittest.TestCase):
             with self.subTest(scenario=scenario.__name__):
                 now = [100.0]
                 client = Unchecked()
-                app = App(ScriptedTerminal(24, 80), client, {}, poller=FakePoller(), clock=lambda: now[0])  # type: ignore[arg-type]
+                app = App(ScriptedTerminal(24, 80), client, {"OMH_TUI_MOUSE": "0"}, poller=FakePoller(),  # type: ignore[arg-type]
+                          clock=lambda: now[0])
                 app.sid = SID
                 scenario(app, client, now)
                 for method, params in client.calls:
@@ -1503,7 +1960,8 @@ class LeftSessionStateTests(unittest.TestCase):
             answer(app, client, {**self.SHOT, "path": str(path)})
         ((label, image),) = app.composer.images.values()
         self.assertEqual((label, image.name, image.data), ("[Image #1]", "shot.png", b"\x89PNG\r\n\x1a\n"))
-        self.assertEqual(client.calls[-1], ("image.detach", {"session_id": SID, "path": str(path)}))
+        # Hermes is told to let go of it; the preview asked after it (`image.render`) is `test_tui_inline_image_app`'s.
+        self.assertEqual(client.calls[-2], ("image.detach", {"session_id": SID, "path": str(path)}))
         self.assertEqual(notices(app), [])
 
 
@@ -1575,7 +2033,7 @@ class RedrawTailTests(unittest.TestCase):
             app._full_redraw()
         drawn(app)
         shown = "\n".join(app.terminal.screen.history())  # type: ignore[attr-defined]
-        self.assertIn("⋯ 35 earlier messages · /history shows all", shown)
+        self.assertIn("⋯ 35 earlier entries · /history shows all", shown)
         self.assertNotIn("notice 34\n", shown)
         self.assertIn("notice 39", shown)
 
@@ -1593,9 +2051,9 @@ class RedrawTailTests(unittest.TestCase):
         from omh.tui.transcript import BLOCK_CAP
 
         prose = " ".join((Path(__file__).resolve().parents[1] / "docs/INSTALLATION.md").read_text(encoding="utf-8").split())
-        self.assertIn(f"holds a session's last {BLOCK_CAP:,} messages", prose)
+        self.assertIn(f"holds a session's last {BLOCK_CAP:,} entries", prose)
 
-    def test_history_opens_with_a_row_counting_the_messages_the_cap_dropped(self) -> None:
+    def test_history_opens_with_a_row_counting_the_entries_the_cap_dropped(self) -> None:
         app, _client = make_app(rows=24, cols=80)
         with patch("omh.tui.transcript.BLOCK_CAP", 10):
             for number in range(25):
@@ -1603,9 +2061,9 @@ class RedrawTailTests(unittest.TestCase):
                 drawn(app)  # printed, so the cap may drop it
         app._history("")
         shown = [line.rstrip() for line in drawn(app)]
-        self.assertEqual(shown[:3], ["⋯ 15 earlier messages no longer held", "", "· notice 15"])
+        self.assertEqual(shown[:3], ["⋯ 15 earlier entries no longer held", "", "· notice 15"])
         self.assertEqual(shown[20:23], ["· notice 24", "", ""])  # the row, a blank, then the 10 notices held, spaced
-        self.assertIn("history · 1-10/10 messages", shown[-1])
+        self.assertIn("history · 1-10/10 entries", shown[-1])
 
     def test_a_drop_while_history_is_open_leaves_its_count_as_it_opened(self) -> None:
         app, _client = make_app(rows=24, cols=80)
@@ -1619,7 +2077,7 @@ class RedrawTailTests(unittest.TestCase):
                 app.transcript.take_stable_lines(80, DEFAULT_THEME)
             self.assertEqual(app.transcript.dropped, 20)
             shown = [line.rstrip() for line in drawn(app)]
-        self.assertEqual(shown[:3], ["⋯ 15 earlier messages no longer held", "", "· notice 15"])
+        self.assertEqual(shown[:3], ["⋯ 15 earlier entries no longer held", "", "· notice 15"])
 
     def test_history_renders_its_first_block_once_for_the_check_and_the_first_page(self) -> None:
         app, _client = make_app(rows=24, cols=80)
@@ -1651,8 +2109,110 @@ class RedrawTailTests(unittest.TestCase):
         with patch("omh.tui.app.REDRAW_TAIL_ROWS", 6):
             app._draw_history(messages)
         taken = [line for line in app.transcript.take_stable_lines(80, DEFAULT_THEME) if line]
-        self.assertEqual(taken[0][0].text, "⋯ 37 earlier messages · /history shows all")
+        self.assertEqual(taken[0][0].text, "⋯ 37 earlier entries · /history shows all")
         self.assertEqual([line_text(line) for line in taken[1:]], ["┃ ❯ question 37", "┃ ❯ question 38", "┃ ❯ question 39"])  # each prompt on its rail
+
+
+class RedrawKeptRowsTests(unittest.TestCase):
+    """A full redraw at an unchanged width writes what one with nothing kept writes, without wrapping a finished
+    reply or painting a flushed row again; at a new width every row is laid out anew."""
+
+    REPLY = ("## Answer {turn}\n\n한국어 문장입니다 — 폭이 두 칸인 글자 🎉\n\n- item **bold** with `code`\n\n"
+             "```python\ndef fib(n: int) -> int:\n    return n\n```\n\n" + "lorem ipsum dolor sit amet " * 6)
+
+    def session(self, cols: int = 80) -> tuple[App, list[float]]:
+        """A resumed session of 30 turns, drawn, with nothing kept from another test."""
+        now = [100.0]
+        app, _client = make_app(rows=24, cols=cols, clock=lambda: now[0])
+        messages: list[dict] = []
+        for turn in range(30):
+            messages.append({"role": "user", "text": f"question {turn}: 한국어 질문 🎯"})
+            messages.append({"role": "tool", "name": "terminal", "tool_call_id": f"t{turn}", "text": "ok",
+                             "args": {"command": "ls -la"}})
+            messages.append({"role": "assistant", "text": self.REPLY.format(turn=turn)})
+        screen_module._flushed_row.cache_clear()
+        app._draw_history(messages)
+        drawn(app)
+        return app, now
+
+    def redraw(self, app: App) -> tuple[str, int]:
+        """The bytes a full redraw and its frame write, and how many times it wrapped markdown."""
+        terminal = app.terminal
+        start = len(terminal.writes)  # type: ignore[attr-defined]
+        with patch("omh.tui.transcript.render_lines", wraps=transcript_module.render_lines) as wrapped:
+            app._full_redraw()
+            drawn(app)
+        return "".join(terminal.writes[start:]), wrapped.call_count  # type: ignore[attr-defined]
+
+    def forget(self, app: App) -> None:
+        """Nothing kept: every reply is wrapped and every row painted as if never drawn."""
+        screen_module._flushed_row.cache_clear()
+        for block in app.transcript.blocks:
+            if isinstance(block, AssistantBlock):
+                block.kept = None
+
+    def test_the_rows_kept_outnumber_the_rows_a_redraw_prints(self) -> None:
+        # Kept by recency: a redraw that printed more rows than are kept would find none of them kept the next time.
+        self.assertGreater(screen_module.FLUSHED_ROWS_KEPT, app_module.REDRAW_TAIL_ROWS)
+
+    def test_a_redraw_at_the_same_width_writes_the_bytes_of_one_with_nothing_kept(self) -> None:
+        app, _now = self.session()
+        self.forget(app)
+        cold, wrapped = self.redraw(app)
+        self.assertEqual(wrapped, 30)
+        before = screen_module._flushed_row.cache_info()
+        kept, wrapped = self.redraw(app)
+        after = screen_module._flushed_row.cache_info()
+        self.assertEqual(wrapped, 0)
+        self.assertEqual(after.misses, before.misses)  # no flushed row painted again
+        self.assertEqual(kept, cold)
+        self.assertIn(CLEAR_SCREEN_AND_SCROLLBACK, kept)
+
+    def test_a_same_size_settled_resize_prints_the_session_as_it_was(self) -> None:
+        app, now = self.session()
+        shown = app.terminal.screen.history()  # type: ignore[attr-defined]
+        self.assertTrue(any("question 0:" in row for row in shown))  # the whole session: scrollback and screen
+        app._on_resize()
+        now[0] += RESIZE_SETTLE_SECONDS
+        with patch("omh.tui.transcript.render_lines", wraps=transcript_module.render_lines) as wrapped:
+            app._redraw_when_settled()
+            drawn(app)
+        self.assertEqual(wrapped.call_count, 0)
+        self.assertEqual(app.terminal.screen.history(), shown)  # type: ignore[attr-defined]
+
+    def test_a_same_size_settle_keeps_more_of_a_long_session_than_the_old_tail(self) -> None:
+        # The tail was 3,000 rows: a long session's scrollback fell to about that on every tab switch.
+        now = [100.0]
+        app, _client = make_app(rows=24, cols=80, clock=lambda: now[0])
+        replies = (app_module.REDRAW_TAIL_ROWS + 1000) // 11  # 11 rows a reply: its name, 9 rows, a blank one
+        for number in range(replies):
+            app.transcript.blocks.append(AssistantBlock("\n".join(f"reply {number} row {row}" for row in range(9)), done=True))
+            if number % 50 == 0:
+                drawn(app)  # printed as it goes, so the BLOCK_CAP may drop what scrolled off
+        drawn(app)
+        self.assertGreater(len(app.terminal.screen.history()), app_module.REDRAW_TAIL_ROWS + 900)  # type: ignore[attr-defined]
+        app._on_resize()
+        now[0] += RESIZE_SETTLE_SECONDS
+        app._redraw_when_settled()
+        drawn(app)
+        kept = app.terminal.screen.history()  # type: ignore[attr-defined]
+        self.assertGreater(len(kept), 3000 + 24)
+        self.assertGreaterEqual(len(kept), app_module.REDRAW_TAIL_ROWS - 11)  # the cut falls between replies
+        self.assertTrue(kept[0].startswith("⋯ ") and "earlier entries" in kept[0])
+        self.assertIn(f"┃   reply {replies - 1} row 8", kept)
+
+    def test_a_redraw_at_a_new_width_lays_every_row_out_as_a_session_drawn_there(self) -> None:
+        app, _now = self.session(cols=80)
+        self.redraw(app)  # everything kept at 80 columns
+        app.terminal.screen.resize(24, 60)  # type: ignore[attr-defined]
+        app._take_size()
+        self.redraw(app)
+        narrowed = app.terminal.screen.history()  # type: ignore[attr-defined]
+        there, _now = self.session(cols=60)
+        self.forget(there)
+        self.redraw(there)
+        self.assertEqual(narrowed, there.terminal.screen.history())  # type: ignore[attr-defined]
+        self.assertTrue(all(len(row) <= 60 for row in narrowed))
 
 
 class CallExpiryTests(unittest.TestCase):
@@ -1715,7 +2275,7 @@ class LazyHistoryTests(unittest.TestCase):
             app._history("")
             shown = [line.rstrip() for line in drawn(app)]
         self.assertEqual(shown[0], "· notice 0")
-        self.assertIn("history · 1-12/500 messages", shown[-1])
+        self.assertIn("history · 1-12/500 entries", shown[-1])
         self.assertLess(len(rendered), 30)  # the first page and the last, not 500 blocks
         self.assertEqual(set(rendered), {True})  # thinking text, result summaries and whole diffs
 
@@ -1844,7 +2404,7 @@ class PlanModeTests(unittest.TestCase):
         app, client = self.plan_app(busy=True)
         type_text(app, "also the docs")
         app._on_input(CTRL_ENTER)
-        self.assertEqual(client.calls, [("session.steer", {"session_id": SID, "text": "also the docs"})])
+        self.assertEqual(client.calls, [("session.redirect", {"session_id": SID, "text": "also the docs"})])
         app.turn_pending = False
         answer(app, client, {"status": "rejected", "text": "also the docs"})
         self.assertEqual(client.calls[1], ("slash.exec", {"command": "plan also the docs", "session_id": SID}))
@@ -2520,7 +3080,7 @@ class ModeReplayTests(AppTestCase):
         terminal.script(
             Step(b"Write the numbers from 1 to 300, one per line, nothing else.\r", when=terminal.idle, label="idle"),
             # The replay holds this turn open until it sees session.interrupt.
-            Step(b"second prompt\rthird prompt\r", when=running, label="running"),
+            Step(TYPED_AHEAD + b"second prompt\rthird prompt\r", when=running, label="running"),
             Step(b"\x1b[A", when=terminal.shows("⧗ third prompt"), capture="queued", label="queued"),
             Step(b"\x03", when=terminal.shows("❯ second prompt"), capture="recalled", label="recalled"),
             Step(b"\x03", when=lambda: not terminal.shows("third prompt")(), label="cleared"),
@@ -2602,6 +3162,48 @@ class ModeReplayTests(AppTestCase):
         self.assertEqual(submitted["params"], {"session_id": LIVE_ID, "text": PLAN_PROMPT})
         self.assertIn("❯ /plan fix the flaky test", terminal.history())
         self.assertNotIn("PLAN MODE", terminal.history())
+
+
+class LeaderLabelTests(unittest.TestCase):
+    def armed(self):
+        app, _client = make_app()
+        app.composer.set_vim(True)
+        app._on_input(Key(ESCAPE))
+        app._on_input(Key(CHAR, " "))
+        return app
+
+    def test_leader_arms_updates_vim_label(self) -> None:
+        app = self.armed()
+        self.assertTrue(app.composer.leader)
+        self.assertEqual(app.composer.vim_label, "NORMAL · SPC")
+
+    def test_leader_disarm_restores_vim_label(self) -> None:
+        for follower in (Key(ESCAPE), Key(CHAR, "z"), Key(CHAR, "p")):
+            with self.subTest(follower=follower):
+                app = self.armed()
+                app._on_input(follower)
+                self.assertFalse(app.composer.leader)
+                self.assertEqual(app.composer.vim_label, "NORMAL")
+
+    def test_chip_column_with_leader_label(self) -> None:
+        app = self.armed()
+        for mode in (MODE_NORMAL, MODE_ACCEPT, MODE_PLAN):
+            with self.subTest(mode=mode):
+                label = modes_module.editing_label(app.composer.vim_label, mode, DEFAULT_THEME)
+                self.assertIn("NORMAL · SPC", line_text(label))
+                self.assertEqual(modes_module.chip_column(mode, DEFAULT_THEME, app.composer.vim_label),
+                                 line_width(label) + 3)
+                self.assertEqual(
+                    modes_module.chip_column(mode, DEFAULT_THEME, "NORMAL · SPC")
+                    - modes_module.chip_column(mode, DEFAULT_THEME, "NORMAL"), 6)
+
+    def test_info_line_renders_whole_leader_label_without_clipping(self) -> None:
+        app = self.armed()
+        for width in (20, 40, 80):
+            with self.subTest(width=width):
+                line = app._info_line(width)
+                self.assertIn("NORMAL · SPC", line_text(line))
+                self.assertLessEqual(line_width(line), width)
 
 
 if __name__ == "__main__":

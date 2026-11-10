@@ -40,11 +40,16 @@ non-generative: it answers typed questions about a `state` with probabilities an
 
 ## Routes
 
-- `TYPESAFE_API_KEY` enables the TypeSafe route. An `OPENROUTER_API_KEY` alone enables nothing: the
-  OpenRouter route needs `{"openrouter_route": true}` in `<omh_home>/jev/settings.json`, which OMH
-  never writes. `omh doctor` reports the route in its `plugin_jev_sidekick` line. The file is a
-  local opt-in, not a guard: anything that can write `<omh_home>` can set it. It picks which of the
-  user's keys an ask may use and never sends one by itself.
+- `TYPESAFE_API_KEY` enables the TypeSafe route. OMH also honors `TYPESAFE_BASE_URL`, the
+  API-root variable TypeSafe's own SDKs read, for that route: an HTTPS root gets `/v1/systemone`
+  appended, a root already ending in `/v1` gets `/systemone`, and one already ending in
+  `/systemone` is used as is. The OpenRouter route remains an explicit local opt-in: an
+  `OPENROUTER_API_KEY` alone enables nothing; it needs
+  `{"openrouter_route": true}` in `<omh_home>/jev/settings.json`, which OMH
+  never writes. `omh doctor` reports the route in its `plugin_jev_sidekick`
+  line. The file is a local opt-in, not a guard: anything that can write
+  `<omh_home>` can set it. It picks which of the user's own keys an ask may use
+  and never sends one by itself.
 - Costs: TypeSafe lists $0.042 per million input tokens and $0 output (read 2026-09-21), so the
   TypeSafe cost is an estimate from that list; OpenRouter reports its own cost per reply.
 
@@ -63,7 +68,7 @@ non-generative: it answers typed questions about a `state` with probabilities an
 - Confidence is how concentrated the answer is, not permission to act.
 - A Noul threshold does not carry over to a Choice: a Choice is relative among its options, each
   Noul is absolute.
-- Pin `jev-1.13.0` when a threshold was tuned; `jev-latest` moves on the next release.
+- Pin the route's version id when a threshold was tuned (`jev-1.13.0` on TypeSafe, `jev-1.13` on OpenRouter); `jev-latest` moves on the next release.
 - Never ask Jev what code can compute: counts, dates, arithmetic, string checks.
 
 ## Recovery
@@ -73,7 +78,8 @@ non-generative: it answers typed questions about a `state` with probabilities an
 - `consent_not_observed`: nothing was sent; offer the ask in one line naming what would be sent
   and wait for the user to reply `ask jev`.
 - `credential_like_content`: remove the secret-looking text from `state` and tell the user what
-  was removed; the tool refuses rather than redacts.
+  was removed; the tool refuses rather than redacts. A skill's own procedure or recovery line wins
+  over this one: a diff or a command that carries a credential is a finding, not text to strip.
 
 ## Relation to the route-question answerer opt-in (#1816)
 

@@ -9,7 +9,7 @@ holds the workflow-specific detail without copying those shared rails.
 
 - Only a static infographic or summary card is needed; use `omh-image-cards`.
 - The request is a website, landing page or interactive UI build, or an animation inside an app's own UI (a button, modal, page transition or loading state); use `omh-frontend`.
-- Summarizing, transcribing, captioning or trimming a recording that already exists; use `omh-media-input`.
+- Summarizing or transcribing a recording that already exists; use `omh-media-input`. Trimming, converting or burning in captions is plain ffmpeg through `omh-terminal`.
 - A math proof, equation or algorithm animation in the 3Blue1Brown style belongs to Hermes' bundled `manim-video` skill; converting existing footage to ASCII art belongs to `ascii-video`.
 - The output is a deck, PDF, spreadsheet or office document; use `omh-materials-package`.
 - Only a premium layout quality assessment is wanted; use `omh-design-quality-gate`.
@@ -91,5 +91,6 @@ Safety rules:
 - No automatic network/model/API calls, subprocess execution, dependency installation, font downloads, account discovery, voice cloning or paid defaults inside core; every chosen external action needs scope and authority.
 - A renderer unavailable, timeout, pageerror, missing font or partial export is HOLD or failed, never successful delivery. Never invent a tool receipt, translation, listening review or product capture.
 - Use user/official/rights-cleared assets first; generated visuals carry generation provenance and concept labels. Publish/spend/voice cloning requires separate explicit consent and exact-target approval.
+- A paid call billed to the user's own subscription credits or plan usage (`eleven.py` and `narrate.py` narration, voice, STT, SFX or music; every codex image run, `codex_imagegen_batch.sh` and `codex_ref_image.sh` alike; every `codex exec` text run, the script review and concept candidates, with its spend-only cap set in calls) goes through `omh-spend-gate` first: its card names the exact target (the lines, voice and model, or the job and its length) with the expected credits read from the provider's own price for that model, `references/craft-brief.md`'s estimates serving only as a rough guide, or says the cost is unknown so the gate's spend-only cap applies; the person's typed yes to that card is the exact-target spend approval for that run only.
 
 Detailed procedure steps: `references/procedure.md`.

@@ -17,7 +17,7 @@ This is an OMH `commit-pr-authoring` workflow skill, projected for Agent Skills 
 
 ## Why This Exists
 
-`commit-pr-authoring` exists because nothing in the catalog authored the commit or the PR body. `code-review` reads a commit message as a thing to review and `github-event-ops` routes PR events, so the text an engineer writes several times a day had no owner, and nothing applied the observed-versus-prepared split to it.
+`commit-pr-authoring` exists because nothing in the catalog authored the commit or the PR body. `omh-code-review` reads a commit message as a thing to review and `omh-github-event-ops` routes PR events, so the text an engineer writes several times a day had no owner, and nothing applied the observed-versus-prepared split to it.
 
 ## First Steps
 
@@ -48,8 +48,8 @@ Bad example:
 ## Completion Checklist
 
 - The convention read names the template and log sample it drew from.
-- Every `Tested:` entry maps to an observed ledger row with its exit status.
-- Every prepared, skipped, or unobserved command is under `Not-tested:` with its reason.
+- Every `Tested:` entry (or the validation line of a repository whose log has no such trailer) maps to an observed ledger row with its exit status.
+- Every prepared, skipped, or unobserved command is under `Not-tested:` (or "Not run" where the log has no trailers) with its reason.
 - The draft lists the paths to stage, and any state-claiming subject prefix maps to an observed ledger row.
 - Nothing was committed, pushed, or opened by OMH.
 

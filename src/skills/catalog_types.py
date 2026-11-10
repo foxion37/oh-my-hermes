@@ -3,7 +3,8 @@
 Split out of `catalog.py` so a reader meets the contract before the data. Nothing
 here knows which skills exist; it defines what a skill *is* - the dataclasses, the
 role and checklist defaults `SkillDefinition.__post_init__` fills in, the
-`omh-`/`ulw-` display rule, and the coding-intent vocabulary.
+`omh-`/`ulw-` display rule (kept in `omh.catalogs.skill_display_names` and
+re-exported here), and the coding-intent vocabulary.
 
 The data tables live in `catalog_definitions`, `catalog_feature_surfaces`, and
 `catalog_harnesses`; `catalog.py` assembles them and owns the public accessors.
@@ -15,6 +16,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ..catalogs.skill_display_names import (
+    OMH_SKILL_DISPLAY_NAME_OVERRIDES as OMH_SKILL_DISPLAY_NAME_OVERRIDES,
+    OMH_SKILL_NAME_PREFIX as OMH_SKILL_NAME_PREFIX,
+    ULW_ENGINE_SKILL_NAMES as ULW_ENGINE_SKILL_NAMES,
+    ULW_SKILL_NAME_PREFIX as ULW_SKILL_NAME_PREFIX,
+    omh_skill_display_name as omh_skill_display_name,
+)
 from ..workflows.operations_contracts import ArtifactContractRef, artifact_contracts_for_workflow
 
 
@@ -36,113 +44,6 @@ def omh_description(description: str) -> str:
     if text.lower().startswith(OMH_DESCRIPTION_PREFIX):
         return text
     return f"{OMH_DESCRIPTION_PREFIX}{text}"
-
-
-OMH_SKILL_NAME_PREFIX = "omh-"
-
-# Canonical catalog names that get a hand-picked display label instead of the
-# mechanical prefix. The override lookup runs before the idempotency guard in
-# omh_skill_display_name() because that guard tests the INPUT name, not the
-# override value: the two orders diverge only for an override KEY that already
-# starts with `omh-`, which a prefix-first implementation would short-circuit
-# before ever reaching its override. No current key does, so the ordering is a
-# forward-looking contract rather than a live behavior.
-OMH_SKILL_DISPLAY_NAME_OVERRIDES = {
-    "oh-my-hermes": "omh-routing",
-    # `product-docs` avoids reserving the generic canonical word `docs` while
-    # preserving the public skill name requested by users.
-    "product-docs": "omh-docs",
-    # `strategy-brief` says what the output is, not what the skill does for
-    # you. The skill turns goals and evidence into options, tradeoffs, and a
-    # recommendation - it helps you decide. The canonical name stays put
-    # (directory, manifest, tap URL, triggers); only the label a reader sees
-    # changes.
-    "strategy-brief": "omh-decide",
-    # `ulw` already carries the "ultra". `ulw-ultrawork` says it twice, and the
-    # duplicated syllable is the part a reader has to skip past to reach the
-    # word that means something. Canonical names are untouched.
-    "context": "ulw-context",
-    "deep-interview": "ulw-interview",
-    "ralplan": "ulw-plan",
-    "ultragoal": "ulw-goal",
-    "ultraprocess": "ulw-process",
-    "ultraqa": "ulw-qa",
-    "ultrawork": "ulw-work",
-    # `ulw-performance` spells the domain out; `ulw-perf` is the label an
-    # operator actually scans for in a status line, and the engine family
-    # already abbreviates (`ulw-plan`, `ulw-qa`). Canonical name stays put.
-    "ultraperf": "ulw-perf",
-    # The `-operator` suffix names the implementation pattern, not the job. A
-    # reader scanning a picker wants the job: the browser one drives web pages,
-    # the terminal one scopes shell commands, the apps one reaches email/Slack/
-    # Notion-style providers. Two labels also correct outright misreads:
-    # `voice-operator` shapes terse voice/mobile-style REQUESTS (it does not
-    # speak), and `img-summary` GENERATES image prompt cards (it does not
-    # summarize images). Canonical names stay put everywhere, and the old
-    # `omh-<canonical>` labels keep routing as historical aliases.
-    "browser-operator": "omh-browser",
-    "workspace-file-operator": "omh-files",
-    "command-operator": "omh-terminal",
-    "connector-operator": "omh-apps",
-    "live-info-operator": "omh-live-info",
-    "media-input-operator": "omh-media-input",
-    "voice-operator": "omh-voice-input",
-    "img-summary": "omh-image-cards",
-    # The owner's own name for the graph run: people type `dag ulw` and `/dag-ulw`, and Hermes slugs the
-    # rendered `name` into the slash command, so the label is the canonical name itself.
-    "dag-ulw": "dag-ulw",
-}
-
-ULW_SKILL_NAME_PREFIX = "ulw-"
-
-# The workflow-engine skills: the ones that drive a run rather than do a domain
-# job. A user reaching for `ultrawork` wants an execution engine pointed at
-# whatever they are already doing; a user reaching for `content-operator` wants
-# that specific job done. The two read differently in a status line, so they get
-# different labels.
-#
-# Membership is enumerated rather than derived from `category`, because the
-# members span execution, clarification, research, planning, optimization, and
-# verification -
-# the grouping is what the skill is FOR, not where it sits in the catalog. Keep
-# it small and explicit: a domain skill that drifts in here would make the
-# distinction meaningless, which is the only thing the split is buying.
-ULW_ENGINE_SKILL_NAMES = frozenset(
-    {
-        "context",
-        "dag-ulw",
-        "deep-interview",
-        "loop",
-        "maestro",
-        "ralph",
-        "ralplan",
-        "research",
-        "team",
-        "ultragoal",
-        "ultraprocess",
-        "ultraperf",
-        "ultraqa",
-        "ultrawork",
-    }
-)
-
-
-def omh_skill_display_name(name: str) -> str:
-    """Return the rendered frontmatter label for a canonical catalog name.
-
-    This is a display identifier that, since the relabel, also names the
-    `skills/<label>/` install directory. The canonical `SkillDefinition.name`
-    still owns the install manifest `name`, routing keys, and every CLI
-    argument.
-    """
-    text = name.strip()
-    override = OMH_SKILL_DISPLAY_NAME_OVERRIDES.get(text)
-    if override is not None:
-        return override
-    prefix = ULW_SKILL_NAME_PREFIX if text in ULW_ENGINE_SKILL_NAMES else OMH_SKILL_NAME_PREFIX
-    if text.startswith(prefix):
-        return text
-    return f"{prefix}{text}"
 
 
 def skill_view_call(installed_path: str) -> str:
@@ -347,8 +248,7 @@ _HANDOFF_RECOVERY_NOTES = (
 # reaches agents that only ever read `SKILL.md`.
 DELEGATE_PROMPT_DISPLAY_RULE = (
     "When delegating, show the composed delegate prompt in a fenced code block in the status message; "
-    "truncate a long prompt to a bounded preview ending with `... [truncated, N chars total]` — the user "
-    "must see WHAT was asked, not just that something was."
+    "truncate a long prompt to a bounded preview ending with `... [truncated, N chars total]`."
 )
 DELEGATE_MODEL_LABEL_RULE = (
     "Name every delegated or parallel lane's model and, when the host exposes it, its reasoning effort "
@@ -364,8 +264,7 @@ DELEGATE_RESUMABLE_SESSION_RULE = (
     "non-interactive Claude Code pass `--output-format json` and read `session_id` from the result "
     "(resume with `claude -p --resume <session-id>`); for Codex pass `--json` and read `thread_id` "
     "(resume with `codex exec resume <thread-id>`, repeating `--skip-git-repo-check` outside a git "
-    "repo). Never leave a delegate run with no recorded way to resume or steer it — a plain-text "
-    "one-shot that hides its session id strands the work when the run stalls or times out."
+    "repo). Never leave a delegate run with no recorded way to resume or steer it."
 )
 # Words the Hermes install scanner (`tools/skills_guard.py`, rule `crypto_mining`,
 # severity critical) scores on sight, in any file of a skill. A trigger that
@@ -518,7 +417,8 @@ ENGINE_CLOSING_BRIEF_RULE = (
 )
 
 # Hermes bundles the document producers (`skills/productivity/{powerpoint,pdf,
-# xlsx,docx}`, read at tag v2026.9.7 and at upstream main 63d0b94120). Their
+# xlsx,docx}` at tag v2026.9.7 and at upstream main 63d0b94120, folded into
+# `skills/productivity/microsoft-office` from v0.22.6 with the same script names). Their
 # render and recalculation scripts exit 0 when the renderer is absent and say
 # so only in a result field, so the exit code is not the rung. The rung names
 # are `FORMAT_QA_LADDER`'s in `src/workflows/materials.py`. Composed into the
@@ -535,18 +435,18 @@ DOCUMENT_PRODUCER_QA_RULE = (
 # their own strings because `report-package`, whose one binary is a deck,
 # states them without the other producers'.
 DOCUMENT_PRODUCER_POWERPOINT_RUNGS = (
-    "`powerpoint` gives `slide_count` (`pptx_read.py --outline`) and `render_screenshot` (`pptx_render.py` into a "
+    "PowerPoint gives `slide_count` (`pptx_read.py --outline`) and `render_screenshot` (`pptx_render.py` into a "
     "fresh directory, its image count matching `slide_count`, since it lists every image already in that directory)"
 )
 DOCUMENT_PRODUCER_IMAGES_INSPECTED = "Images that exist are not a render pass until each one has been inspected"
 DOCUMENT_PRODUCER_RUNGS_RULE = (
-    "On Hermes, the bundled skills give these rungs when available: "
+    "On Hermes, the bundled document skills give these rungs when available (`powerpoint`, `xlsx`, `docx`; `microsoft-office` from v0.22.6; same scripts): "
     f"{DOCUMENT_PRODUCER_POWERPOINT_RUNGS}; "
-    "`pdf` gives `page_count` (`pdf_read.py --meta`) and `render_preview` (`pdf_page_image.py`); `xlsx` gives "
+    "`pdf` gives `page_count` (`pdf_read.py --meta`) and `render_preview` (`pdf_page_image.py`); Excel gives "
     "`sheet_schema` (`xlsx_read.py --sheets`) and `formula_recalculation` (`xlsx_recalc.py --out <copy>`, since "
     "without `--out` it replaces the input and rungs or approvals already recorded were for other bytes, then the "
     "cached results read back with `xlsx_read.py --formulas`, where an error value or a formula with no cached value "
-    "is a finding); `docx` gives `section_structure` and `required_clause_check` (`docx_read.py --structure` and "
+    "is a finding); Word gives `section_structure` and `required_clause_check` (`docx_read.py --structure` and "
     "`--text`) but no `page_count` or appearance until a converted PDF is rendered, and `docx_validate.py` checks "
     f"package health, never rendering. {DOCUMENT_PRODUCER_IMAGES_INSPECTED}, and a producer's `\"ok\": true` is "
     "never the QA verdict."
@@ -661,7 +561,7 @@ _CATEGORY_FINAL_CHECKLISTS = {
     "verification": (
         "The scenario, expected behavior, observed result, and pass/fail basis are named.",
         "Proposed fixes are separated from observed QA evidence.",
-        "Missing or failed verification routes back to plan, fix, or a narrower test.",
+        "Missing or failed verification routes back to `plan`, fix, or a narrower test.",
     ),
 }
 
@@ -894,6 +794,9 @@ class HermesReferenceLine(str):
 # with a catalog skill or its display label, which a test holds. A name
 # outside this set is refused, so a typo or an upstream rename fails when the
 # catalog loads instead of shipping a line naming a skill Hermes cannot load.
+# `llm-wiki` moved to `optional-skills/` on upstream main on 2026-10-28 (commit
+# 183b5ddd5f); it stays bundled at the floor tag, so its handoff line is conditional
+# on the skill being installed.
 HERMES_BUNDLED_SKILL_NAMES = frozenset(
     {
         "architecture-diagram",
@@ -911,6 +814,7 @@ HERMES_BUNDLED_SKILL_NAMES = frozenset(
         "llm-wiki",
         "manim-video",
         "meeting-action-items",
+        "microsoft-office",
         "opencode",
         "pdf",
         "powerpoint",
@@ -987,10 +891,10 @@ _ENGINE_FIT_LEAD = (
     "path that fits the work's shape — "
 )
 _ENGINE_FIT_TAIL = (
-    "`ultrawork` durable checkpoints for progress that must survive "
-    "sessions as a checkpointed ledger, `ultrawork` coordinated lanes for an accepted plan split into "
-    "disjoint parallel lanes, `ultrawork` single-owner persistence for one already-scoped task with a "
-    "single owner, `ultrawork` for one bounded delivery cycle, or "
+    "`ulw-work` durable checkpoints for progress that must survive "
+    "sessions as a checkpointed ledger, `ulw-work` coordinated lanes for an accepted plan split into "
+    "disjoint parallel lanes, `ulw-work` single-owner persistence for one already-scoped task with a "
+    "single owner, `ulw-work` for one bounded delivery cycle, or "
     "a direct selected executor/runtime handoff for a single prepared coding change — state the fit "
     "reason in one line, and start it only after the user's explicit go-ahead."
 )
@@ -1011,6 +915,17 @@ ADAPTATION_QUALITY_READ_RULE = PortableLine(
     "before accepting a plan, dispatching work, or claiming completion; carry its criteria and comparisons "
     "into tasks and evidence.",
 )
+
+# The shared test-authoring contract that code skills load outside tests-first mode.
+TEST_AUTHORING_REFERENCE_PATH = "omh-verification-gate/references/test-authoring.md"
+
+
+def shared_test_authoring_line(before: str, after: str) -> PortableLine:
+    """A body line that loads the shared test-authoring reference between `before` and `after`."""
+    return PortableLine(
+        f"{before}load `{skill_view_call(TEST_AUTHORING_REFERENCE_PATH)}`{after}",
+        f"{before}read `../{TEST_AUTHORING_REFERENCE_PATH}`{after}",
+    )
 
 
 @dataclass(frozen=True)
@@ -1038,6 +953,17 @@ class ProcedureCheck:
     instruction: str
 
 
+PROCEDURE_BAIL_LEVELS = ("tentative", "unresolved", "not_observed")
+
+
+@dataclass(frozen=True)
+class ProcedureBail:
+    still_stands: tuple[str, ...]
+    downgrade_to: str
+    handback: str
+    fallback_skill: str = ""
+
+
 @dataclass(frozen=True)
 class ProcedureStep:
     step_id: str
@@ -1046,6 +972,7 @@ class ProcedureStep:
     output_refs: tuple[str, ...]
     check_ids: tuple[str, ...]
     instruction: str
+    on_fail: ProcedureBail | None = None
 
 
 @dataclass(frozen=True)
@@ -1551,8 +1478,13 @@ def _feature_surface_skill(
     extra_safety_rules: tuple[str, ...] = (),
     extra_quality_bar: tuple[str, ...] = (),
     extra_do_not_use_when: tuple[str, ...] = (),
+    required_inputs: tuple[str, ...] | None = None,
     why_this_exists: str = "",
     do_not_use_when: tuple[str, ...] = (),
+    good_expected: str = "",
+    good_why: str = "",
+    bad_expected: str = "",
+    bad_why: str = "",
     situations: tuple[str, ...] = (),
     portable_overrides: Mapping[str, tuple[str, ...]] | None = None,
     portable_override_shadows: Mapping[str, str] | None = None,
@@ -1573,7 +1505,8 @@ def _feature_surface_skill(
             "Keep this as Hermes-facing orchestration guidance first. Prepare executor, connector, gateway, "
             "or host-runtime handoff only when the user accepts that next step and observed evidence can be recorded."
         ),
-        required_inputs=("user request", "target context", "delivery or status expectation", "known missing evidence"),
+        required_inputs=required_inputs
+        or ("user request", "target context", "delivery or status expectation", "known missing evidence"),
         expected_outputs=expected_outputs
         or (f"{name}/v1 card or guidance", "next action", "prepared-vs-observed boundary"),
         artifact_expectations=artifact_expectations
@@ -1608,13 +1541,15 @@ def _feature_surface_skill(
         ),
         good_example=SkillExample(
             prompt=good_prompt,
-            expected=f"Produce `{next_action}` with required context, wrapper actions, and not-evidence boundaries.",
-            why="The prompt names a real workflow surface that Hermes can orchestrate without hiding execution.",
+            expected=good_expected
+            or f"Produce `{next_action}` with required context, wrapper actions, and not-evidence boundaries.",
+            why=good_why or "The prompt names a real workflow surface that Hermes can orchestrate without hiding execution.",
         ),
         bad_example=SkillExample(
             prompt=bad_prompt,
-            expected="Report the missing observed evidence or authority instead of claiming the external step happened.",
-            why="Prepared OMH guidance is not platform, runtime, connector, file, memory, or delivery evidence.",
+            expected=bad_expected
+            or "Report the missing observed evidence or authority instead of claiming the external step happened.",
+            why=bad_why or "Prepared OMH guidance is not platform, runtime, connector, file, memory, or delivery evidence.",
         ),
         final_checklist=final_checklist or (),
         recovery_notes=recovery_notes or (),

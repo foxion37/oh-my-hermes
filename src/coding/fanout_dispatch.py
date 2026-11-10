@@ -166,6 +166,8 @@ from .inflight import (
     write_inflight_marker,
 )
 from .parallelism_policy import FANOUT_MAX_DEPTH_DEFAULT, FANOUT_RUN_SPAWN_CEILING_DEFAULT
+from .codex_windows_sandbox import CODEX_WINDOWS_SANDBOX_BACKENDS
+from .fanout_settings import merged_environment_policy, stored_codex_windows_sandbox
 from .fanout_repair import (
     REPAIR_ATTEMPT_OBSERVED_EVENT,
     REPAIR_ATTEMPT_STARTED_EVENT,
@@ -904,6 +906,21 @@ DISPATCH_REASONING_OPTION_TEMPLATES: dict[str, tuple[str, ...]] = {
 _DISPATCH_OPTION_INSERT_INDEX: dict[str, int | None] = {"codex": 2, "claude-code": None, "pi-family-runtime": 5}
 
 
+# What the journal says when the executor's own sandbox explains a unit with no
+# result. Each names the fix, since the cause is otherwise visible only in the
+# executor's session log (#2471).
+_SANDBOX_REFUSAL_SUMMARIES = {
+    'executor_sandbox_read_only': (
+        "Executor sandbox was read-only; the unit's writes were refused. On native Windows set "
+        "[windows] sandbox in Codex config.toml or codex.windows_sandbox in OMH fanout settings."
+    ),
+    'executor_sandbox_start_failed': (
+        "Executor sandbox failed to start; the unit's shell commands never ran. Check the "
+        "variables the sandbox names against the child environment receipt."
+    ),
+}
+
+
 def build_dispatch_argv(
     owner: str,
     prompt: str,
@@ -947,6 +964,21 @@ def build_dispatch_argv(
     return argv[:insert_at] + options + argv[insert_at:]
 
 
+def with_codex_windows_sandbox(argv: list[str] | None, owner: str, backend: str) -> list[str] | None:
+    """`argv` with `--config windows.sandbox=<backend>` before the codex prompt (#2471).
+
+    Separate from `build_dispatch_argv` so its three-argument shape, which
+    tests and wrappers substitute, stays the same. No backend, another
+    owner, or no argv: returned unchanged. The codex prompt is the last
+    positional in every codex argv `build_dispatch_argv` returns.
+    """
+    if not backend or owner != "codex" or not argv:
+        return argv
+    if backend not in CODEX_WINDOWS_SANDBOX_BACKENDS:
+        raise ValueError(f"unknown codex Windows sandbox backend: {backend!r}")
+    return [*argv[:-1], "--config", f"windows.sandbox={backend}", argv[-1]]
+
+
 def build_unit_prompt(
     unit: Mapping[str, Any],
     goal_text: str,
@@ -986,8 +1018,8 @@ def _owner_skill_discoveries(
     Only owners that actually spawn are probed — a prepared-prompt fallback
     owner never reaches `build_unit_prompt`, so scanning for it would be IO
     nobody reads. `project_root` is the dispatch target repo, so repo-local
-    `.claude/skills` definitions are discovered alongside the operator-level
-    ones.
+    definitions (`.claude/skills` for Claude Code, `.agents/skills` for
+    Codex) are discovered alongside the operator-level ones.
     """
     from .executor_skill_discovery import discovered_executor_skills
 
@@ -1404,17 +1436,34 @@ def declared_verification_commands(unit: Mapping[str, Any]) -> list[str]:
 _VERIFICATION_SINGLE_FLIGHT = SingleFlight()
 
 
-def _verification_worktree_revision(runner: Callable[..., Any], worktree: Path) -> str | None:
-    """Return a reusable tree revision only when the worktree is clean.
+# Untracked runtime state that Codex and Claude Code workflow plugins keep in a worktree (.omx/, .omc/).
+_EXECUTOR_RUNTIME_STATE_ROOTS = (".omx/", ".omc/")
 
-    `HEAD^{tree}` cannot describe tracked edits or untracked files. Reuse is
-    therefore disabled rather than guessed whenever git cannot prove the exact
-    worktree is clean.
+
+def _verification_worktree_revision(
+    runner: Callable[..., Any], worktree: Path, *, producer_head: bool = False
+) -> str | None:
+    """Return a tree revision only when the relevant worktree state is clean.
+
+    Verification reuse and integration require an exactly clean worktree:
+    `HEAD^{tree}` cannot describe tracked edits or untracked files. Only producer
+    HEAD intake may disregard untracked executor runtime state, which is not
+    part of the committed producer result. Tracked changes are never exempt.
     """
     status = _git_text(
         runner, worktree, ["git", "status", "--porcelain=v1", "--untracked-files=all"]
     )
-    if status is None or status.strip():
+    if status is None:
+        return None
+    for line in status.splitlines():
+        if not line:
+            continue
+        # Porcelain quotes paths with special characters. The literal ASCII
+        # root remains unchanged inside those quotes; do not decode the suffix
+        # or broaden this to prefix-only names such as .omxfoo/.
+        if (producer_head and line[:3] in {"?? ", "!! "}
+                and line[3:].removeprefix('"').startswith(_EXECUTOR_RUNTIME_STATE_ROOTS)):
+            continue
         return None
     revision = _git_text(runner, worktree, ["git", "rev-parse", "HEAD^{tree}"])
     return revision.strip() if revision else None
@@ -1422,7 +1471,7 @@ def _verification_worktree_revision(runner: Callable[..., Any], worktree: Path) 
 
 def _observed_clean_producer_head(runner: Callable[..., Any], worktree: Path) -> str | None:
     """Return the canonical full producer commit only after proving its worktree clean."""
-    if _verification_worktree_revision(runner, worktree) is None:
+    if _verification_worktree_revision(runner, worktree, producer_head=True) is None:
         return None
     head_sha = _git_text(runner, worktree, ["git", "rev-parse", "HEAD"])
     if head_sha is None:
@@ -2115,6 +2164,9 @@ def dispatch_fanout(
     # subprocess starts, and a refusal must not depend on a contract read, a
     # readiness probe, or a worktree first.
     guard_env: Mapping[str, str] = os.environ if env is None else env
+    # The operator's stored grants join the command's own (#2471), so an
+    # agent-driven dispatch gets the same environment as a hand-typed one.
+    environment_policy = merged_environment_policy(paths.omh_home, environment_policy)
     effective_max_depth = FANOUT_MAX_DEPTH_DEFAULT if max_depth is None else max(1, int(max_depth))
     current_depth = read_fanout_depth(guard_env)
     if current_depth >= effective_max_depth:
@@ -4607,6 +4659,16 @@ def _dispatch_unit(
                 "repair_card": cooldown["repair_card"],
             }
     probe = readiness(paths, owner)
+    readiness_observation: dict[str, str] = {}
+    pre_handoff = probe.get("pre_handoff_readiness")
+    if (probe.get("status") == "stale" and isinstance(pre_handoff, Mapping)
+            and pre_handoff.get("changed_axes") == ["workspace"]):
+        # The cached observation is binary_version_only: it never vouched for
+        # a workspace. Dispatch runs workspace_preflight in the unit's own
+        # isolation before spawning, so reobserve only this moved-workspace
+        # decision once; every other invalidation still needs its repair card.
+        probe = readiness(paths, owner, force=True)
+        readiness_observation["readiness_reobserved"] = "workspace"
     if str(probe.get("status", "")) != "ready":
         # The pre-handoff recheck (#837) can turn a once-ready owner into
         # `stale` right here. Carrying its repair card through means the unit
@@ -4618,6 +4680,7 @@ def _dispatch_unit(
             "owner": owner,
             "status": "executor_not_ready",
             "readiness_status": str(probe.get("status", "unknown")),
+            **readiness_observation,
             **_dispatch_status_ladder(),
         }
         # The unit never spawned, so a live dispatch carries the failure
@@ -4679,7 +4742,23 @@ def _dispatch_unit(
     clarification = None
     if not dry_run and fanout_id and repair is None:
         clarification = read_clarification(clarification_path(paths, fanout_id, unit_id))
-    argv = build_dispatch_argv(owner, prompt, effective_model_route)
+    # `-c windows.sandbox=<backend>` for codex when the operator stored one;
+    # without it native-Windows Codex runs read-only (#2471).
+    codex_sandbox_backend = stored_codex_windows_sandbox(paths.omh_home) if owner == "codex" else ""
+
+    def dispatch_argv() -> list[str] | None:
+        command = with_codex_windows_sandbox(
+            build_dispatch_argv(owner, prompt, effective_model_route), owner, codex_sandbox_backend
+        )
+        # acceptEdits covers the cwd, not the dispatcher-owned intake directory.
+        # Only the real Claude template receives CLI flags, never patched script
+        # fixtures. Apply before session_argv resolves the template executable.
+        if (owner == "claude-code" and sidecar_path is not None and command
+                and Path(command[0]).name == "claude"):
+            command = [*command, "--add-dir", str(sidecar_path.parent)]
+        return command
+
+    argv = dispatch_argv()
     child_environment = fanout_child_environment(
         os.environ if base_env is None else base_env,
         depth=dispatch_depth,
@@ -4728,6 +4807,7 @@ def _dispatch_unit(
             "owner": owner,
             "model": routed_model,
             "status": "dry_run_planned",
+            **readiness_observation,
             "planned_argv": [part if part != prompt else "<unit prompt>" for part in argv],
             "unit_prompt": _unit_prompt_record(assembled),
             "worktree_path": str(worktree),
@@ -4875,7 +4955,7 @@ def _dispatch_unit(
         # The early read is not authority: serialize only the atomically validated claim.
         assembled = _assemble_prompt(sidecar_path, clarification)
         prompt = assembled.text
-        argv = build_dispatch_argv(owner, prompt, effective_model_route)
+        argv = dispatch_argv()
     known_secrets = (goal_text, prompt, *tuple(
         value for key, value in child_env.items()
         if any(marker in key.upper() for marker in ('TOKEN', 'SECRET', 'PASSWORD', 'API_KEY'))
@@ -5193,7 +5273,7 @@ def _dispatch_unit(
                 if previous_path is not None and sidecar_path is not None:
                     assembled = _assemble_prompt(sidecar_path, clarification)
                     prompt = assembled.text
-                    argv = build_dispatch_argv(owner, prompt, effective_model_route)
+                    argv = dispatch_argv()
                     assert argv is not None  # Same previously admitted owner and route.
                     argv = session_argv(argv)
                     if confinement is not None:
@@ -5285,7 +5365,8 @@ def _dispatch_unit(
                 output_tail = capture.error_window('stdout')
                 stderr_tail = capture.error_window('stderr')
                 if exit_code != 0:
-                    failure_diagnostic = diagnostic('worker', 'nonzero', exit_code, 'process')
+                    failure_diagnostic = diagnostic(
+                        'worker', capture.sandbox_refusal() or 'nonzero', exit_code, 'process')
             except CapacityBlocked as exc:
                 entry = _capacity_entry(paths, unit, admission_binding, exc.trip,
                                         worktree_created=True, contract_digest=session_contract_digest,
@@ -5484,11 +5565,14 @@ def _dispatch_unit(
         "worker_ref": unit_id, "worktree_ref": str(worktree), "runtime_profile": owner,
     })
     if failure_diagnostic is None and not unit_result.get('result_schema_valid'):
-        failure_diagnostic = diagnostic('unit_result', 'malformed_result', exit_code, 'process')
+        # A sandbox that refused the unit's writes, or never started, exits 0
+        # with no result: name that cause instead of the missing result (#2471).
+        sandbox_refusal = capture.sandbox_refusal()
+        failure_diagnostic = diagnostic('unit_result', sandbox_refusal or 'malformed_result', exit_code, 'process')
         append_journal_observation(paths, {
             'target_type': 'run', 'target_id': run_ref, 'run_id': run_ref,
             'event': 'unit_result_invalid', 'status': 'failed',
-            'summary': 'Unit return contract unavailable or invalid',
+            'summary': _SANDBOX_REFUSAL_SUMMARIES.get(sandbox_refusal, 'Unit return contract unavailable or invalid'),
             'worker_ref': unit_id, 'runtime_profile': owner, 'attempt_id': attempt_id,
             'failure_diagnostic': failure_diagnostic})
     # Both rungs below it must already hold: a unit whose process failed has
@@ -5669,6 +5753,7 @@ def _dispatch_unit(
         "model": routed_model,
         "reasoning_effort": routed_effort,
         "status": "input_required" if input_required else "completed" if exit_code == 0 else "failed",
+        **readiness_observation,
         "exit_code": exit_code,
         "unit_state": unit_state,
         "unit_state_reason": unit_state_reason,

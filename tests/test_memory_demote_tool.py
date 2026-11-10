@@ -133,6 +133,20 @@ class _Home(unittest.TestCase):
 
 
 class DemoteToolTests(_Home):
+    def test_a_copy_retired_by_a_recapture_still_reads_as_held(self) -> None:
+        write_setup_profile(self.paths, [], memory_mode="review-first")
+        write_memory(self.hermes, "MEMORY.md", FACT)
+        held = self.demote(sha(FACT)[:12])
+        self.assertEqual(held["status"], "pending_review", held)
+        recaptured = capture_project_memory_candidate(self.store, FACT, scope_kind="user-global")
+        self.assertEqual(recaptured.get("retired_held_candidates"), [held["candidate_id"]], recaptured)
+
+        again = self.demote(sha(FACT)[:12])
+
+        self.assertEqual((again["status"], again["candidate_id"]), ("pending_review", held["candidate_id"]), again)
+        self.assertEqual(again["recaptured_as"], recaptured["candidate"]["candidate_id"])
+        self.assertNotIn("remove_from_hermes", again)
+
     def test_demote_stores_the_exact_entry_and_hands_back_the_native_remove(self) -> None:
         path = write_memory(self.hermes, "MEMORY.md", FACT, entry(0))
         before = path.read_bytes()
@@ -195,6 +209,25 @@ class DemoteToolTests(_Home):
         reject_project_memory_candidate(self.paths, result["candidate_id"])
         rejected = self.demote(sha(FACT)[:12])
         self.assertEqual((rejected["status"], rejected["reason"]), ("refused", "previously_rejected"), rejected)
+
+    def test_a_held_entry_names_why_and_never_asks_for_an_invented_date(self) -> None:
+        # Hermes entries carry no date, so a relative phrase cannot be restated from today.
+        relative = "The deploy freeze ends tomorrow."
+        write_memory(self.hermes, "MEMORY.md", relative)
+        result = self.demote(sha(relative)[:12])
+        self.assertEqual((result["status"], result["review_reason"]), ("pending_review", "relative_time_phrase"), result)
+        self.assertIn("nothing records when it was written", result["next_action"])
+        self.assertIn("only if the person gives the date", result["next_action"])
+        self.assertNotIn("then demote again", result["next_action"])
+        self.assertNotIn("remove_from_hermes", result)
+        # `needs_review` reaches demote as unsafe_content; words like temp and hack are not protected content.
+        temp = "Uploads stay in the temp directory until the nightly job runs."
+        write_memory(self.hermes, "USER.md", temp)
+        held = self.demote(sha(temp)[:12])
+        self.assertEqual((held["status"], held["review_reason"]), ("pending_review", "unsafe_content"), held)
+        self.assertIn("the safety check held the entry", held["next_action"])
+        self.assertIn("'temp' or 'hack'", held["next_action"])
+        self.assertNotIn("protected content", held["next_action"])
 
     def test_a_rejection_outranks_an_exact_durable_copy(self) -> None:
         write_setup_profile(self.paths, [], memory_mode="review-first")

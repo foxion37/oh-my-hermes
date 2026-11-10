@@ -28,6 +28,7 @@ This is a Hermes-native `feedback-triage` workflow skill.
 - The user wants current market research rather than triage of supplied signals.
 - The triage result asks for a retention or activation intervention rather than another cluster; use `omh-lifecycle-growth`.
 - The supplied material is opportunity records and the request is portfolio health or forecast review; use `omh-sales-pipeline-review`.
+- The request is one reproducible bug with a fix asked for, not a set of reports to cluster; use the coding handoff.
 
 ## Examples
 
@@ -48,16 +49,19 @@ Bad example:
 - The source boundary, signal clusters, severity, and follow-up lane are named.
 - Bug, feature, research, strategy, and coding handoff outcomes stay separate.
 - The next workflow is recommended before any implementation claim.
+- A cluster is ranked by distinct customers reporting it (one customer counted once), severity (lost data or money, then a blocked task, then annoyance), and whether a workaround exists, with the count and its source.
+- Quotes carry names, emails, order ids, and card digits masked, and keep the raw item reference.
 
 ## Recovery Notes
 
-- If feedback lacks source or severity, ask for the missing signal before coding handoff.
-- If the item is actually a plan or research request, route to that workflow instead of triage.
+- If no feedback items are supplied, no cluster stands; mark triage not_observed and hand back the request for feedback items or a summary, source boundary, and product area.
+- If bug and feature signals cannot be separated from the supplied reports, retain source-bounded clusters, mark their classification and ranking tentative, and hand back the missing evidence with research or strategy follow-up options.
+- If a triaged cluster has no explicit coding intent or accepted-plan evidence, retain the clusters and ranking, mark the coding handoff unresolved, and hand back the next workflow recommendation with product_evidence_loop/v1 still prepared-only.
 
 ## Workflow Lane
 
-- Current lane: **Research and company ops** (`product-docs`, `source-finder`, `web-research`, `research`, `model-optimization`, `inference-serving`, `model-finetuning`, `research-brief`, `+27 more`) - research, signals, ops, and briefings.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Research and company ops** - research, signals, ops, and briefings.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -120,7 +124,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

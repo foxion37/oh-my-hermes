@@ -275,7 +275,17 @@ retroactively changed, and third-party sections still share the host's budget.
 
 The `pre_tool_call` hook enforces
 user-authored toolcall rules (a matching rule returns the host's block
-directive). An unknown `[omh-role:...]` marker in a delegate goal is warned in
+directive), and blocks a `write_file` or `patch` into a store OMH's own code
+keeps under `<omh_home>/runtime/` (the journal, delegation ledger, dag-ulw run
+records, research fetch receipts, runtime runs and plan todos), because a line
+a tool call writes there cannot be told apart from one OMH observed
+(`plugin_bundle/omh/evidence_store_guard.py`). A dag-ulw node's handoff report
+is the one file there a model writes, and it passes. The same hook holds a
+dag-ulw node's child, and any child it spawns, to that node's `write_scope`
+for `write_file` and `patch` inside the workspace `omh_dag define` pinned
+(`plugin_bundle/omh/dag_scope_guard.py`); a parent, an ordinary child, a node
+with no scope, and a settled node or cancelled run are not held. A shell
+command appending to the same file is not judged. An unknown `[omh-role:...]` marker in a delegate goal is warned in
 the child's own turn by `pre_llm_call`, since Hermes reads only `action` from a
 `pre_tool_call` result. A `[omh-identity:name]` marker in the person's request
 or a delegated child's goal adds that user-defined identity's prompt to the
@@ -363,8 +373,13 @@ after a short TTL, and applies restarting state only inside its restart window.
 OMH does not turn prepared handoffs into observed execution, review, CI, or
 merge evidence.
 
-`cli.py` is a compatibility adapter. `commands/main.py` owns parser assembly,
-top-level error handling, and the public command handler re-export surface.
+`cli.py` is a compatibility adapter. `commands/main.py` owns full parser
+assembly and the public command handler re-export surface; `commands/fast_dispatch.py`
+owns the post-parse tail both paths share (top-level error handling included)
+and the subcommand-to-registrar table that lets `omh <subcommand>` import only
+that subcommand's module. Help, `--version` and anything the table does not
+name go through the full parser. A new subcommand needs a row in that table;
+`tests/test_cli_fast_dispatch.py` fails until it has one.
 Domain command modules under `commands/` own support JSON output for bootstrap,
 repair, verification, wrapper backends, and operator debugging. New command
 handlers should be added to the matching domain module rather than growing
@@ -715,11 +730,14 @@ artifact, not a Discord/channel summary. Each `hermes_plan/v1` payload includes
 recorded plan artifact path, and coding-delegation handoff template. For
 implementation-shaped draft plans, `wrapper_contract.coding_delegate.argv_template`
 is the adapter contract for calling
-`omh coding delegate --executor codex --record --from-plan <accepted-plan.md>`
-after plan acceptance. `omh coding delegate --from-plan` rejects draft plans by
+`omh coding delegate --executor <selected-executor> --record --from-plan <accepted-plan.md>`
+after plan acceptance. Its `--executor` value is the setup profile's default
+executor, else `generic`; `--from-plan` without `--executor` resolves the same
+default as a plain `omh coding delegate`, and selects Codex only when Codex is
+named or is the setup profile's default executor. `omh coding delegate --from-plan` rejects draft plans by
 default and uses the accepted artifact or generated context pack as executor
-context when the wrapper wants a run-backed Codex handoff and a future
-`runtime.run.run_id`. Blocked or non-coding plans keep `coding_delegate.available`
+context; a run-backed Codex handoff and a future `runtime.run.run_id` come
+from `--executor codex`. Blocked or non-coding plans keep `coding_delegate.available`
 false so wrappers do not infer execution from presentation text.
 
 `omh chat session` is the recovery layer for adapters that need button/thread
@@ -932,7 +950,7 @@ integration and is considered only when the user declares the corresponding
 local route active. OMH transfers no credentials.
 
 `model_routing_status/v1` joins discovery, Hermes aliases, Maestro category
-resolution, and owner-learning metadata for agents and maintainers. These
+resolution, and stored owner-choice metadata (which selects no owner) for agents and maintainers. These
 remain four separately labeled inputs. The status and doctor advisory do not
 upgrade any of them into provider entitlement, dispatch, execution, review,
 CI, or merge evidence.
@@ -1843,8 +1861,15 @@ Hermes-facing plans live under the configured Hermes home:
 uses `schema_version: hermes_plan/v1`, `status: draft` or `blocked`, the source
 surface, and a review gate with `architect` and `critic` statuses. The command is
 deterministic and local-only; it does not run review agents, call services, or
-execute the plan. A `not_observed` review gate means the artifact is a planning
-scaffold, not consensus approval.
+execute the plan. A `not_observed` review gate means no separate architect or
+critic review was observed; it says nothing about whether the body is a scaffold.
+The front-matter key `plan_body` says that: `scaffold` (generated sections),
+`reviewed` (the caller's own plan, recorded with `--plan-file`, which replaces the
+generated sections and is a claim by the caller, not a verification), or absent
+(an older file, state unknown). `plan-accept` refuses a `scaffold` file unless
+`--allow-scaffold` is passed, so a scaffold is never accepted as the plan by
+accident. `--plan-file ... --input-bundle` records planning input as
+`hermes_plan_input/v1`, which `plan-accept` refuses.
 
 The plan body and stdout payload include `quality_gate` and `deep_interview`
 blocks. `quality_gate` names readiness, pass conditions, and evidence that must
@@ -2825,11 +2850,15 @@ only the operator's own starred list. The contract names that call, and the
 enforcement suite pins its exact argv, so changing it fails a test rather than
 quietly widening what the sentence covers.
 
-The plugin tool `omh_jev_ask` is the second place, and the only network client
-core omh has in `src/`: `plugin_bundle/omh/jev_ask_client.py` POSTs typed questions to Jev
-over one of two fixed HTTPS hosts (`api.typesafe.ai` with `TYPESAFE_API_KEY`,
-or `openrouter.ai` only when the operator also set `openrouter_route` in
-`<omh_home>/jev/settings.json`), refuses every redirect, bounds both bodies and
+The plugin tool `omh_jev_ask` is the second place, and one of the two network
+clients core omh has in `src/`: `plugin_bundle/omh/jev_ask_client.py` POSTs typed questions to Jev
+over two route identities: TypeSafe defaults to `api.typesafe.ai` with
+`TYPESAFE_API_KEY` and may use `TYPESAFE_BASE_URL`, the API-root variable
+TypeSafe's SDKs read, as an HTTPS root with a host and no credentials, query, or
+fragment; OMH appends `/v1/systemone` (`/systemone` to a root already ending in
+`/v1`). OpenRouter
+uses `openrouter.ai` only when the operator also set `openrouter_route` in
+`<omh_home>/jev/settings.json`. It refuses every redirect, bounds both bodies and
 the whole call by a deadline, and retries only 429, 503, and 529. It opens no
 socket unless the person's own message for that turn names Jev: `pre_llm_call`
 records a consent marker bound to the turn's id (`jev_consent.py`), only an
@@ -2840,6 +2869,20 @@ in `tests/test_handoff_safety_contract_enforcement.py` pins the exception to
 that one file through `NETWORK_CLIENT_BRIDGES`, fails on a stale entry, and
 fails when any module other than the tool imports the bridge. The coding
 delegation lane is unchanged by it.
+
+The OMH TUI's update notice is the other network client: `tui/update_notice.py`
+GETs npm's `latest` version of `oh-my-hermes` from one fixed HTTPS host
+(`registry.npmjs.org`), follows a redirect only to that host, reads a bounded
+reply and keeps only its `version` string, and sends nothing about the person.
+It asks at most once a day per OMH home, on a background thread the screen
+never waits for, and keeps the answer and the time of the ask in
+`<omh_home>/tui/update-check.json`; a failure is silent, keeps what the cache
+knew, and counts as the day's ask. `OMH_TUI_UPDATE_CHECK=0`, `omh theme
+update-check off`, or the launch check `omh update-check` stored as `off`
+turns it off (a home that never stored a mode is not off), and without an OMH
+home nothing is asked.
+INVARIANT 2 lists it in `NETWORK_CLIENT_BRIDGES` with `tui/app.py` as its only
+importer. The coding delegation lane is unchanged by it too.
 
 The OMH TUI's gateway child, `tui/attach/gateway_attach.py`, is the third, and
 it is not core omh: nothing in `src/` imports it, and it runs only on Hermes'

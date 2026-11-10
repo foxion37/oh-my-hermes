@@ -43,7 +43,7 @@ EXPECTED_BUNDLED_DEFERRALS = {
     "github-event-ops": ("github",),
     "github-issue-intake": ("github",),
     "maestro": ("claude-code", "codex", "opencode"),
-    "materials-package": ("pdf", "docx", "powerpoint", "xlsx"),
+    "materials-package": ("pdf", "docx", "powerpoint", "xlsx", "microsoft-office"),
     "meeting-brief": ("meeting-action-items",),
     "research-department": ("competitor-news-monitor", "arxiv"),
     "show-reel": ("manim-video", "ascii-video"),
@@ -247,6 +247,7 @@ class LoadableSiblingNameTests(unittest.TestCase):
                 "ulw-research",
                 "omh-source-finder",
                 "omh-research-brief",
+                "omh-market-research",
                 "omh-research-department",
                 "omh-websearch-setup",
                 "omh-codebase-onboarding",
@@ -255,7 +256,7 @@ class LoadableSiblingNameTests(unittest.TestCase):
             ),
         )
         self.assertIn(
-            "    related_skills: [ulw-research, omh-source-finder, omh-research-brief, omh-research-department, "
+            "    related_skills: [ulw-research, omh-source-finder, omh-research-brief, omh-market-research, omh-research-department, "
             "omh-websearch-setup, omh-codebase-onboarding, grounded-citations, arxiv]\n",
             self.hermes["web-research"],
         )

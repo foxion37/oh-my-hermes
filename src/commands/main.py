@@ -64,6 +64,7 @@ from .bare_launch import (
     run_bare_launch,
 )
 from .common import set_json_output_pretty
+from .fast_dispatch import run_command
 from .context import _add_context_commands, cmd_context_brief
 from .model_chains import _add_model_chains_commands
 from .conformance import _add_conformance_commands, cmd_conformance_check
@@ -170,6 +171,7 @@ from .paper import (
 )
 from .playbook import _add_playbook_commands, cmd_playbook_inspect, cmd_playbook_list, cmd_playbook_recommend
 from .release import _add_release_commands, cmd_release_checklist, cmd_release_hermes_smoke
+from .research import _add_research_commands
 from .runtime import (
     _add_runtime_commands,
     cmd_runtime_ci,
@@ -319,6 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ops_commands(sub)
     _add_materials_commands(sub)
     _add_paper_commands(sub)
+    _add_research_commands(sub)
     _add_visual_commands(sub)
     _add_adapter_quality_commands(sub)
     _add_benchmark_commands(sub)
@@ -333,23 +336,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _reject_tui_passthrough_with_subcommand(args: argparse.Namespace) -> None:
-    """Refuse a bare-launch flag that was given alongside a subcommand.
-
-    Unlike `--omh-home`/`--hermes-home`/`--scope`, these three do not apply to
-    a subcommand at all: they are forwarded to `hermes` when the bare launch
-    opens the terminal, and there is no terminal here. Ignoring one silently
-    would run the subcommand against a profile or session the person believes
-    they selected.
-    """
-    for dest, flag in _TUI_PASSTHROUGH_OPTIONS:
-        if getattr(args, dest, None) is not None:
-            raise OmhError(
-                f"{flag} opens the OH-MY-HERMES terminal and cannot be combined "
-                f"with the '{args.command}' command."
-            )
-
-
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv in (["--version"], ["-V"]):
@@ -361,18 +347,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     parser = build_parser()
     args = parser.parse_args(raw_argv)
-    # The command line as typed, for a refusal that must name the same
-    # command back (`omh setup --interactive` without a terminal).
-    args._argv = raw_argv
-    set_json_output_pretty(bool(getattr(args, "pretty", False)))
     if not getattr(args, "command", None):
+        args._argv = raw_argv
+        set_json_output_pretty(bool(getattr(args, "pretty", False)))
         return run_bare_launch(args)
-    try:
-        _reject_tui_passthrough_with_subcommand(args)
-        return int(args.func(args))
-    except OmhError as exc:
-        print(f"omh: {exc}", file=sys.stderr)
-        return 2
+    return run_command(args, raw_argv)
 
 
 if __name__ == "__main__":

@@ -29,13 +29,13 @@ from ..system.metadata_safety import require_opaque_metadata_ref
 from ..system.paths import OmhPaths
 
 
-# The schema, its constants and its one validator live in the plugin bundle, so `omh_dag`'s export reads the record
-# exactly as the router does (`plugin_bundle/omh/owner_preference_record.py`).
+# The schema, its constants and its one validator live in the plugin bundle
+# (`plugin_bundle/omh/owner_preference_record.py`).
 
 
 @dataclass(frozen=True)
 class OwnerPreferenceDecision:
-    """The safe routing projection of learned owner state."""
+    """The safe routing projection of the stored owner choices: whether this request bypasses or asks."""
 
     action: str
     reason_code: str
@@ -74,16 +74,19 @@ def owner_preference_decision(
     coding_delivery: bool = True,
     ulw: bool = True,
     named_owner: bool = False,
+    profile_owner: bool = False,
     multiple_owners: bool = False,
     authority_blocked: bool = False,
     owner_ready: bool = True,
     capability_fit: bool = True,
 ) -> OwnerPreferenceDecision:
-    """Decide whether to ask, bypass learning, or expose a learned default.
+    """Decide whether the request bypasses the owner question or has to ask it.
 
-    Scope and safety gates always outrank learned state.  Missing or malformed
-    state is treated exactly like an empty state, so it can only produce an
-    explicit choice, never an accidental default.
+    A coding-owner choice counts only for the request it was made in, so the
+    stored streak never selects an owner: without an owner named in this
+    request, every gate ends in an explicit choice. The streak fields
+    (`consecutive_accepted_explicit_choices`, `learned_at`) are inert history
+    that no route reads; `evidence_count` reports them for status only.
     """
     family = require_opaque_metadata_ref(route_family, field="route_family")
     safe = _safe_state(state)
@@ -105,20 +108,10 @@ def owner_preference_decision(
     if not capability_fit:
         return _decision("ask_explicit_owner", "capability_gap", family, count)
 
-    if route and count >= OWNER_PREFERENCE_LEARNING_THRESHOLD and route["selected_owner"]:
-        return OwnerPreferenceDecision(
-            action="use_learned_default",
-            reason_code="three_consecutive_explicit_choices",
-            reason=(
-                "three consecutive accepted explicit choices established this visible default; "
-                "the user can override or reset it."
-            ),
-            route_family=family,
-            selected_owner=str(route["selected_owner"]),
-            evidence_count=count,
-            override_available=True,
-        )
-    return _decision("ask_explicit_owner", "learning_window", family, count)
+    if profile_owner:
+        # A default the person set in the setup profile stands; it is a setting, not a choice made in this request.
+        return _decision("bypass_owner_learning", "owner_set_in_setup_profile", family, count)
+    return _decision("ask_explicit_owner", "explicit_choice_required", family, count)
 
 
 def record_accepted_explicit_choice(
@@ -320,14 +313,17 @@ def write_owner_preference(paths: OmhPaths, state: Mapping[str, Any]) -> Path:
 
 def _decision(action: str, reason_code: str, route_family: str, count: int) -> OwnerPreferenceDecision:
     reasons = {
-        "non_coding_workflow": "Owner learning does not apply to a non-coding workflow.",
-        "non_ulw_workflow": "Owner learning does not apply outside an ULW workflow.",
-        "owner_named_in_request": "The request already names an owner, so learned state is bypassed.",
+        "non_coding_workflow": "No coding-owner question applies to a non-coding workflow.",
+        "non_ulw_workflow": "No coding-owner question applies outside an ULW workflow.",
+        "owner_named_in_request": "The request already names an owner, so no question is asked.",
         "multiple_owners_named": "Multiple named owners require a fresh explicit choice.",
         "authority_requires_choice": "The authority boundary requires a fresh explicit choice.",
-        "owner_unready": "The learned owner is not ready, so the owner choice is reopened.",
+        "owner_unready": "The owner is not ready, so the owner choice is reopened.",
         "capability_gap": "A required capability is not met, so the owner choice is reopened.",
-        "learning_window": "Fewer than three consecutive accepted explicit choices exist; ask again.",
+        "owner_set_in_setup_profile": "The setup profile holds the owner, so no question is asked.",
+        "explicit_choice_required": (
+            "No owner is named in this request, and an earlier choice never counts for it; ask for an explicit choice."
+        ),
     }
     return OwnerPreferenceDecision(
         action=action,

@@ -16,7 +16,7 @@
     "README.md": {
       "classification": "original_omh",
       "license": "MIT",
-      "local_sha256": "639495d48ce2c1da710f4a0673fd3365cff00f61ce084434eabbc41fa4fc9c43",
+      "local_sha256": "c59075b09e6a79d8ff18d22757e004b41fa9d320b2bdc6b42a3ea121936405f5",
       "modification_notice": "Original OMH companion guidance/helper/example",
       "upstream": []
     },
@@ -255,8 +255,8 @@
     "scripts/render.mjs": {
       "classification": "modified_derivative",
       "license": "MIT",
-      "local_sha256": "8630c8e6eea113d888dbb9df820cc1fa48e2a25303efbbb8d323a4cb3acc3bec",
-      "modification_notice": "Puppeteer adapter with a realpath allowlist server; keeps upstream --scale/--sub/--shutter/--crf 16/--preset/--from/--to/--every; serial capture piped to FFmpeg; project.json cuts keep sub-frame samples inside each shot",
+      "local_sha256": "46c6fee6e49e9ccbfb022414e448642f58d3ae24d0b293b4dcf153d6b7c51acd",
+      "modification_notice": "Puppeteer adapter with a realpath allowlist server; keeps upstream --scale/--sub/--shutter/--crf 16/--preset/--from/--to/--every; serial capture piped to FFmpeg with frame-clock throttling off; project.json cuts keep sub-frame samples inside each shot",
       "upstream": [
         {
           "path": "scripts/render.mjs",
@@ -306,7 +306,7 @@
     "references/craft-audio.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "59b56e68b4a054ce61c9d29bc960e7d5b9d459a45fc0c3b8f3fe0cc3e4e17f68",
+      "local_sha256": "130b7866a4b8e4f33c91064bd5b54827c8579f37433e704138cd410a11754430",
       "modification_notice": "Translated from upstream references/audio.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -318,7 +318,7 @@
     "references/craft-brief.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "07bc811513f97edeb0d48adabd9542ff7ac2ec2b904f96cf206a85a5da16a8d1",
+      "local_sha256": "b645f0f2de47978bf7667613781607b02c1a81217588f418b6f91196649d8425",
       "modification_notice": "Translated from upstream references/brief.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -330,7 +330,7 @@
     "references/craft-design.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "61f3d00ba1dfadccb2b969ceb0a9668bdbd37f1a3d270a21a49bbb39581e04c3",
+      "local_sha256": "6aed8b89137f89bdab228020cf6317c0bada7720c39a56cc94061f5c28068142",
       "modification_notice": "Translated from upstream references/design.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -342,7 +342,7 @@
     "references/craft-engine.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "14717e24adc8756c86259fbc20bd095f2a5b055519c4c90450ab0ec2380bcf9a",
+      "local_sha256": "0a60cc67a3b1ffa32a07cf82b6da3354b4e8c25ce6c32d51a7aba953d383f607",
       "modification_notice": "Translated from upstream references/engine.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -354,7 +354,7 @@
     "references/craft-images.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "72108124eee318537f9c835750969be1c3b9ae6ca5152b5549a7f2d0db2f31a0",
+      "local_sha256": "43803a8aeccf2d6f8432f8ecc439689847c9763b21434ed1c09a66818b46c8c8",
       "modification_notice": "Translated from upstream references/images.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -366,7 +366,7 @@
     "references/craft-qa.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "4a6991417ba630b922365e2f685ba6694b0797ceea70d8a5916196c375a978ed",
+      "local_sha256": "2c1fa45e8f587b0db40adf3e9bdb936b2ffd95c2a99bd3d1deb7eb5d8aa66df4",
       "modification_notice": "Translated from upstream references/qa.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -378,7 +378,7 @@
     "references/craft-story.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "93e3316f38e94bb05557399548f220e0af3b7c91fb923062d606c70a62fa17fd",
+      "local_sha256": "10009256d084798352037a7f2725978bf1bd93e7dcd11b7e74ecb04223da7ac9",
       "modification_notice": "Translated from upstream references/story.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {
@@ -414,7 +414,7 @@
     "references/craft-workflow.md": {
       "classification": "translated_derivative",
       "license": "MIT",
-      "local_sha256": "8115165d81e616ba345f21415554f831b4d1989dbd0704e1ceb23db0dabdff4a",
+      "local_sha256": "4ec5bf0a670e41d314ecca56bdcf0cb0449ac6bf3a8ac2811dce93041aa66cea",
       "modification_notice": "Translated from upstream SKILL.md@64521220a: complete English translation; cross-references renamed to references/craft-*.md; host install paths made placeholders; the default narration voice named by role; inline OMH notes where the locale/brief policy overrides an upstream default; OMH header",
       "upstream": [
         {

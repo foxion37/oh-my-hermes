@@ -1,6 +1,6 @@
 ---
 name: "omh-model-optimization"
-description: "[omh] Onboarding a newly released model generation: when a model family ships a new generation or changes its serving contract, walk the recognition, research, calibration, routing, and measurement process that keeps model handling honest and current. Use when the user says: model-optimization, model optimization, optimize for model, onboard new model, calibrate new model, new model calibration, model calibration."
+description: "[omh] Onboarding a newly released model generation: when a model family ships a new generation or changes its serving contract, walk the recognition, research, calibration, routing, and measurement process that keeps model handling honest and current. Use when the user says: model-optimization, onboard new model, calibrate new model, new model calibration, model calibration."
 license: MIT
 author: "oh-my-hermes maintainers"
 metadata:
@@ -10,7 +10,7 @@ metadata:
     phase: model-onboarding
     role: tracker
     quality_tier: evidence-gated
-    related_skills: [omh-model-setup, ulw-perf]
+    related_skills: [omh-model-setup, ulw-perf, omh-model-compression, omh-inference-serving, omh-model-finetuning]
 ---
 
 # Model Optimization
@@ -25,7 +25,10 @@ This is a Hermes-native `model-optimization` workflow skill.
 
 - The user wants their own machine's model routing configured or providers connected; use `omh-model-setup`.
 - The goal is measurable performance of an application or system, not model handling; use `ulw-perf`.
-- The user wants benchmark-superiority or provider-readiness claims without measurements.
+- The user wants benchmark-superiority or provider-readiness claims without measurements; decline the claim and offer the measurement plan from this skill's checklist.
+- Making a model's weights smaller or cheaper by quantization, pruning or distillation into a student; use `omh-model-compression`.
+- Serving a model behind an endpoint, or benchmarking that endpoint; use `omh-inference-serving`.
+- Training a model on your own data with SFT, DPO or a LoRA adapter; use `omh-model-finetuning`.
 
 ## Examples
 
@@ -57,15 +60,15 @@ Bad example:
 
 ## Workflow Lane
 
-- Current lane: **Research and company ops** (`product-docs`, `source-finder`, `web-research`, `research`, `model-optimization`, `inference-serving`, `model-finetuning`, `research-brief`, `+27 more`) - research, signals, ops, and briefings.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Research and company ops** - research, signals, ops, and briefings.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
 
 Use when a model or family is new to OMH, shipped a new generation, or changed its serving contract, and the operator wants recognition, calibration, routing, pricing, and docs checked and strengthened for it through the fixed onboarding process.
 
-    Strong routing signals: `model-optimization`, `model optimization`, `optimize for model`, `onboard new model`, `calibrate new model`, `new model calibration`, `model calibration`
+    Strong routing signals: `model-optimization`, `onboard new model`, `calibrate new model`, `new model calibration`, `model calibration`
 
 ## Catalog Metadata
 
@@ -123,7 +126,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

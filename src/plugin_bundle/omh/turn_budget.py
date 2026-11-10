@@ -57,8 +57,24 @@ from .awareness import awareness_primer_context, awareness_primer_markdown
 # opened with praise and closed with offers while the persona held. The compact
 # rail measured 1550 and the markdown 3619 (re-derived from the producers,
 # standing headroom kept as above).
+# 3630 -> 3685: the markdown's generic-tool checkpoint names each skill by its
+# full catalog name (`accessibility-audit`, not `a11y`), because the shorthand
+# was nothing a model could load. It measured 3677 (standing headroom kept as
+# above); the compact rail does not carry the line.
+# 3685 -> 3734: the same line writes each target as the label `skill_view`
+# loads (`omh-accessibility-audit`, `ulw-research`), because a catalog name
+# reaches the model through this primer with no render pass and is not a name
+# it can load either. It measured 3726 (standing headroom kept as above).
+# 3734 -> 3973: the workflow context cards and the common cues before generic
+# tools write their targets as labels too, so the primer names one skill one
+# way; the cards also drop shorthand that was no skill (`automation`,
+# `workspace`, `learning`). It measured 3965 (standing headroom kept as above).
+# 3973 -> 4051: each lane's `Key:` names are written as loadable labels
+# (`ulw-research`, `omh-routing`) instead of catalog names, so the primer no
+# longer shows `research` and `ulw-research` for one skill. It measured 4043
+# (standing headroom kept as above).
 AWARENESS_PRIMER_CONTEXT_CHAR_LIMIT = 1560
-AWARENESS_PRIMER_MARKDOWN_CHAR_LIMIT = 3630
+AWARENESS_PRIMER_MARKDOWN_CHAR_LIMIT = 4051
 AWARENESS_WORKFLOW_CONTEXT_CHAR_LIMIT = 1500
 ROLE_CONTEXT_CHAR_LIMIT = 2600
 # Per-request budgets, zero-slack: each is the value its producer measured,
@@ -125,7 +141,25 @@ ROLE_CONTEXT_CHAR_LIMIT = 2600
 # (-81 on the routed request's largest role, `handoff-guide`), and a
 # fallback label that only respells the action's underscores is dropped
 # (-73). Re-derived from the producer.
-PRE_LLM_CALL_CONTEXT_CHAR_LIMIT = 5632
+# 5632 unchanged: the `plan_acceptance` scenario joins the set so the plan
+# follow-on line (`plan_follow_on`, 479 with its join) is measured on the turn
+# that accepts a plan Hermes' `/plan` just wrote, beside the route hint and
+# the active plan line (2759). It rides at most once per plan made, and on
+# `/plan`'s own turn (410 fenced alone), so it is under `all_surfaces`, which still sets the maximum,
+# and the fallback maximum is unchanged with it. Re-derived from the producer.
+# 5632 -> 6041 (2026-11-05): the console choices line (`console_choices`, 407
+# plus its join) asks a console session (cli, tui, desktop) to put a choice
+# its reply stops on through Hermes' `clarify` picker rather than a prose
+# list, with its context in the reply text, a one-sentence question and
+# `label — clause` choices the TUI draws as a label and a dim description. It
+# rides the session's first turn, so `all_surfaces` now runs as a
+# console session's first turn (`platform="tui"`) and carries it (+409); a
+# messaging platform's turn renders exactly what it rendered before. Its
+# re-ask variant (255) rides only the person's turn after a clarify timed
+# out, measured alone by the new `clarify_timed_out` scenario (374 fenced),
+# under `all_surfaces`. Re-derived from the producer.
+# 6041 -> 5977: the delegation prompt rule drops its rationale tail (-64) in the coding-core audit round.
+PRE_LLM_CALL_CONTEXT_CHAR_LIMIT = 5977
 # The same scenario set on the fallback: a session the awareness section did
 # not render for (a restart resume, a legacy id-rotating compaction, a refused
 # section, an older host) still gets the primer in the fenced context, so its
@@ -157,7 +191,10 @@ PRE_LLM_CALL_CONTEXT_CHAR_LIMIT = 5632
 # above does not move. Re-derived from the producer.
 # 7338 -> 7184 (2026-10-28): the same route-hint dedup (-154). Re-derived
 # from the producer.
-PRE_LLM_CALL_CONTEXT_FALLBACK_CHAR_LIMIT = 7184
+# 7184 -> 7593 (2026-11-05): the same console choices line on the same
+# console first turn (+409). Re-derived from the producer.
+# 7593 -> 7529: the same rule, same -64.
+PRE_LLM_CALL_CONTEXT_FALLBACK_CHAR_LIMIT = 7529
 
 SLOT_LIMITS: dict[str, int] = {
     "primer": AWARENESS_PRIMER_CONTEXT_CHAR_LIMIT,

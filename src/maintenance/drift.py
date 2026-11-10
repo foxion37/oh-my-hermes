@@ -959,7 +959,59 @@ def count_metrics() -> tuple[CountMetric, ...]:
             # own command (copy, open, set, run) is not a report (+4).
             # #2440 re-review 3: bump, ship, check into git and find the bug
             # after what OMH chose are requests too (+4).
-            expected=1322,
+            # #2455 follow-up (#2485): "find out" after a neutral setting, an
+            # OMH terminology loader migration and a Korean task after what
+            # OMH picked stay off workflow-learning (+3); a find-out task with
+            # a courtesy tail (+1); Korean messages with "OMH가 / OMH는" that
+            # an earlier head of the PR read as reports, each as on main: an
+            # edit after a setting sentence, three requests in other endings,
+            # two in unlisted endings, a coding-work complaint, a deferred
+            # complaint, 회원인증, an English choice before a Korean request,
+            # and seven statements (code noun, coding verb, 결과, 이유, 왠지, a
+            # later request, English praise) (+17); OMH ignoring an ignore
+            # file and the user's path aliases (+2); and a filler adverb, a
+            # why-question about a parser, and "Hermes with OMH" before a
+            # find-out task (+3).
+            # feature/architecture-deepening: shallow water, a new system's
+            # architecture, a roadmap trade-off, a Korean system design and an
+            # architecture firm never name tech-debt-audit (+5). Its review: a
+            # model's, a bridge's, and (in Korean) a model's, cloud infra's and
+            # company org's architecture improvement, a course's shallow
+            # modules, deepening opportunities with clients, and a solar module
+            # that is hard to test never name it either (+8). Its second
+            # review: twenty English requests that quote a shipped phrase (job
+            # ads, translations, a README line, a bank repo, a contract) never
+            # dispatch it, and a Korean course, blog post, job posting, dress
+            # code and QR code never name it (+25). Follow-up
+            # omh/code-skills-round-followups: the same dress code and QR
+            # code in the architecture request form never dispatch it (+2,
+            # no forbidden_candidate: they name it as a clarify candidate).
+            # fix/design-hint-precision: a concept question and a Korean
+            # remark under a busy-path gateway origin never dispatch
+            # gateway-intent-card (+2).
+            # systematic-review: a PR reviewed systematically, job applicants,
+            # support tickets, a rapid PR review, a paper's title and abstract
+            # and one trial's inclusion criteria stay off literature screening (+6).
+            # A Korean manuscript, paper search and PRISMA diagram, five reviews
+            # of a pointed-at software object, logging practices and our test
+            # coverage stay off it too (+10).
+            # The reach round adds what its narrowed triggers no longer take, and two sentences that say dap
+            # or printf in passing beside native-debugging's wording. Its named reach phrases add seven sentences
+            # using their words in another sense, and three more for the phrases that failed that test. Its review
+            # adds a case per hold-back and what the narrowing must keep out: `주가`, `time in`, the market gate.
+            # Its re-review keeps `주가` and `time in` as they were and pins the lookups instead of the compounds.
+            # The ops-review pair's follow-up adds four sentences where `리스크` or `블로커` is only spelled across
+            # other words or split by a space.
+            # model-compression: a video, image colors, a hedge, whisky, a show flat, a churn model, a
+            # regression's variables, fruit trees, audio bit depth, a Blender asset and a 3D asset in Korean
+            # stay off it (+11); "distill this model", a reach case kept off rules-distill, now dispatches to
+            # model-compression and moves to the intervention corpus (-1).
+            # model-compression review round: the review's statistics, 3D, game, signal and know-how
+            # sentences and fresh ones with an ordinary anchor-like word beside a shared phrase (+24).
+            # Its second review round: billions of money, data or volume, game, pixel-art and 3D bit widths,
+            # grid transformers and firmware quantization stay off it (+18).
+            # Its third review round: two billions of money or data, each followed by a noun, stay off it (+4).
+            expected=1512,
             # The one reviewed test pin. Every other test compares its payload
             # against build_routing_precision_demo() rather than a literal.
             sites=("tests/test_routing_precision.py",),
@@ -1527,7 +1579,46 @@ def count_metrics() -> tuple[CountMetric, ...]:
             # naming workflow learning stays about OMH (+3).
             # #2440 re-review 3: a command after "then" keeps command-operator,
             # and "list the reasons" after what OMH chose is a complaint (+2).
-            expected=1219,
+            # #2455 follow-up: a Korean "why did OMH send it" (보냈어), OMH
+            # ignoring the request, and OMH "apparently" choosing ultrawork reach
+            # workflow-learning (+3). Its second review: a Korean casual edit
+            # request ending in "?" after a setting sentence keeps ultrawork (+1).
+            # Its fourth review: a Korean 정리해 둬 after a setting sentence keeps
+            # toolbelt-readiness (+1). Its fifth review: OMH missing a test, then
+            # a request to add tests, keeps ultrawork (+1). Its final review:
+            # two reports that quote the user's own ask, opened by migrate or
+            # rewrite, reach workflow-learning (+2).
+            # feature/architecture-deepening: three code-anchored
+            # architecture-deepening requests dispatch tech-debt-audit, a
+            # Korean codebase-architecture request and shallow modules in this
+            # repo name it as the clarify candidate, and improving an
+            # architecture diagram stays codebase-uml's dispatch (+6). Its
+            # second review makes the phrases clarify-only: five requests name
+            # the audit in the question, a tech-debt request that also names
+            # the architecture still dispatches it, and Korean meeting notes
+            # and a paper search keep operating-rhythm and source-finder (+3).
+            # fix/design-hint-precision: a demo-video request, a Korean
+            # build-fix request and a PR review under a busy-path gateway
+            # origin route as they do bare (+3).
+            # systematic-review: four screening requests (one through the ko
+            # pack) plus a systematic code review and a find-papers request that
+            # keep their own owners (+6). A Korean two-reviewer abstract screen, a
+            # statin-trial review and a telehealth scoping review reach it, and a
+            # plain PR review clarifies toward code-review (+4).
+            # The reach round takes out the Korean Hermes update cue, and adds `release gate` asking, the same
+            # words in a film, the lengthened phrase dispatching, and a person asking for a dap debugger; and
+            # six requests that its named reach phrases carry. Its review adds what the narrowing must leave reaching.
+            # Its re-review adds the stock and time lookups, a search through a web search connection, the risk and
+            # blocker pair in either order, a repeat schedule, and a softened market request.
+            # The ops-review pair's follow-up adds the pair written as one word and inside a longer word, which a
+            # word-opening rule lost.
+            # model-compression: eight compression requests (two through the ko pack, one the "distill this
+            # model" reach case moved from the negative corpus) and three that keep inference-serving,
+            # rules-distill and model-finetuning (+11).
+            # model-compression review round: GGUF and 4-bit Korean quantization, 70B-to-8B distillation in
+            # both languages, and a llama model slimmed in Korean reach the skill (+8).
+            # Its second review round drops the Korean 4-bit case, which falls back to main (-1).
+            expected=1299,
             # The one reviewed test pin. Every other test compares its payload
             # against build_routing_precision_demo() rather than a literal.
             sites=("tests/test_routing_precision.py",),

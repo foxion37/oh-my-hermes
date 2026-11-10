@@ -42,6 +42,7 @@ from omh.install.plugin_pack import (
 from omh.plugin_bundle.omh.tools import evidence_tool
 from omh.plugin_bundle.omh.metadata import PROVIDED_HOOKS, PROVIDED_TOOLS, TOOL_FILE_STEMS
 from omh.release_smoke_core import CommandResult
+from omh.version import __version__
 from _module_patch import patch_modules
 
 
@@ -1180,7 +1181,9 @@ print(json.dumps(observed, ensure_ascii=False))
                 [
                     "on_session_end",
                     "on_session_start",
+                    "post_api_request",
                     "post_tool_call",
+                    "pre_gateway_dispatch",
                     "pre_llm_call",
                     "pre_tool_call",
                     "pre_verify",
@@ -1957,6 +1960,51 @@ class PluginReinstallSafetyTests(unittest.TestCase):
                     self.assertEqual(extra.read_bytes(), b"user-owned content\n")
                     extra.unlink()
 
+    def _age_manifest(self) -> str:
+        manifest_path = self.target / PLUGIN_MANAGED_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["installed_at"] = "2026-10-30T02:00:00Z"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return manifest["installed_at"]
+
+    def test_an_unchanged_bundle_is_neither_rewritten_nor_restamped(self) -> None:
+        # Every update used to rewrite the bundle and restamp `installed_at`,
+        # so the gateway restart hint fired after updates that changed nothing.
+        installed_at = self._age_manifest()
+        before = (self.target / "__init__.py").stat()
+        result = install_plugin_bundle(self.paths)
+        self.assertFalse(result["changed"])
+        self.assertFalse(result["bundle_files_changed"])
+        manifest = json.loads((self.target / PLUGIN_MANAGED_MANIFEST).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["installed_at"], installed_at)
+        self.assertEqual((self.target / "__init__.py").stat().st_ino, before.st_ino)
+
+    def test_a_moved_package_site_rewrites_only_the_manifest(self) -> None:
+        installed_at = self._age_manifest()
+        before = (self.target / "__init__.py").stat()
+        site = {"path": str(self.root / "generations" / "next" / "venv" / "site-packages"), "version": __version__}
+        with mock.patch("omh.install.plugin_pack.package_site_record", return_value=site):
+            result = install_plugin_bundle(self.paths)
+            current = inspect_plugin_bundle(self.paths)["plugin_manifest_current"]
+        self.assertTrue(result["changed"])
+        self.assertFalse(result["bundle_files_changed"])
+        manifest = json.loads((self.target / PLUGIN_MANAGED_MANIFEST).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["package_site"], site)
+        self.assertEqual(manifest["installed_at"], installed_at)
+        self.assertEqual((self.target / "__init__.py").stat().st_ino, before.st_ino)
+        self.assertTrue(current)
+
+    def test_a_manifest_rewrite_a_crash_left_behind_does_not_block_an_update(self) -> None:
+        # A `package_site` move rewrites the manifest in place through
+        # `atomic_write_json`; a crash mid-write leaves its staging file.
+        leftover = self.target / f".{PLUGIN_MANAGED_MANIFEST}.4242-0123456789abcdef.tmp"
+        leftover.write_text("{", encoding="utf-8")
+        install_plugin_bundle(self.paths)
+        lookalike = self.target / "notes.tmp"
+        lookalike.write_text("user data", encoding="utf-8")
+        with self.assertRaisesRegex(PluginPackError, "notes.tmp"):
+            install_plugin_bundle(self.paths)
+
     def test_a_new_bundled_path_is_not_owned_by_the_old_manifest(self) -> None:
         manifest_path = self.target / PLUGIN_MANAGED_MANIFEST
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2181,7 +2229,19 @@ class PluginReinstallSafetyTests(unittest.TestCase):
         self.assertFalse((self.target / PLUGIN_MANAGED_MANIFEST).exists())
         self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh", ".install-metadata.json"})
 
+    def _bundle_change_pending(self) -> None:
+        # An unchanged bundle is no longer staged at all, so the staging guards
+        # below need a refresh that really writes: a managed file the new
+        # bundle no longer ships.
+        obsolete = self.target / "obsolete.py"
+        obsolete.write_bytes(b"# previously shipped\n")
+        manifest_path = self.target / PLUGIN_MANAGED_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({"path": obsolete.name, "sha256": hashlib.sha256(obsolete.read_bytes()).hexdigest()})
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
     def test_addition_during_staging_is_restored_without_replacing_bundle(self) -> None:
+        self._bundle_change_pending()
         from omh.install import plugin_pack as plugin_pack_module
 
         original_copy = plugin_pack_module._copy_resource_tree
@@ -2202,6 +2262,7 @@ class PluginReinstallSafetyTests(unittest.TestCase):
         self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh"})
 
     def test_managed_edit_during_staging_is_restored_without_replacing_bundle(self) -> None:
+        self._bundle_change_pending()
         from omh.install import plugin_pack as plugin_pack_module
 
         original_copy = plugin_pack_module._copy_resource_tree
@@ -2244,6 +2305,7 @@ class PluginReinstallSafetyTests(unittest.TestCase):
                     )
 
     def test_failed_rollback_keeps_original_in_private_transaction(self) -> None:
+        self._bundle_change_pending()
         original = (self.target / PLUGIN_MANAGED_MANIFEST).read_bytes()
         real_rename = Path.rename
         backups = []
@@ -2487,11 +2549,12 @@ class SymlinkedPluginDirectoryTests(unittest.TestCase):
             self.assertEqual(os.readlink(stale), str(root / ".hermes" / "gone"))
             self.assertTrue((bundle / "memory_provider.py").is_file())
 
-    def test_a_dangling_plugin_link_is_kept_without_force(self) -> None:
-        # `Path.exists` follows the link, so a dangling one reads as absent.
-        # Without the link-aware ownership guard the replacement path runs on
-        # a link OMH cannot prove it wrote, and the operator's pointer is gone
-        # with a clean exit code. It has to be kept and named instead.
+    def test_a_dangling_plugin_link_is_repaired_without_force_and_named(self) -> None:
+        # `Path.exists` follows the link, so a dangling one reads as absent;
+        # the guard still sees it. A link whose target is gone holds nothing
+        # anyone owns, so update replaces it without --force (2026-11-04: four
+        # such links refused every update and rolled it back). The pointer is
+        # not dropped silently: the result names where it pointed.
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
@@ -2503,15 +2566,43 @@ class SymlinkedPluginDirectoryTests(unittest.TestCase):
             self.assertFalse(bundle.exists())
 
             status, stdout, stderr = run_cli(base + ["update"])
-            self.assertEqual(status, 1, stderr)
+            self.assertEqual(status, 0, stderr)
             payload = json.loads(stdout)
-            self.assertEqual(payload["status"], "partial")
-            self.assertEqual(payload["failures"][0]["phase"], "registration")
-            self.assertIn("registration failed", payload["failures"][0]["error"])
+            self.assertEqual(payload["status"], "ok")
+            self.assertFalse(bundle.is_symlink())
+            self.assertTrue((bundle / PLUGIN_MANAGED_MANIFEST).is_file())
+            self.assertNotIn("use --force to replace it", stdout + stderr)
+
+    def test_a_dangling_link_is_named_without_the_windows_extended_prefix(self) -> None:
+        # Windows CI read the link back as `\\?\C:\...`; the repair line names
+        # the path a person would type.
+        from omh.install import plugin_pack
+
+        with TemporaryDirectory() as tmp:
+            link = Path(tmp) / "omh"
+            link.symlink_to(Path(tmp) / "gone", target_is_directory=True)
+            for raw, shown in (
+                ("\\\\?\\C:\\gone\\omh", "C:\\gone\\omh"),
+                ("\\\\?\\UNC\\srv\\share\\omh", "\\\\srv\\share\\omh"),
+                ("/home/me/gone/omh", "/home/me/gone/omh"),
+            ):
+                with self.subTest(raw=raw), mock.patch.object(plugin_pack.os, "readlink", return_value=raw):
+                    self.assertEqual(plugin_pack._dangling_link_target(link), shown)
+
+    def test_a_link_to_a_live_unmanaged_tree_is_still_kept_without_force(self) -> None:
+        # Only a dangling link is repaired; a link to files OMH did not write
+        # may hold someone's plugin and still needs --force.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home, hermes_home = root / ".omh", root / ".hermes"
+            status, _, stderr = run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup"])
+            self.assertEqual(status, 0, stderr)
+            bundle, shared = self._link_bundle_to_shared(root)
+            (shared / PLUGIN_MANAGED_MANIFEST).unlink()
+            with self.assertRaisesRegex(PluginPackError, "use --force to replace it"):
+                install_plugin_bundle(resolve_paths(omh_home, hermes_home))
             self.assertTrue(bundle.is_symlink())
-            self.assertFalse(shared.exists())
-            self.assertEqual(os.readlink(bundle), str(shared))
-            self.assertIn("use --force to replace it", stdout + stderr)
+            self.assertTrue(shared.is_dir())
 
     def test_a_dangling_plugin_link_is_replaced_with_force(self) -> None:
         # The other half of that guard, and the reason the replacement asks
@@ -3586,6 +3677,61 @@ class HermesProfileSyncTests(unittest.TestCase):
             # The verdict judged whether bare `hermes` would show the OMH
             # surface; it does not any more, so there is nothing to judge.
             self.assertNotIn("OMH TUI:", stdout)
+
+    def test_bench_profiles_linked_to_deleted_worktrees_are_repaired_by_update(self) -> None:
+        # The 2026-11-04 shape: bench profiles whose `plugins/omh` was a link
+        # into a worktree that was later deleted. Each refused the update, the
+        # profile failures rolled the staged update back, and the restore
+        # failed on the same links on every later run.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktrees = root / "oh-my-hermes-worktrees"
+            gone = {
+                "dapbench": worktrees / "dap-nav" / "src" / "plugin_bundle" / "omh",
+                "dapbenchp": worktrees / "dap-nav" / "src" / "plugin_bundle" / "omh",
+                "lspbench": worktrees / "lsp-nav" / "src" / "plugin_bundle" / "omh",
+                "lspbenchp": worktrees / "lsp-nav" / "src" / "plugin_bundle" / "omh",
+            }
+            for name in (*gone, "kami"):
+                self._profile(root, name)
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            for name, target in gone.items():
+                plugin = root / ".hermes" / "profiles" / name / "plugins" / "omh"
+                shutil.rmtree(plugin)
+                plugin.symlink_to(target, target_is_directory=True)
+                self.assertFalse(plugin.exists())
+
+            status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stdout + stderr)
+            self.assertNotIn("exists without an OMH plugin manifest", stdout + stderr)
+            self.assertNotIn("(failed)", stdout)
+            for name, target in gone.items():
+                with self.subTest(profile=name):
+                    plugin = root / ".hermes" / "profiles" / name / "plugins" / "omh"
+                    self.assertFalse(plugin.is_symlink())
+                    self.assertTrue((plugin / PLUGIN_MANAGED_MANIFEST).is_file())
+                    self.assertIn(
+                        f"Repaired bot profile {name}: its plugins/omh linked to {target}, which no longer exists; "
+                        "it now holds the released OMH plugin bundle.",
+                        stdout,
+                    )
+
+    def test_a_profile_dangling_link_repair_is_recorded_in_json(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._profile(root, "dapbench")
+            run_cli(self._base(root) + ["setup"])
+            plugin = root / ".hermes" / "profiles" / "dapbench" / "plugins" / "omh"
+            shutil.rmtree(plugin)
+            target = root / "deleted-worktree" / "src" / "plugin_bundle" / "omh"
+            plugin.symlink_to(target, target_is_directory=True)
+            status, stdout, stderr = run_cli(self._base(root) + ["update", "--json"], output_json=False)
+            self.assertEqual(status, 0, stderr)
+            rows = {row["profile"]: row for row in json.loads(stdout)["hermes_profiles"]}
+            self.assertEqual(rows["dapbench"]["replaced_dangling_link"], str(target))
+            self.assertNotEqual(rows["dapbench"]["status"], "failed")
 
     def test_a_home_without_profiles_reports_no_profile_rows(self) -> None:
         with TemporaryDirectory() as tmp:

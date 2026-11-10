@@ -75,8 +75,6 @@ UNGUARDED: dict[tuple[str, str], tuple[int, str]] = {
         (1, "activated_at is written by _record_activation from now() or the activation marker's marker_written_at, itself now()"),
     ("src/maintenance/doctor.py", "_awareness_delivery_check"):
         (1, "first_attempted_at comes from record_awareness_delivery, whose one caller (hooks/llm_hooks.py) passes a strftime clock stamp"),
-    ("src/maintenance/hermes_gateway.py", "_installed_at_epoch"):
-        (1, "installed_at is written by utc_now() in install/manifest.py and install/plugin_pack.py; installer.py only carries it over"),
     ("src/maintenance/update_check_recovery.py", "evaluate_update_check"):
         (1, "parses now.isoformat() built two lines above"),
     ("src/maintenance/update_check_state.py", "interval_elapsed"):
@@ -184,6 +182,7 @@ SITES: dict[tuple[str, str], tuple[str, list[Case]]] = {
     ("src/coding/action_gate.py", "_stamp_age_seconds._parse"): (
         "omh.coding.action_gate", [lambda m: lambda s: m._stamp_age_seconds(s, "2020-01-03T00:00:00Z")]),
     ("src/tui/bot_board.py", "_record_time"): ("omh.tui.bot_board", [lambda m: m._record_time]),
+    ("src/maintenance/hermes_gateway.py", "_iso_epoch"): ("omh.maintenance.hermes_gateway", [lambda m: m._iso_epoch]),
     ("src/coding/executor_auth_signals.py", "_age_seconds"): (
         "omh.coding.executor_auth_signals", [lambda m: m._age_seconds]),
     ("src/coding/executor_capability_snapshots.py", "_is_timestamp"): (
@@ -249,8 +248,6 @@ SITES: dict[tuple[str, str], tuple[str, list[Case]]] = {
         "omh.plugin_bundle.omh.todo_store", [lambda m: m._stamp_epoch]),
     ("src/plugin_bundle/omh/todo_store.py", "_validated_stamp"): (
         "omh.plugin_bundle.omh.todo_store", [lambda m: lambda s: m._validated_stamp(s, "done", "done_at")]),
-    ("src/plugin_bundle/omh/tools/dag_tool.py", "_timestamp"): (
-        "omh.plugin_bundle.omh.tools.dag_tool", [lambda m: m._timestamp]),
     ("src/quality/agent_debug_incident.py", "_epoch"): (
         "omh.quality.agent_debug_incident", [lambda m: m._epoch]),
     ("src/quality/capability_gap_scout.py", "_parse_timestamp"): (

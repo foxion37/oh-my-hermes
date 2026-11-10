@@ -68,6 +68,7 @@ from .sprite_forge_skill import sprite_forge_reference_templates
 from .biomedical_evidence_skill import biomedical_evidence_reference_templates
 from .molecular_docking_skill import molecular_docking_reference_templates
 from .ai_job_search_skill import ai_job_search_reference_templates
+from .model_compression_skill import model_compression_reference_templates
 from .render import (
     SkillReferenceTemplate,
     SkillTemplate,
@@ -147,6 +148,7 @@ from .render import (
     security_event_response_reference_templates,
     security_safety_review_reference_templates,
     spend_gate_reference_templates,
+    agent_board_reference_templates,
     strategy_brief_reference_templates,
     structural_search_skill,
     tech_debt_audit_reference_templates,
@@ -252,11 +254,13 @@ REFERENCE_PRODUCERS: tuple[Callable[[], list[SkillReferenceTemplate]], ...] = (
     iac_change_reference_templates,
     data_pipelines_reference_templates,
     model_finetuning_reference_templates,
+    model_compression_reference_templates,
     mobile_release_reference_templates,
     internal_audit_reference_templates,
     data_share_review_reference_templates,
     release_cut_reference_templates,
     spend_gate_reference_templates,
+    agent_board_reference_templates,
     automation_blueprint_reference_templates,
     external_connector_reference_templates,
     verification_gate_reference_templates,

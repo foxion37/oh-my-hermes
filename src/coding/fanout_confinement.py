@@ -30,8 +30,8 @@ FANOUT_FILESYSTEM_CONFINEMENT_SCHEMA_VERSION = "fanout_filesystem_confinement/v1
 FANOUT_FILESYSTEM_CONFINEMENT_CLAIM_BOUNDARY = (
     "A confinement receipt is observed only when its same-run sandbox probe wrote inside the unit worktree "
     "and every selected owner state directory, then was refused outside every write root. Owner state may also "
-    "include an exact file literal. On macOS the IPC allowances are the two named credential mach-lookup services "
-    "and the read side of the user preferences daemon (its two named mach-lookup services and read-only access to "
+    "include an exact file literal. On macOS the IPC allowances are the two named credential mach-lookup services, "
+    "the two named TLS trust-evaluation mach-lookup services, and the read side of the user preferences daemon (its two named mach-lookup services and read-only access to "
     "its apple.cfprefs. shared memory); none expands into a directory, a preference write, or broader IPC "
     "permission. Backend availability, preflight, and a prepared command alone are not "
     "confinement evidence. Reads are not part of this boundary: every command this confinement returns runs with "
@@ -55,6 +55,14 @@ _FANOUT_MACOS_CREDENTIAL_MACH_SERVICES = ("com.apple.securityd.xpc", "com.apple.
 # CFPreferencesSetAppValue plus synchronize and `defaults write` both fail
 # inside the fence and leave no domain behind.
 _FANOUT_MACOS_PREFERENCE_MACH_SERVICES = ("com.apple.cfprefsd.daemon", "com.apple.cfprefsd.agent")
+# Codex (and any HTTP client on the Security framework) verifies the server
+# certificate through trustd. Without it the TCP connect succeeds, the TLS
+# handshake fails, and `codex exec` retries until the unit times out with
+# "workspace routing discovery failed" / "waiting for network" (#2456).
+# Measured on macOS 26.6 with codex-cli 0.166: the profile as built fails, and
+# adding `com.apple.trustd.agent` alone returns the model reply; `com.apple.trustd`
+# is the system-side instance of the same lookup. Neither grants a write.
+_FANOUT_MACOS_TLS_TRUST_MACH_SERVICES = ("com.apple.trustd.agent", "com.apple.trustd")
 _FANOUT_MACOS_PREFERENCE_SHM_READ_PREFIXES = ("apple.cfprefs.",)
 _FANOUT_TOOLCHAIN_TEMP_DIRECTORY = Path(".omh") / "confinement-tmp"
 
@@ -261,7 +269,9 @@ class FanoutFilesystemConfinement:
             macos_write_data_literals=_FANOUT_MACOS_TOOLCHAIN_WRITE_DATA_LITERALS,
             write_literals=self.write_literals,
             macos_mach_lookup_names=(
-                *_FANOUT_MACOS_CREDENTIAL_MACH_SERVICES, *_FANOUT_MACOS_PREFERENCE_MACH_SERVICES
+                *_FANOUT_MACOS_CREDENTIAL_MACH_SERVICES,
+                *_FANOUT_MACOS_PREFERENCE_MACH_SERVICES,
+                *_FANOUT_MACOS_TLS_TRUST_MACH_SERVICES,
             ),
             macos_ipc_posix_shm_read_prefixes=_FANOUT_MACOS_PREFERENCE_SHM_READ_PREFIXES,
             allow_broad_file_read=True,
@@ -272,7 +282,17 @@ class FanoutFilesystemConfinement:
         )
 
     def command_environment(self, environment: Mapping[str, str] | None = None) -> dict[str, str]:
-        """Keep toolchain scratch writes within the confined worktree."""
+        """Keep toolchain scratch writes within the confined worktree.
+
+        TMPDIR covers most tools. zsh writes heredoc temp files under
+        TMPPREFIX (default `/tmp/zsh`) and uv locks its cache (default
+        `~/.cache/uv`); Claude Code keeps Bash project temp and sockets under
+        CLAUDE_CODE_TMPDIR (default `/tmp`). Those defaults are outside every
+        write root, so each is pointed into the same scratch directory, which
+        preparation creates (`_write_scratch_ignore`). Their subdirectories
+        are creatable inside the fence; a caller value already inside a write
+        root is kept. The fence itself is unchanged.
+        """
         selected_environment = self.environment if environment is None else environment
         if (
             self.receipt.get("enforced") is not True
@@ -280,10 +300,26 @@ class FanoutFilesystemConfinement:
             or self.selected not in {"sandbox-exec", "bwrap"}
         ):
             return dict(selected_environment)
-        return {
-            **selected_environment,
-            "TMPDIR": str(self.child.work / _FANOUT_TOOLCHAIN_TEMP_DIRECTORY),
-        }
+        scratch = self.child.work / _FANOUT_TOOLCHAIN_TEMP_DIRECTORY
+        result = {**selected_environment, "TMPDIR": str(scratch)}
+        # TMPPREFIX is a file-name prefix (`<prefix>XXXX`), so what must sit
+        # inside a root is its directory; `TMPPREFIX=<root>` writes beside it.
+        for key, default, as_prefix in (
+            ("TMPPREFIX", scratch / "zsh", True),
+            ("UV_CACHE_DIR", scratch / "uv-cache", False),
+            ("CLAUDE_CODE_TMPDIR", scratch / "claude-code", False),
+        ):
+            if not self._within_write_roots(selected_environment.get(key, ""), as_prefix=as_prefix):
+                result[key] = str(default)
+        return result
+
+    def _within_write_roots(self, value: str, *, as_prefix: bool = False) -> bool:
+        if not value or not os.path.isabs(value):
+            return False
+        resolved = Path(os.path.realpath(value))
+        if as_prefix:
+            resolved = resolved.parent
+        return any(resolved.is_relative_to(os.path.realpath(root)) for root in self.write_roots)
 
 
 # What git the dispatcher runs for itself in a unit worktree keeps of the

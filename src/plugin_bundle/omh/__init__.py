@@ -221,11 +221,13 @@ def register(ctx: _PluginContext) -> None:
         AWARENESS_SECTION_MAX_CHARS,
         awareness_system_prompt_section,
         pre_llm_call,
+        start_import_warmup,
     )
+    from .hooks.gateway_hooks import pre_gateway_dispatch
     from .hooks.result_transforms import transform_llm_output, transform_tool_result
     from .hooks.session_hooks import on_session_end, on_session_start, subagent_start, subagent_stop
     from .hooks.tool_hooks import post_tool_call, pre_tool_call
-    from .hooks.verify_hooks import pre_verify
+    from .hooks.verify_hooks import post_api_request, pre_verify
     from .tools.agent_board_tool import OMH_AGENT_BOARD_SCHEMA, omh_agent_board_handler
     from .tools.capability_tool import OMH_CAPABILITIES_SCHEMA, omh_capabilities_handler
     from .tools.chat_tool import OMH_INTERACT_SCHEMA, omh_interact_handler
@@ -526,13 +528,18 @@ def register(ctx: _PluginContext) -> None:
     _register_optional_hook(ctx, "on_session_start", on_session_start)
     _register_optional_hook(ctx, "post_tool_call", post_tool_call)
     _register_optional_hook(ctx, "pre_verify", pre_verify)
+    _register_optional_hook(ctx, "post_api_request", post_api_request)
     _register_optional_hook(ctx, "subagent_start", subagent_start)
     _register_optional_hook(ctx, "subagent_stop", subagent_stop)
     _register_optional_hook(ctx, "transform_tool_result", transform_tool_result)
     _register_optional_hook(ctx, "transform_llm_output", transform_llm_output)
+    _register_optional_hook(ctx, "pre_gateway_dispatch", pre_gateway_dispatch)
     get_config = getattr(ctx, "get_config", None)
     browser_config = get_config("browser_adapter", {}) if callable(get_config) else {}
     if isinstance(browser_config, dict) and browser_config.get("enabled") is True:
         from .browser_bridge import register as register_browser
 
         setattr(ctx, "browser_task", register_browser(ctx, browser_config))
+    # Last, after every registration: the first turns' package imports move onto a daemon thread,
+    # so register() itself takes no longer and a failed import there cannot unregister anything.
+    start_import_warmup()

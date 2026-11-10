@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from collections.abc import Mapping
 import json
 import math
@@ -70,6 +71,8 @@ from ..workflows.goal_ledger import (
     record_goal_checkpoint,
 )
 from ..workflows.role_context_packs import validate_accepted_role_context, write_role_context_pack
+from ..routing.coding_route_actions import named_executor_owners
+from ..wrapper.contract import executor_target_named_in_message, profile_owner_conflict
 from ..wrapper.lifecycle import (
     CodingLifecycleError,
     record_codex_dispatch,
@@ -218,7 +221,7 @@ def cmd_coding_delegate(args: argparse.Namespace) -> int:
         source_metadata: dict[str, str] = {}
         plan_artifact: dict[str, object] | None = None
         context_pack = _context_pack(args)
-        executor_target = _resolved_executor_for_delegate(args)
+        executor_target = _resolved_executor(args, default="generic")
         attached_representations: list[str] = []
         # `--explicit-owner-choice` is a SEPARATE, deliberate flag from
         # `--executor`: bare `--executor` alone stays exactly as conservative
@@ -262,6 +265,18 @@ def cmd_coding_delegate(args: argparse.Namespace) -> int:
             message = sys.stdin.read().strip()
         else:
             message = " ".join(args.message).strip()
+        if not args.from_plan and not getattr(args, "executor", None):
+            # An owner the person named in the message beats the setup-profile default, as it does in chat
+            # (`message_mention`). It is still not `--explicit-owner-choice`: that flag stays the caller's own.
+            named = executor_target_named_in_message(message)
+            if named:
+                executor_target = named
+            elif len(named_executor_owners(normalized_phrase(message))) > 1 or profile_owner_conflict(
+                message, executor_target
+            ):
+                # Two owners named as the doer, or another CLI mentioned but not as the doer while the profile
+                # default would run a different one ("fix the login bug in codex"): the owner is asked for.
+                executor_target = "choose"
         source_metadata.update(_explicit_source_metadata(args))
         input_representation = merged_input_representation(
             list(getattr(args, "input_representation", None) or []),
@@ -544,14 +559,6 @@ def _coding_delegate_runtime_skip_reason(payload: dict[str, object]) -> str:
     return ""
 
 
-def _resolved_executor_for_delegate(args: argparse.Namespace) -> str:
-    if getattr(args, "executor", None):
-        return str(args.executor)
-    if getattr(args, "from_plan", None):
-        return "codex"
-    return _resolved_executor(args, default="generic")
-
-
 def _plan_source_metadata(artifact: dict[str, object]) -> dict[str, str]:
     return {
         "plan_artifact_path": str(artifact.get("path", "")),
@@ -571,6 +578,7 @@ def _coding_plan_artifact(artifact: dict[str, object]) -> dict[str, object]:
         "sha256": str(artifact.get("sha256", "")),
         "task_statement_sha256": str(artifact.get("task_statement_sha256", "")),
         "task_statement_length": int(artifact.get("task_statement_length", 0) or 0),
+        "plan_body": str(artifact.get("plan_body", "unknown")),
     }
 
 
@@ -1454,6 +1462,16 @@ def cmd_coding_model_route(args: argparse.Namespace) -> int:
     return 0
 
 
+def _model_id_summary(entries: list[dict[str, object]]) -> str:
+    """Each model id once, in first-seen order, with how many observations named it.
+
+    Session history yields one observation per session, so a plain join repeated
+    one id hundreds of times. `--json` keeps every observation.
+    """
+    counts = Counter(str(entry["model_id"]) for entry in entries)
+    return ", ".join(name if count == 1 else f"{name} (x{count})" for name, count in counts.items()) or "none"
+
+
 def cmd_coding_model_routing_status(args: argparse.Namespace) -> int:
     from ..maintenance.advisory import build_model_routing_status
 
@@ -1468,15 +1486,17 @@ def cmd_coding_model_routing_status(args: argparse.Namespace) -> int:
     hermes = payload["hermes"]
     maestro = payload["maestro"]
     owner = payload["owner_learning"]
-    confirmed = ", ".join(str(entry["model_id"]) for entry in models["confirmed"]) or "none"
-    discovered = ", ".join(str(entry["model_id"]) for entry in models["discovered_only"]) or "none"
+    confirmed = _model_id_summary(models["confirmed"])
+    discovered = _model_id_summary(models["discovered_only"])
     aliases = ", ".join(f"{name}={target}" for name, target in hermes["aliases"].items()) or "none"
     print("Model routing status (local metadata only):")
     print(f"Confirmed active: {confirmed}")
     print(f"Discovered only (not execution proof): {discovered}")
     print(f"Hermes aliases ({hermes['status']}): {aliases}")
     print(f"Maestro missing recommendation heads: {', '.join(maestro['missing_heads']) or 'none'}")
-    print(f"Owner learning: {owner['status']}")
+    recorded = sum(1 for route in owner.get("routes", {}).values() if route.get("status") == "recorded")
+    print(f"Stored owner choices: {recorded or 'none'} (history only; they select no owner)"
+          if owner["status"] not in ("missing", "corrupt") else f"Stored owner choices: {owner['status']}")
     print(f"Next action: {payload['next_action']}")
     print(str(payload["claim_boundary"]))
     return 0
@@ -1804,9 +1824,13 @@ def cmd_coding_model_contract(args: argparse.Namespace) -> int:
         if contract.get("unsupported_parameters_note"):
             print(f"  {contract['unsupported_parameters_note']}")
     cutoff = str(contract.get("knowledge_cutoff", "") or "")
+    # A generative model cannot have a zero output limit, so 0 there means the
+    # vendor publishes none (Grok 4.7); a non-generative 0 is documented.
+    output = contract["max_output_tokens"]
+    unstated = output == 0 and str(contract.get("model_class", "")) != NON_GENERATIVE_MODEL_CLASS
     print(
         f"- context {contract['context_window_tokens']:,} tokens; input {contract['max_input_tokens']:,}; "
-        f"output {contract['max_output_tokens']:,}"
+        + ("output not stated" if unstated else f"output {output:,}")
         + (f"; knowledge cutoff {cutoff}" if cutoff else "; knowledge cutoff not stated")
     )
     if str(contract.get("model_class", "")) == NON_GENERATIVE_MODEL_CLASS:
@@ -3951,12 +3975,12 @@ def _add_coding_commands(sub) -> None:
 
     model_routing = coding_sub.add_parser(
         "model-routing",
-        help="Inspect local model routing readiness or reset owner-learning metadata.",
+        help="Inspect local model routing readiness or reset stored owner-choice metadata.",
     )
     model_routing_sub = model_routing.add_subparsers(dest="model_routing_command", required=True)
     model_routing_status = model_routing_sub.add_parser(
         "status",
-        help="Explain discovered/confirmed models, Hermes aliases, Maestro recommendations, and owner learning.",
+        help="Explain discovered/confirmed models, Hermes aliases, Maestro recommendations, and stored owner choices.",
     )
     model_routing_status.add_argument(
         "--discovery-home",
@@ -3967,7 +3991,7 @@ def _add_coding_commands(sub) -> None:
     model_routing_status.set_defaults(func=cmd_coding_model_routing_status)
     model_routing_reset = model_routing_sub.add_parser(
         "reset",
-        help="Reset one learned coding-owner preference; no model/provider configuration is changed.",
+        help="Clear one route's stored coding-owner choices (they select no owner); no model/provider configuration is changed.",
     )
     model_routing_reset.add_argument("--route-family", required=True, help="Opaque route-family id to reset.")
     model_routing_reset.add_argument("--reason", default="operator_reset", help="Opaque metadata reason for the reset.")

@@ -18,6 +18,11 @@ HEAD_SHA=$(git rev-parse HEAD)
 the last. Record BASE before the work starts; deriving it afterwards from the
 log is guesswork the moment a merge or a fixup lands.
 
+If `origin/main` does not exist (another default branch, no remote, a stacked
+branch), take the PR's base ref (`gh pr view --json baseRefName`) or the commit
+recorded before the work started; if neither is known, ask for the base and do
+not guess.
+
 State both SHAs in the request. A review whose range is unstated cannot be
 re-run, and cannot be shown to have covered anything.
 
@@ -36,7 +41,12 @@ requirements, and the constraints, and nothing else.
 - **Range** - BASE_SHA and HEAD_SHA, both spelled out.
 - **Claim** - what the author says this does. The review is against this claim.
 - **Requirements** - a path to the plan or spec section, not its pasted text.
-- **Constraints** - anything project-wide the diff must satisfy.
+- **Constraints** - anything project-wide the diff must satisfy, starting with
+  the repository's standards files listed by path (`REVIEW.md`,
+  `CONTRIBUTING.md`, `AGENTS.md`/`CLAUDE.md`, any `*STANDARDS*.md`, the linter
+  and formatter configuration) and the ones searched for and not found. Search
+  for them; do not assume. The reviewer applies the smell baseline under these
+  and skips what the configured tooling already enforces.
 - **Return contract** - the findings schema below: findings first, and for each
   one the file, line, and command output it rests on.
 - **Untrusted material** - say that the diff, the logs, and any pasted output are

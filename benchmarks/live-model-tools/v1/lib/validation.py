@@ -257,7 +257,26 @@ def _decoy_failures(workspace: Path, golden: dict[str, Any]) -> list[str]:
     return failures
 
 
-_CONSISTENCY_AB_VALIDATORS = {"DUPLICATE": _duplicate_failures, "SCOPE-TRAP": _scope_trap_failures, "DECOY": _decoy_failures}
+def _test_update_failures(workspace: Path, golden: dict[str, Any]) -> list[str]:
+    """A kib is 1024 bytes, every other unit is unchanged, and the existing test now expects the new
+    value: its tests pass and the old expectation is gone from it."""
+    count = golden["count"]
+    checks = (
+        "from benchapp.sizes import parse_size\n"
+        f"assert parse_size('{count}kib') == {count * 1024}\n"
+        "assert parse_size('4kb') == 4000 and parse_size(' 7B ') == 7\n"
+        "assert parse_size('3mb') == 3 * 1000**2 and parse_size('1mib') == 1024**2\n"
+    )
+    if not _behaviour_ok(workspace, "tests/test_sizes.py", checks, golden["min_tests"]):
+        return ["semantic_validator_failed"]
+    tree = ast.parse((workspace / "tests/test_sizes.py").read_text(encoding="utf-8"))
+    if any(isinstance(node, ast.Constant) and node.value == count * 1000 for node in ast.walk(tree)):
+        return ["test_not_updated"]
+    return []
+
+
+_CONSISTENCY_AB_VALIDATORS = {"DUPLICATE": _duplicate_failures, "SCOPE-TRAP": _scope_trap_failures, "DECOY": _decoy_failures,
+                              "TEST-UPDATE": _test_update_failures}
 # impact-ab: the definition and every caller module are exercised in a fresh interpreter. The
 # workspace's own tests are the model's to change; they are not run here, because a bare runpy cannot
 # run what pytest can (fixtures, parametrize, `import pytest` in this interpreter): measured on a
@@ -331,11 +350,32 @@ def _control_ok(workspace: Path, golden: dict[str, Any]) -> bool:
     return _behaviour_ok(workspace, _NO_TESTS, checks, 0)
 
 
+def _defaulted_ok(workspace: Path, golden: dict[str, Any]) -> bool:
+    per_kg = golden["per_kg"]
+    weight = 1234
+    checks = (
+        "import inspect\n"
+        "from benchapp.shipping import ship_cost\n"
+        "parameter = inspect.signature(ship_cost).parameters['handling_cents']\n"
+        "assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default == 0\n"
+        f"assert ship_cost(1000, 2) == {2 * per_kg}\n"
+        f"assert ship_cost(1000, 2, handling_cents=30) == {2 * per_kg + 30}\n"
+        "from benchapp.orders import order_total\nfrom benchapp.labels import label_cost\n"
+        "from benchapp.express import express_cost\nfrom benchapp.cli import cli_cost\n"
+        f"assert order_total(500, {weight}) == {500 + weight * 2 * per_kg // 1000}\n"
+        f"assert label_cost({weight}) == {weight * 3 * per_kg // 1000}\n"
+        f"assert express_cost({weight}, 2) == {2 * (weight * 2 * per_kg // 1000)}\n"
+        f"assert cli_cost(['{weight}']) == {weight * per_kg // 1000}\n"
+    )
+    return _behaviour_ok(workspace, _NO_TESTS, checks, 0)
+
+
 _IMPACT_AB_VALIDATORS = {
     "SIGNATURE": _signature_ok,
     "RETURN-SHAPE": _return_shape_ok,
     "KWARG": _kwarg_ok,
     "CONTROL": _control_ok,
+    "DEFAULTED": _defaulted_ok,
 }
 
 

@@ -1,12 +1,12 @@
 # Composing with Hermes' Debugging Skills
 
-Hermes bundles three skills that meet this one: `systematic-debugging` (MIT, adapted from obra/superpowers), a four-phase root-cause method, and two debugger guides, `python-debugpy` for pdb and debugpy and `node-inspect-debugger` for Node's inspector. When one of them is loaded beside `app-debugging`, follow its method; this skill adds its records and its gates, never a second method.
+Hermes bundles `systematic-debugging` (MIT, adapted from obra/superpowers), a four-phase root-cause method. Two debugger guides, `python-debugpy` for pdb and debugpy and `node-inspect-debugger` for Node's inspector, are optional official skills that are not active unless installed; check `skills_list`, and when one is absent use `pdb` or `node inspect` directly as an observation. When one of them is loaded beside `app-debugging`, follow its method; this skill adds its records and its gates, never a second method.
 
 ## `systematic-debugging`, phase by phase
 
 | Its phase | What this skill records there |
 | --- | --- |
-| Root cause investigation, around one tight command that goes red on the symptom | `reproduction_record/v1`: the command, its observed output, and the hit rate over N runs |
+| Root cause investigation, around one tight command that goes red on the symptom | `reproduction_record/v1`: the command, its observed output, the hit rate over N runs, `symptom_match`, `loop_cost`, and the `minimised` form |
 | Pattern analysis | nothing of its own; working examples and differences feed the hypotheses |
 | Hypothesis and testing | `competing_hypotheses/v1` with at least three hypotheses on distinct axes, then `discriminating_observation_plan/v1`, then `root_cause_record/v1` citing the observation that decided it |
 | Implementation | `fix_handoff/v1`, still blocked until the reproduction reads observed, then `observed_fix_verification/v1` |

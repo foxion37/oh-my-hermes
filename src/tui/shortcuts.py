@@ -18,7 +18,9 @@ from .width import cell_width, wrap_line
 
 SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("Enter", "Sends the composer"),
-    ("\\ then Enter, Alt+Enter, Shift+Enter, Ctrl+J", "Adds a line"),
+    ("\\ then Enter, Alt+Enter, Shift+Enter, Ctrl+J", "Adds a line; with a list or menu focused, Ctrl+J moves down instead. "
+                                                 "Alt+Enter and Shift+Enter still add a line in an open menu; "
+                                                 "backslash then Enter may accept a completion"),
     ("Ctrl+Enter", "While a turn runs, sends the composer's text into it now as a steer (/steer <text> too); idle, "
                    "sends as Enter does"),
     ("Ctrl+Enter, Ctrl+J", "While a turn runs, on an empty composer, send the oldest queued prompt into it now as a "
@@ -34,14 +36,16 @@ SHORTCUTS: tuple[tuple[str, str], ...] = (
           "it and its output are not sent to the model"),
     ("?", "On an empty composer, shows this list; /keys does too"),
     ("↑ / ↓", "Move between the composer's rows, walk the input history at its first and last row "
-              "(earlier sessions' too, shared with hermes --tui), or move through an open completion menu"),
+              "(earlier sessions' too, shared with hermes --tui), or move through an open completion menu "
+              "(Ctrl+J / Ctrl+K and Ctrl+N / Ctrl+P move through the menu too)"),
     ("Ctrl+R", "Searches the input history; Ctrl+R again finds an older match, Enter puts it in the composer, "
                "Esc leaves the composer as it was"),
     ("Ctrl+X", "Opens the /sessions picker"),
     ("Ctrl+S", "Opens the bot board, as /bots does: this machine's Hermes profiles, their gateways and sessions, "
                "read-only"),
     ("Ctrl+P", "Folds the plan above the composer to its header and the item it is on, or expands it again, while "
-               "a turn runs or between turns; the header says which on its right"),
+               "a turn runs or between turns; the header says which on its right; on an open menu, Ctrl+P and Ctrl+N "
+               "move the menu instead"),
     ("↑", "On an empty composer with prompts queued, takes them back into the composer to edit; a queued shell line comes back on its own"),
     ("↓", "On an empty composer while the agent view under the info line shows subagents, gives its rows the keys "
           "as the agent list; in a DAG run, to its folding tree"),
@@ -50,7 +54,7 @@ SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("Backspace / Delete", "Delete a character, or a paste chip or an [Image #N] token whole; deleting a token "
                            "removes its image"),
     ("Ctrl+W, Alt+Backspace, Ctrl+Backspace", "Deletes the word before the caret (Ctrl+Backspace where the terminal reports it apart from Backspace)"),
-    ("Ctrl+U / Ctrl+K", "Delete to the start or the end of the line"),
+    ("Ctrl+U / Ctrl+K", "Delete to the start or the end of the line; with a list or menu focused, Ctrl+K moves up instead"),
     ("Ctrl+_ / Ctrl+Y", "Undo or redo an edit in the composer (Ctrl+_ is what Ctrl+- and Ctrl+/ send on most terminals); "
                         "a run of typed characters is one edit"),
     ("Esc", "Closes the / or @ menu; on an empty composer, interrupts a running turn "
@@ -61,10 +65,26 @@ SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("Esc Esc", "With text, clears it and keeps it in this session's history; on an empty composer between turns, "
                 "lists your prompts to rewind to (/rewind does too)"),
     ("Esc (vim mode)", "With display.vim_mode on in Hermes' config, the composer starts in INSERT and Esc goes to "
-                       "NORMAL and does nothing else; in NORMAL, h l 0 ^ $ w b e j k gg G move, i a I A o O insert, "
-                       "x X dd D C cc S s r, d c y with a motion, p P, u and Ctrl+R edit, a count repeats, and Esc "
+                       "NORMAL and does nothing else; in NORMAL, h l 0 ^ $ w b e j k gg G move, f F t T and a character "
+                       "find on the line and ; , repeat the find, i a I A o O insert, x X dd D C cc S s r, d c y "
+                       "with a motion, iw aw, a quote object (i or a with double quote, single quote or backtick; "
+                       "inner count 1 selects inside, count 2 or more includes the quotes, around includes quotes and "
+                       "adjacent blanks without extra pairs; quote objects never cross a logical line; empty inner y keeps "
+                       "the register and moves inside, d keeps register and caret, and c enters INSERT inside), or a bracket "
+                       "object (i or a with (, ), [, ], {, }; closing aliases identical; inner and around count selects enclosing ancestor; "
+                       "empty inner y keeps register and moves to interior, d keeps register and caret, and c enters INSERT at interior), p P, u and "
+                       "Ctrl+R edit, a motion or edit count scales or repeats, and Esc "
                        "does what it does without vim mode, except that during a turn it takes two to interrupt. "
-                       "The info line says INSERT or NORMAL"),
+                       "In NORMAL, Space is the leader: Space s opens sessions, Space b opens bots, Space p folds the "
+                       "plan, Space r or Space / searches history, Space m cycles the input mode, and Space t steps "
+                       "reasoning effort. Space Enter submits or steers typed text, or sends the oldest eligible queued "
+                       "prompt now on an empty composer; Space c interrupts a running turn, else clears the draft into "
+                       "session history. Esc or an unmapped key cancels the leader; Ctrl+C, Ctrl+O, Ctrl+L and Ctrl+Z "
+                       "cancel it and do what they always do. "
+                       "A picker taking input also cancels pending leader and Vim commands; a session picker waiting "
+                       "while you type leaves typing, leader shortcuts and Enter with the composer until ↑, ↓, Esc or "
+                       "Ctrl+C takes the picker. "
+                       "The info line says INSERT or NORMAL, or NORMAL · SPC while the leader is armed"),
     ("Ctrl+V", "Attaches the clipboard image as an [Image #N] token at the caret"),
     ("Ctrl+O", "Opens the whole transcript with every detail (thinking, tool output, whole diffs) at its end, or, "
                "while Hermes asks something, the whole question (it answers nothing); q leaves it"),

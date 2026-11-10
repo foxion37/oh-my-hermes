@@ -62,8 +62,8 @@ Bad example:
 
 ## Workflow Lane
 
-- Current lane: **Coding handoff** (`idea-to-deploy`, `llm-app-dev`, `cto-loop`, `deploy-and-monitor`, `code-review`, `build-failure-triage`, `verification-gate`, `security-safety-review`, `+28 more`) - coding owners, handoffs, review, CI, and merge evidence.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Coding handoff** - coding owners, handoffs, review, CI, and merge evidence.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -87,7 +87,10 @@ Quality bar:
 - When the change touches storage, load `references/schema-migration.md` and order the migration as expand, backfill, switch, contract, with the rollback point named per step.
 - Hold the `api` product-family expectations — authentication boundary, contract error paths, response consistency — as the standing bar for every prepared endpoint.
 - When an existing contract changes, name who consumes it before designing the change: each identified consumer with what breaks for it, then the compatibility window, migration path, and sunset date — the skill that owns a surface owns its evolution. Load `references/consumer-impact.md` for the enumeration sources and the window rules.
+- Name the guard on every write two requests can reach at once — a unique constraint, a stored idempotency key, a lost-update guard — and send side effects only after commit; the pagination-cursor, integrity, timeout, and cache rules are in sections 4 to 6 of the service-contract reference.
+- When the surface receives webhooks, consumes a queue, or sizes a connection pool, load `references/inbound-and-async.md`: verify a webhook over its raw body before parsing, and treat every queued message as one that can arrive more than once.
 - Name the per-stack reference the executor must read first; the stack is a routing input, not a detail discovered mid-implementation.
+- When the handoff asks for tests, load `references/contract-tests.md` and derive the test plan in backend_implementation_handoff/v1 from the contract: one negative test per auth_boundary_map/v1 row, one per error_path_table/v1 row, stand-ins chosen by dependency category with the same database engine, and migrations run on populated data.
 - Keep implementation, migration application, integration runs, load testing, and deployment as observed-only evidence.
 
 Handoff policy:
@@ -117,7 +120,7 @@ Expected outputs:
 
 Artifact expectations:
 
-- backend_service_contract/v1 names each endpoint or job, its caller class, request and response shapes, and its idempotency and pagination rules
+- backend_service_contract/v1 names each endpoint or job, its caller class, request and response shapes, its idempotency and pagination rules, and its expected rate, latency target, and payload bound (or `unknown`)
 - auth_boundary_map/v1 states where an untrusted caller becomes a trusted one, and which check runs on each path
 - error_path_table/v1 pairs every failure mode with its status/code, body shape, retryability, and log/redaction rule
 - response_shape_contract/v1 keeps success and error envelopes consistent across the surface instead of per-endpoint improvisation
@@ -130,6 +133,7 @@ Safety rules:
 - Do not claim implementation, a running service, an applied migration, a passing integration suite, or a deployment from a prepared backend contract.
 - Require the auth boundary before endpoint work: an endpoint whose caller trust level is unnamed is not ready for handoff.
 - Require the error-path table before the happy path is called complete; an unlisted failure mode is a gap, not a default.
+- Treat an inbound webhook handler that does not verify the signature over the raw body before parsing as a blocker, not a follow-up.
 - Treat a destructive or non-reversible migration step as a blocker until an explicit rollback point and backfill order exist.
 - Report an unenumerable consumer set as `consumers_not_enumerable` with what was searched; consumers outside the repository are unknowable from it, and an empty list is a claim that nothing breaks.
 - Never place secrets, tokens, or connection strings in the contract, examples, or handoff text.
@@ -147,7 +151,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

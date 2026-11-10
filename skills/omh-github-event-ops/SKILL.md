@@ -10,7 +10,7 @@ metadata:
     phase: event-routing
     role: operator
     quality_tier: workflow-surface-gated
-    related_skills: [omh-github-issue-intake, omh-build-failure-triage, omh-security-event-response, omh-refactor-plan, github]
+    related_skills: [omh-github-issue-intake, omh-build-failure-triage, omh-security-event-response, omh-refactor-plan, omh-verification-gate, github]
 ---
 
 # Github Event Ops
@@ -26,7 +26,7 @@ This is a Hermes-native `github-event-ops` workflow skill.
 - One issue to file from a bug report or an idea, with no incoming event to route; use `omh-github-issue-intake`.
 - A failing build log to diagnose, with no event routing left to decide; use `omh-build-failure-triage`.
 - The event is a security advisory, a CVE in a dependency, or a leaked credential; use `omh-security-event-response`, which orders containment and closes only on an observed rotation or fix.
-- The PR is a dependabot or renovate version bump with no advisory; use `omh-refactor-plan`, which decides whether it is safe to merge from the breaking changes against this repository's call sites.
+- The PR is a dependabot or renovate version bump with no advisory. A major or breaking bump goes to `omh-refactor-plan`, which decides whether it is safe to merge from the breaking changes against this repository's call sites; a patch or minor bump with its required checks green takes the review path, with `omh-verification-gate` deciding.
 - The user wants a GitHub operation carried out with the gh CLI - open or label an issue, open or merge a PR, leave review comments, manage a repository - rather than an incoming event routed to a handoff card; load Hermes' bundled `github` skill instead of this one.
 
 ## Examples
@@ -45,9 +45,9 @@ Bad example:
 
 ## Completion Checklist
 
-- Confirm the workflow target, evidence boundary, and stop condition are named.
-- Report which outputs are prepared, observed, blocked, or missing.
-- Name the smallest next verification or handoff instead of claiming completion from narration.
+- The state was re-read from the repository, and for a pull-request or check event its head sha is recorded beside the payload's.
+- The chosen path (review, triage, or fix hand-off) is named with the event fields that decided it.
+- Any label, comment, or rerun is listed as prepared, or as observed with its read-back.
 
 ## Recovery Notes
 
@@ -59,8 +59,8 @@ Bad example:
 
 ## Workflow Lane
 
-- Current lane: **Automation and status** (`achievements`, `workspace-audit`, `production-audit`, `live-incident-response`, `automation-blueprint`, `github-event-ops`, `github-issue-intake`, `buzz`, `+40 more`) - schedules, status, health, and ops review.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Automation and status** - schedules, status, health, and ops review.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -82,6 +82,7 @@ Quality bar:
 - Name the user-facing workflow objective, required context, next action, and stop condition.
 - Separate prepared guidance from observed platform, runtime, connector, file, memory, or delivery evidence.
 - Expose missing tools, credentials, targets, or observations as user-visible gaps.
+- Choose the path from the event, after the re-read: `pull_request` opened or synchronize -> review once required checks settle; failed `check_run` or `workflow_run` -> fix hand-off through `omh-build-failure-triage`; `issues` opened -> triage; a comment that asks for an action -> read the author's association first and ignore it when the author may not command. Re-read with `gh pr view <n> --json state,isDraft,reviewDecision,statusCheckRollup,headRefOid,labels` and `gh run view <id> --log-failed`; for a pull-request or check event, when `headRefOid` differs from the payload sha the event is stale: drop it. For `issues` and comment events there is no head sha: re-read with `gh issue view <n> --json state,labels,assignees,comments`. Any event type not listed here (`push`, `pull_request` closed or labeled, `release`) is not routed from memory: say it has no path in this skill and ask what the user wants decided.
 
 Handoff policy:
 
@@ -89,10 +90,9 @@ Keep this as Hermes-facing orchestration guidance first. Prepare executor, conne
 
 Required inputs:
 
-- user request
-- target context
-- delivery or status expectation
-- known missing evidence
+- the event type and action, repository, and PR or issue number
+- for a pull-request or check event, the head sha the payload names
+- the route or channel it arrived on, and what the user wants decided (review, triage, or fix hand-off)
 
 Expected outputs:
 
@@ -122,7 +122,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

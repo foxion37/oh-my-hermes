@@ -27,12 +27,13 @@ This is an OMH `show-reel` workflow skill, projected for Agent Skills hosts (Cla
 - For a product, brand or work film, compare at least 3 genuinely distinct concept candidates before selection; record the rubric, winner, rejected alternatives, and per-segment art direction. Read `references/craft-workflow.md` (the full upstream production method), `toolkit/README.md` under the loaded skill directory with a file reader, then `references/renderer-adapter.md` before choosing tools; a missing renderer means HOLD on a requested video, not a completed delivery.
 - If the reel is captured from a game or simulation instead of authored from static assets, read `references/game-capture.md` before capture and timeline authoring: run the simulate → capture → timeline.json → finish edit pipeline with `timeline.json` as the single source of truth for events, SFX cues and titles, pin and record the source game data version/build, map every gameplay event that needs SFX to a cue in timeline.json (an unmapped event is HOLD), apply the shorts defaults (1080x1920, black letterbox bars, centered white title, fade-in, tuned BGM start offset) only as brief-overridable defaults, and record voice provenance (source clip URL, sha256, excerpt range) for any real voice — never synthesizing an impersonation of a real voice actor or person and labeling timbre-alike or synthetic voice methods honestly in credits, with performer/IP permissions handled in the existing assets-and-rights flow.
 - If the selected concept is kinetic typography for a hype launch or teaser, read `references/kinetic-type.md` before beat-sheet and scene authoring; this opt-in lane never applies to explainers or evidence films.
+- If the selected concept is a 60-120 s launch film of a product the team can run and capture, read `references/launch-film.md` before the act sheet and scene authoring; a promo of 15 s or less keeps the one-scene rule.
 
 ## Do Not Use When
 
 - Only a static infographic or summary card is needed; use `omh-image-cards`.
 - The request is a website, landing page or interactive UI build, or an animation inside an app's own UI (a button, modal, page transition or loading state); use `omh-frontend`.
-- Summarizing, transcribing, captioning or trimming a recording that already exists; use `omh-media-input`.
+- Summarizing or transcribing a recording that already exists; use `omh-media-input`. Trimming, converting or burning in captions is plain ffmpeg through `omh-terminal`.
 - The output is a deck, PDF, spreadsheet or office document; use `omh-materials-package`.
 - Only a premium layout quality assessment is wanted; use `omh-design-quality-gate`.
 - The user already has rendered frames and needs a visual verdict, not new production; use `omh-visual-qa`.
@@ -119,6 +120,7 @@ Safety rules:
 - No automatic network/model/API calls, subprocess execution, dependency installation, font downloads, account discovery, voice cloning or paid defaults inside core; every chosen external action needs scope and authority.
 - A renderer unavailable, timeout, pageerror, missing font or partial export is HOLD or failed, never successful delivery. Never invent a tool receipt, translation, listening review or product capture.
 - Use user/official/rights-cleared assets first; generated visuals carry generation provenance and concept labels. Publish/spend/voice cloning requires separate explicit consent and exact-target approval.
+- A paid call billed to the user's own subscription credits or plan usage (`eleven.py` and `narrate.py` narration, voice, STT, SFX or music; every codex image run, `codex_imagegen_batch.sh` and `codex_ref_image.sh` alike; every `codex exec` text run, the script review and concept candidates, with its spend-only cap set in calls) goes through `omh-spend-gate` first: its card names the exact target (the lines, voice and model, or the job and its length) with the expected credits read from the provider's own price for that model, `references/craft-brief.md`'s estimates serving only as a rough guide, or says the cost is unknown so the gate's spend-only cap applies; the person's typed yes to that card is the exact-target spend approval for that run only.
 
 Procedure: load `references/procedure.md`.
 

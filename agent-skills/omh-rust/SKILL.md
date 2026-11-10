@@ -45,7 +45,7 @@ Bad example:
 - The escalation verdict is stated with the trigger that decided it.
 - The ownership shape names owners, borrows across boundaries, and every deliberate clone.
 - The error type, its conversion boundary, and every surviving `unwrap`/`expect`/`panic!` are named.
-- The gate list names the exact commands the executor must run and pass.
+- The gate list names the exact commands the executor must run and pass, covering every target, the feature extremes, doc tests, and the declared MSRV.
 - An escalated change carries the Miri, sanitizer, and concurrency-testing requirements as blocking items.
 - Compiler, clippy, test, Miri, sanitizer, and loom results stay observed-only.
 
@@ -72,7 +72,7 @@ Reasoning demand: `standard`
 Quality bar:
 
 - Run the escalation check before anything else and state the verdict; a change whose `unsafe`/FFI status is unknown is escalated by default.
-- Load `references/rust-discipline.md` for the ownership, error, and API rules, and name the gate commands from it rather than assuming `cargo build` is the whole bar.
+- Load `references/rust-discipline.md` for the ownership, error, API, binary-interface, and dependency rules, and name the gate commands from it rather than assuming `cargo build` is the whole bar.
 - When the escalation triggers, load `references/ub-escalation.md` and carry its Miri, sanitizer, and loom-style concurrency requirements into the handoff as blocking items.
 - Name the ownership decision behind every clone, `Arc`, interior-mutability wrapper, and lifetime annotation the change introduces.
 - Name the error type and its conversion boundary; a surviving `unwrap` needs a written reason, not silence.
@@ -110,7 +110,7 @@ Artifact expectations:
 Safety rules:
 
 - Do not claim compilation, clippy cleanliness, passing tests, a Miri run, a sanitizer run, or a loom run from a prepared Rust contract.
-- The UB escalation is deterministic, not a judgment call: if the change touches `unsafe`, `*mut`/`*const`, FFI or `extern`, `MaybeUninit`, `unsafe impl Send`/`Sync`, `transmute`, or a hand-written lock-free primitive, escalate.
+- The UB escalation is deterministic, not a judgment call: if the change touches `unsafe`, `*mut`/`*const`, FFI or `extern`, `MaybeUninit`, `unsafe impl Send`/`Sync`, `transmute`, a hand-written lock-free primitive, or non-test code in a module whose existing `unsafe` depends on it (fields, constructors, `Drop`, visibility), escalate.
 - When escalated, a change is not ready for handoff until the UB checklist names the Miri, sanitizer, and concurrency-testing requirement for it.
 - Never present `unsafe` as safe because it compiles: the compiler does not check the invariant an `unsafe` block asserts.
 - Do not silence a borrow-checker error with a clone, `Rc<RefCell<_>>`, or `unsafe` without naming the ownership decision that made it necessary.

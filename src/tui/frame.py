@@ -161,8 +161,10 @@ def build_frame(
             glow, lambda offset, length: aura_style(base, glint, offset, length, aura),
         )
         if placeholder and not composer.text and input_lines:
-            input_lines[0] = truncate_line((*input_lines[0], Span(placeholder, theme.hint)), cols)
-        composer_lines = input_lines
+            input_lines[0] = truncate_line((*input_lines[0], Span(placeholder, replace(theme.hint, gutter=True))), cols)
+        # The mark (or the indent under it) frames what you typed: a drag on the main screen copies only the text.
+        composer_lines = [(replace(line[0], style=replace(line[0].style, gutter=True)), *line[1:]) if line else line
+                          for line in input_lines]
     def fit(tail: Sequence[Line]) -> Budget:
         return allocate(
             rows,
@@ -183,6 +185,18 @@ def build_frame(
         )
 
     budget = fit(tail)
+    # A tail too tall gives up the second row of its runs of blank rows (the two between two calls, `CALL_GAP_ROWS`),
+    # the oldest first and only as many as it is too tall by, so the wider gap never costs a live row (#2342) and the
+    # rows it frees never turn into pad rows over the working row (#2309); the newest gaps stay wide. Only with every
+    # run down to one row is the tail cut. Scrollback has both rows either way.
+    if budget.tail < len(tail):
+        need = len(tail) - budget.tail
+        live = len(tail) - tail_floor
+        doubled = [index for index in range(1, live) if not tail[index] and not tail[index - 1]][:need]
+        if doubled:
+            dropped = set(doubled)
+            tail = [row for index, row in enumerate(tail) if index not in dropped]
+            budget = fit(tail)
     spacer = len(tail) - tail_floor - 1  # the blank row `tail_spacer` says stands right above the working rows
     # A tail cut short keeps its spacer and loses its oldest live row instead (owner, 2026-10-30: the working row
     # read glued to the last block), so long as `SPACER_LIVE_ROWS` live rows still show above it; on a terminal too
@@ -195,6 +209,8 @@ def build_frame(
     if glow and not composer_blank:
         rule = aura_rule(cols, base, glint, aura) if aura_moves(theme) else (
             Span(AURA_RULE * cols, replace(theme.rule, bold=True)),)
+    # The composer's rules frame it and are no text: never highlighted, never copied by a drag (`style.gutter`).
+    rule = tuple(Span(span.text, replace(span.style, gutter=True)) for span in rule)
     lines = compose(
         budget,
         sticky=sticky,
@@ -221,13 +237,14 @@ def build_frame(
     )
 
 
-def badge_forms(theme: Theme, accent: Style, native: Line, name: Style) -> tuple[Line, ...]:
-    """`[⚚ OMH Native]` and its shorter forms, longest first, for the left end of the info line: `[⚚ OMH]`, then
-    the caduceus alone. `accent` paints the caduceus, `name` the `OMH`, and `native` is `Native` in the launch
-    look's colours."""
+def badge_forms(theme: Theme, accent: Style, native: Line, name: Style, version: str) -> tuple[Line, ...]:
+    """`[⚚ OMH Native v4.0.4]` and its shorter forms, longest first, for the left end of the info line: without the
+    version, `[⚚ OMH]`, then the caduceus alone. `accent` paints the caduceus, `name` the `OMH`, and `native` is
+    `Native` in the launch look's colours; the version (owner, 2026-11-01: inside the brackets) is faint."""
+    head = (Span("[", theme.dim), Span("⚚", accent), Span(" "), Span("OMH", name), Span(" "), *native)
     return (
-        (Span("[", theme.dim), Span("⚚", accent), Span(" "), Span("OMH", name), Span(" "), *native,
-         Span("]", theme.dim)),
+        (*head, Span(f" v{version}", theme.faint), Span("]", theme.dim)),
+        (*head, Span("]", theme.dim)),
         (Span("[", theme.dim), Span("⚚", accent), Span(" "), Span("OMH", name), Span("]", theme.dim)),
         (Span("⚚", accent),),
     )
@@ -260,8 +277,8 @@ def _browsing_rows(count: int, cols: int, theme: Theme) -> list[Line]:
 
 
 def rule_line(width: int, theme: Theme = DEFAULT_THEME) -> Line:
-    """One of the composer's rules: `RULE` across `width`, in the rule colour."""
-    return (Span(RULE * max(width, 0), theme.rule),)
+    """One of the composer's rules: `RULE` across `width`, in the rule colour, a gutter (never copied)."""
+    return (Span(RULE * max(width, 0), replace(theme.rule, gutter=True)),)
 
 
 def sticky_line(prompt_text: str, width: int, theme: Theme = DEFAULT_THEME, known: frozenset[str] = frozenset()) -> Line:

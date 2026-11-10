@@ -7,6 +7,7 @@ import re
 
 from ..plugin_bundle.omh.data_share_cues import DATA_SHARE_REVIEW_KOREAN_PHRASES, data_share_request_admitted
 from ..coding.pi_family_interop import PI_DISTRIBUTION_HOST, RUNTIME_SHORT_NAME, RUNTIME_USER_PHRASE, SCORING_ONLY_TRIGGERS
+from ..plugin_bundle.omh.korean_request import SOFTENERS, korean_request, without_particle
 from ..plugin_bundle.omh.request_lead import after_courtesy
 from ..plugin_bundle.omh.spend_signals import SPEND_GATE_KOREAN_PHRASES, spend_request_clause
 from ..skills.catalog import SkillDefinition, builtin_definitions, routable_definitions
@@ -36,6 +37,7 @@ from .trigger_language_packs import (
     merged_trigger_phrases,
     shipped_trigger_language_packs,
 )
+from .model_compression_cues import names_a_model_by_parameter_count
 from .path_signal import PATH_GLOB_SCORE, matching_path_glob, path_mentions
 from .query import RoutingQuery
 from ..plugin_bundle.omh.hermes_session_commands import LOOP_TIMER_NONE
@@ -63,6 +65,8 @@ from .policy import (
     jit_learn_guard_applies,
     llm_wiki_request,
     media_input_operator_guard_applies,
+    MODEL_COMPRESSION_ANCHORS,
+    MODEL_COMPRESSION_SHARED_PHRASES,
     ops_observability_external_blocked,
     ops_observability_generic_metrics_blocked,
 )
@@ -215,6 +219,25 @@ _GENERIC_TRIGGER_TOKENS = frozenset(
 _RISKY_REFACTOR_GUARD_ID = "risky_refactor_before_cleanup"
 _RISKY_REFACTOR_FOLLOWUP_ONLY_SKILLS = frozenset({"ai-slop-cleaner"})
 _RISKY_REFACTOR_FOLLOWUP_SCORE_CAP = 7
+# The architecture-deepening phrases name `tech-debt-audit` in a clarifying
+# question but never dispatch it on their own (#2501 review). Each phrase
+# holds the very words the skill's metadata credit reads ("architecture",
+# "codebase", "repo", "deepening"), so a sentence that only quotes one -- a
+# job post, a README line, a contract -- reached the dispatch bar from the
+# phrase alone. Without evidence outside these phrases (another trigger, the
+# name, a direct or path match) the score stops below that bar.
+_TECH_DEBT_AUDIT_CLARIFY_ONLY_SCORE_CAP = 7
+_TECH_DEBT_AUDIT_CLARIFY_ONLY_TRIGGERS = frozenset(
+    f"trigger:{normalized_phrase(phrase)}"
+    for phrase in (
+        "improve the codebase architecture",
+        "improve the architecture of this repo",
+        "deepening opportunities in this codebase",
+        "shallow modules in this codebase",
+        "코드베이스 아키텍처 개선해줘",
+        "코드 아키텍처 개선해줘",
+    )
+)
 _RISKY_REFACTOR_FOLLOWUP_MATCHED = "guard:risky_refactor_followup_after_plan"
 _RISKY_REFACTOR_FOLLOWUP_WHY = (
     "Follow-up only: use cleanup after a reviewed plan locks scope, risks, and verification."
@@ -466,6 +489,86 @@ _MODEL_FINETUNING_EXPLICIT_PHRASES = tuple(
         "dpo or sft",
     )
 )
+
+# `model-compression` holds back every everyday token its phrases are built
+# from. Listed are the phrases that name making a model smaller by changing its
+# weights: a method phrase, a method verb on a model family, a quantization
+# tool. A bare "compress", "quantize", "prune" or "distill" is not: people
+# compress a video, quantize a drum track, prune a hedge and distill whisky. A
+# method verb on "the model" is listed too; it reaches scoring only beside a
+# word of model weights or on its own (`EVERYDAY_SENSE_PHRASES`), because a 3D
+# asset or a business model is compressed and distilled as well.
+_MODEL_COMPRESSION_EXPLICIT_PHRASES = tuple(
+    normalized_phrase(phrase)
+    for phrase in (
+        "model-compression",
+        *MODEL_COMPRESSION_SHARED_PHRASES,
+        *(
+            f"{verb} {family}"
+            for verb in ("quantize", "quantise", "quantizing", "prune", "pruning", "distill", "distil", "distilling")
+            for family in ("llama", "qwen", "deepseek", "gpt-oss")
+        ),
+        *(f"convert {target} to gguf" for target in ("it", "this model", "the model", "our model", "my model")),
+        "quantization-aware training",
+        "quantization aware training",
+        "model quantization",
+        "weight quantization",
+        "llm quantization",
+        "llm compression",
+        "int4 quantization",
+        "int8 quantization",
+        "fp8 quantization",
+        "bitsandbytes quantization",
+        "model pruning",
+        "2:4 sparsity",
+        "model distillation",
+        "smaller student model",
+        "gptq",
+        "awq",
+        "sparsegpt",
+        "llm-compressor",
+        "llmcompressor",
+        "llama-quantize",
+        "모델 양자화",
+        "모델을 양자화",
+        "모델 증류",
+        "모델을 증류",
+        "모델 프루닝",
+        "모델을 프루닝",
+        "모델 가지치기",
+        "양자화 인식 학습",
+    )
+)
+# Korean phrases a game asset, a team's know-how, a photo or distilled water
+# share ("3D 모델 경량화", "노하우를 지식 증류", "색상 양자화", "증류수"). They
+# are not pack phrases, because the Korean pack has no everyday-sense row to
+# withdraw them; each counts as this skill's request only beside a word of
+# model weights or a model named by its size
+# (`_MODEL_COMPRESSION_KOREAN_WEIGHT_WORDS`, `names_a_model_by_parameter_count`),
+# or beside the further words its row lists, all of which must be said. Without
+# that, it adds nothing. A word is matched with `phrase_is_spoken`, so a
+# particle after it still counts (`gguf로`, `가중치를`). A bit width or 양자화 is
+# not a weight word here: a game model is quantized to 8 bits for a retro look,
+# and a 3D mesh is compressed with quantized vertices.
+_MODEL_COMPRESSION_KOREAN_WEIGHT_WORDS = tuple(
+    normalized_phrase(word) for word in (*sorted(MODEL_COMPRESSION_ANCHORS), "가중치", "q4_k_m", "q5_k_m", "q8_0")
+)
+_MODEL_COMPRESSION_KOREAN_ANCHORED: dict[str, tuple[tuple[str, ...], ...]] = {
+    normalized_phrase(phrase): tuple(tuple(normalized_phrase(word) for word in words) for words in further)
+    for phrase, further in (
+        ("모델 압축", ()),
+        ("모델을 압축", ()),
+        ("모델 경량화", ()),
+        ("모델을 경량화", ()),
+        ("증류", ()),
+        ("양자화", ()),
+        # Know-how is distilled with no model in the sentence.
+        ("지식 증류", (("모델",),)),
+    )
+}
+# "distill this 70b into an 8b" names the models by their sizes; one size alone
+# is any billion, so it needs a second one or `model` after it.
+_MODEL_COMPRESSION_DISTILL_TOKENS = frozenset({"distill", "distil", "distilling", "distilled"})
 
 # `internal-audit` holds back every everyday token its phrases are built from.
 # Listed are the phrases that name testing or grading an internal control. A
@@ -1200,7 +1303,7 @@ _SKILL_POLICIES = {
         ),
         wrapper_guidance=(
             "Prepare native_fault_statement/v1, hypothesis_set/v1 with at least three hypotheses on distinct axes, "
-            "distinguishing_observation_plan/v1, and debugger_session_plan/v1 naming the DAP adapter, breakpoints, "
+            "distinguishing_observation_plan/v1, and debugger_session_plan/v1 naming the instrument, breakpoints, "
             "watchpoints, threads, frames, and values the executor reads at each stop."
         ),
     ),
@@ -1239,6 +1342,19 @@ _SKILL_POLICIES = {
             "Prepare finetune_decision/v1 first, returning do_not_finetune when prompting or retrieval closes the gap; "
             "training_method_choice/v1 from the data's shape; training_data_plan/v1 with a held-out split; "
             "baseline_comparison/v1 on the same eval; and checkpoint_promotion_gate/v1 with its margin and tolerance."
+        ),
+    ),
+    "model-compression": RecommendationPolicy(
+        next_action="prepare_compression_plan",
+        evidence_boundary=(
+            "A compression plan is not a quantized, pruned or distilled model, a measured size, or an eval score until "
+            "observed; OMH compresses nothing and runs no eval, and no smaller model is kept without the uncompressed "
+            "baseline measured on the same task eval."
+        ),
+        wrapper_guidance=(
+            "Prepare compression_target/v1 from the hardware, memory budget and runtime; compression_method_choice/v1 "
+            "with the cheapest method first; calibration_data_plan/v1 kept apart from the held-out eval; and "
+            "compression_quality_gate/v1 comparing baseline and compressed on the person's own task."
         ),
     ),
     "internal-audit": RecommendationPolicy(
@@ -1700,6 +1816,11 @@ _SKILL_POLICIES = {
         evidence_boundary="A prepared audit is not imported evidence review, completed evaluation or scientific reproduction. Missing conditions and human confirmation remain unknown.",
         wrapper_guidance="Select acc or acc_norm explicitly, import supplied local Harness results, preserve original and derived hashes, and audit normalized conditions without running a model.",
     ),
+    "systematic-review": RecommendationPolicy(
+        next_action="prepare_systematic_review",
+        evidence_boundary="A prepared screening plan is not reviewer answers, a merge, adjudication or a review team's decision. Agreement is not accuracy; same-model reviewers are not independent.",
+        wrapper_guidance="Agree and freeze the criteria and exclusion codes, prepare blind batches, give reviewers A and B only their own task files, merge, and report conflicts, pending records, agreement and the independence label.",
+    ),
     "paper-learning": RecommendationPolicy(
         next_action="prepare_paper_learning",
         evidence_boundary=(
@@ -2021,7 +2142,7 @@ _SKILL_POLICIES.update(
             ),
             wrapper_guidance=(
                 "Prepare connector_task_card/v1 with provider, target object or recipient, allowed action, "
-                "payload summary, auth boundary, confirmation gate, result manifest slots, and a stop condition "
+                "exact outbound payload, auth boundary, confirmation gate, result manifest slots, and a stop condition "
                 "before external app execution is claimed."
             ),
         ),
@@ -2866,6 +2987,11 @@ _SIBLING_POINTER_METADATA_TOKENS = {
 # phrases. Crediting them separately made unrelated sentences containing
 # `models` and `work` look like observed-work inventory requests.
 _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
+    # `write a handover guide`: the skill's closing handover. Each word is everyday alone.
+    "wiki": frozenset({"write", "handover", "guide"}),
+    # The audit phrases name the instrumentation review. Alone these words mean a school's
+    # instruments, a race car's sensors and contact tracing, and `audit` is code review's.
+    "agent-ops-review": frozenset({"instrumentation", "audit", "telemetry", "tracing"}),
     # Only complete domain phrases may score; their ordinary component words
     # must not turn unrelated market, customer or profile mentions into work.
     "market-research": frozenset({"market", "research", "sizing", "tam", "sam", "som", "bottom", "up", "size", "sensitivity", "customer", "evidence", "analysis", "jtbd", "matrix", "competitor", "pricing", "profiles", "competitive"}),
@@ -2878,6 +3004,9 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
     }),
     # Sheet/pixel/game/character words alone must not reach sprite processing.
     "sprite-forge": frozenset({"sprite", "sheet", "pixel", "art", "character", "game", "frames", "2d", "animation"}),
+    # Review, screening and criteria words alone must not reach literature
+    # screening: a systematic code review or applicant screening stays elsewhere.
+    "systematic-review": frozenset({"rapid", "review", "reviewer", "dual", "screening", "title", "abstract", "inclusion", "exclusion", "criteria"}),
     "geospatial-analysis": frozenset({"analysis", "overlay", "spatial", "intersection", "intersect", "layers", "compute", "overlap", "area"}),
     "biomedical-evidence": frozenset({"evidence", "reconciliation", "cross", "check", "variant", "matrix", "capture"}),
     "molecular-docking": frozenset({"molecular", "docking", "rigid", "receptor", "ligand", "poses"}),
@@ -3019,6 +3148,11 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
     # is untouched.
     "verification-gate": frozenset(
         {
+            # `run the release gate` and `release gate check` count whole: these words
+            # alone dispatched "run the release gate at the dam". Holding `gate` also
+            # makes bare `quality gate` ask instead of dispatching; its longer forms
+            # still dispatch.
+            "release", "run", "check", "gate",
             "artifact",
             "editing",
             "file",
@@ -3148,6 +3282,50 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
             "set",
             "update",
             "write",
+        }
+    ),
+    # `model-compression` is built from "compress", "quantize", "prune",
+    # "distill" and their nouns, from "model", "weight", "student", "smaller"
+    # and "structured", and from number formats a database or a GPU spec also
+    # names (int8, fp8, 4-bit) -- a compressed video, a quantized drum track, a
+    # pruned hedge, distilled whisky, a teacher-student ratio, an earthquake's
+    # magnitude and an int8 column all say them. Only the complete phrases score; the four tool
+    # names that mean nothing else stay creditable: `gptq`, `awq`, `sparsegpt`,
+    # `bitsandbytes`.
+    "model-compression": frozenset(
+        {
+            "4-bit",
+            "8-bit",
+            "aware",
+            "bit",
+            "compress",
+            "compression",
+            "distill",
+            "distillation",
+            "fp8",
+            "int8",
+            "into",
+            "knowledge",
+            "magnitude",
+            "make",
+            "model",
+            "our",
+            "post",
+            "post-training",
+            "prune",
+            "pruning",
+            "quantization",
+            "quantization-aware",
+            "quantize",
+            "quantized",
+            "smaller",
+            "structured",
+            "student",
+            "the",
+            "this",
+            "training",
+            "unstructured",
+            "weight",
         }
     ),
     # `model-finetuning` is built from "fine", "tune", "tuning", "model",
@@ -3463,6 +3641,9 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
     # (the skill name), `cve`, `gpl` and `agpl`.
     "security-event-response": frozenset(
         {
+            # The words of the incident phrases: each is everyday alone, so only the
+            # whole phrase says something is happening.
+            "account", "takeover", "suspected", "unauthorized", "access", "exfiltrating", "customer", "data",
             "advisory",
             "alert",
             "analysis",
@@ -3795,8 +3976,39 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
     # they claimed finance chat and every review request. Complete phrases
     # ("tech debt", "debt ledger", ...) carry the intent; no single token is
     # unambiguous alone.
+    # The architecture-deepening phrases are held the same way, and each one
+    # names the code it is about ("... this codebase", "... this repo"); they
+    # are clarify-only too (`_TECH_DEBT_AUDIT_CLARIFY_ONLY_TRIGGERS`):
+    # "architecture" is ML models, cloud and network infra, buildings, org
+    # charts and system design; "improve" is everyday;
+    # "shallow modules" and "deepening opportunities" are courses and client
+    # accounts. Without the code noun inside the phrase nothing scores, and
+    # the message routes exactly as it did before these phrases existed.
     "tech-debt-audit": frozenset(
-        {"audit", "code", "debt", "is", "ledger", "our", "report", "tech", "technical", "where"}
+        {
+            "architecture",
+            "audit",
+            "code",
+            "codebase",
+            "debt",
+            "deepening",
+            "improve",
+            "in",
+            "is",
+            "ledger",
+            "modules",
+            "of",
+            "opportunities",
+            "our",
+            "repo",
+            "report",
+            "shallow",
+            "tech",
+            "technical",
+            "the",
+            "this",
+            "where",
+        }
     ),
     # `award-bar-score` names its work with words every other lane owns --
     # "design" is the whole materials lane, "review" is code-review, "site",
@@ -3920,6 +4132,8 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
     # trial phrasings never touched.
     "external-connector-readiness": frozenset(
         {
+            # Its video phrases count whole: the words alone ask for the video, not a connector.
+            "video", "generation", "provider", "text",
             "benchmark",
             "delete",
             "disable",
@@ -4134,6 +4348,7 @@ _WHOLE_PHRASE_ONLY_TRIGGER_TOKENS = {
     # logging", and turned "how much does it cost" from a direct answer into
     # a clarify. Only the complete phrases score.
     "websearch-setup": frozenset({"backend", "costs", "free", "much", "tier", "too"}),
+    "rules-distill": frozenset({"distill"}),
 }
 
 
@@ -4449,6 +4664,7 @@ def _one_word_self_name(definition: SkillDefinition) -> str:
 # an external product name the repo does not ship, yet a user who types it
 # still means this skill.
 _SCORING_ONLY_TRIGGERS = SCORING_ONLY_TRIGGERS
+_OPS_REVIEW_KOREAN_PAIR = tuple(normalized_phrase(word) for word in ("리스크", "블로커"))
 
 
 def _prepare_definition(definition: SkillDefinition) -> _PreparedDefinition:
@@ -4698,6 +4914,15 @@ def _score_definition(
     if definition.name == "llm-app-dev" and _llm_app_dev_explicit_match(normalized_query):
         score += 30
         matched.add("direct:llm_app_dev")
+    # `리스크` and `블로커` are held back one by one, so either word alone names
+    # nothing; said together, in any order or joiner, they are this review's pair.
+    # Each must sit inside one token (`리스크블로커`, `주요리스크와` included): a cue
+    # match on the spaceless copy would find `리스크` across `갤러리 스크린샷`.
+    if definition.name == "ops-review" and all(
+        any(word in token for token in query_tokens) for word in _OPS_REVIEW_KOREAN_PAIR
+    ):
+        score += 12
+        matched.add("direct:ops_review_risks_and_blockers")
     if definition.name == "todo-checklist" and _todo_checklist_explicit_match(normalized_query):
         score += 30
         matched.add("direct:todo_checklist")
@@ -4713,6 +4938,9 @@ def _score_definition(
     if definition.name == "model-finetuning" and _model_finetuning_explicit_match(normalized_query):
         score += 30
         matched.add("direct:model_finetuning")
+    if definition.name == "model-compression" and _model_compression_explicit_match(normalized_query, query_tokens):
+        score += 30
+        matched.add("direct:model_compression")
     if definition.name == "data-pipelines" and _data_pipelines_explicit_match(normalized_query):
         score += 30
         matched.add("direct:data_pipelines")
@@ -4763,6 +4991,11 @@ def _score_definition(
     if definition.name == "failure-signal-audit" and _failure_signal_audit_explicit_match(normalized_query):
         score += 34
         matched.add("direct:failure_signal_audit")
+    # A review phrase OF a topic is the literature sense; one phrase's worth,
+    # so the bare `review` other skills credit no longer leads it.
+    if definition.name == "systematic-review" and _systematic_review_names_a_topic(normalized_query):
+        score += 6
+        matched.add("direct:literature_review_topic")
     if ecosystem_identity_connector_match:
         score += 36
         matched.add("direct:ecosystem_identity_connector")
@@ -4799,6 +5032,14 @@ def _score_definition(
         if glob and query_tokens & _tokens(" ".join(definition.triggers)):
             score += PATH_GLOB_SCORE
             matched.add(f"path:{glob}")
+
+    if (
+        definition.name == "tech-debt-audit"
+        and matched & _TECH_DEBT_AUDIT_CLARIFY_ONLY_TRIGGERS
+        and not {label for label in matched if not label.startswith("metadata:")}
+        - _TECH_DEBT_AUDIT_CLARIFY_ONLY_TRIGGERS
+    ):
+        score = min(score, _TECH_DEBT_AUDIT_CLARIFY_ONLY_SCORE_CAP)
 
     if score <= 0:
         return None
@@ -5598,6 +5839,28 @@ def _model_finetuning_explicit_match(normalized_query: str) -> bool:
     return any(_explicit_phrase_match(normalized_query, phrase) for phrase in _MODEL_FINETUNING_EXPLICIT_PHRASES)
 
 
+def _model_compression_explicit_match(normalized_query: str, query_tokens: set[str]) -> bool:
+    """A phrase that names compressing a model, a distill verb on models named by size, or a Korean anchored phrase.
+
+    The English shared phrases are in the explicit list: the everyday-sense
+    check withdrew the skill before this runs when one arrived unanchored.
+    """
+    if any(phrase_is_spoken(normalized_query, phrase) for phrase in _MODEL_COMPRESSION_EXPLICIT_PHRASES):
+        return True
+    sized_model = names_a_model_by_parameter_count(normalized_query)
+    if sized_model and query_tokens & _MODEL_COMPRESSION_DISTILL_TOKENS:
+        return True
+    weight_word = sized_model or any(
+        phrase_is_spoken(normalized_query, word) for word in _MODEL_COMPRESSION_KOREAN_WEIGHT_WORDS
+    )
+    for phrase, further in _MODEL_COMPRESSION_KOREAN_ANCHORED.items():
+        if not phrase_is_spoken(normalized_query, phrase):
+            continue
+        if weight_word or any(all(phrase_is_spoken(normalized_query, word) for word in words) for words in further):
+            return True
+    return False
+
+
 def _data_pipelines_explicit_match(normalized_query: str) -> bool:
     return any(_explicit_phrase_match(normalized_query, phrase) for phrase in _DATA_PIPELINES_EXPLICIT_PHRASES)
 
@@ -6032,10 +6295,35 @@ def _market_research_method_phrases() -> tuple[tuple[str, ...], ...]:
     return tuple(sorted(phrases, key=len, reverse=True))
 
 
+# A Korean request puts its verb last, so the lead rule below cannot read one. It
+# is admitted when the method phrase sits right before the requested verb, as whole
+# words: "치과 시장 규모 추정해줘" and "경쟁사 분석해줘" ask for the method. "시장 규모
+# 뜻 정리해줘" tidies a word, "광장시장 규모 계산해줘" is a place, and "시장 규모
+# 슬라이드 보내줘" has another verb. A verb outside the closed list stays out.
+_MARKET_RESEARCH_KOREAN_METHODS = (("시장", "규모"), ("시장규모",), ("경쟁사", "분석"), ("경쟁사분석",))
+_MARKET_RESEARCH_KOREAN_VERBS = frozenset({"정리", "분석", "조사", "추정", "계산", "산정"})
+
+
+def _market_research_korean_request(message: str) -> bool:
+    request = korean_request(message)
+    if request is None:
+        return False
+    before = tuple(
+        without_particle(word) for word in request.words[: request.predicate_index] if word not in SOFTENERS
+    )
+    said = (*before, request.predicate)
+    return any(
+        said[-len(method) :] == method or (request.predicate in _MARKET_RESEARCH_KOREAN_VERBS and before[-len(method) :] == method)
+        for method in _MARKET_RESEARCH_KOREAN_METHODS
+    )
+
+
 def _market_research_offers_itself(normalized_query: str, query_tokens: set[str]) -> bool:
     """Admit only a request that leads with a market method, not a method named in passing."""
     del query_tokens
     message = normalized_query.strip()
+    if _market_research_korean_request(message):
+        return True
     request = after_courtesy(message)
     opener = message[: len(message) - len(request)]
     if "?" in message and ("you" not in _MARKET_RESEARCH_WORD.findall(opener) or "?" in message.rstrip("?")):
@@ -6129,6 +6417,65 @@ def _repro_audit_offers_itself(normalized_query: str, query_tokens: set[str]) ->
     return not any(_REPRO_AUDIT_EXECUTION.fullmatch(word) for word in words)
 
 
+# `systematic-review` reads what its review phrase is a review OF. A literature
+# review names a topic: "a systematic review of statin trials", "a scoping
+# review of telehealth in rural clinics". A software review names something
+# the person owns or points at: "a systematic review of our error handling",
+# "a rapid review of the auth module". A topic carries no owner, pointer or
+# software word anywhere in its clause ("security risks in our app" is the
+# person's own app). A topic earns the skill one phrase's worth more, so the
+# bare `review` code-review credits no longer outranks the whole phrase; a
+# pointed-at software object withdraws the skill from the shortlist. A
+# literature word anywhere ("the migration literature") keeps the skill.
+_SYSTEMATIC_REVIEW_PHRASE = re.compile(r"\b(?:systematic(?: literature)?|scoping|rapid) review\b")
+_SYSTEMATIC_REVIEW_WORD = re.compile(r"[^\W_]+(?:-[^\W_]+)*")
+_SYSTEMATIC_REVIEW_TOPIC_LINKS = frozenset({"of", "on", "about"})
+_SYSTEMATIC_REVIEW_OWNED_OBJECT = frozenset({"the", "this", "that", "these", "those", "our", "my", "your", "their", "its", "all"})
+_SYSTEMATIC_REVIEW_SOFTWARE_WORDS = frozenset(
+    {
+        "code", "codebase", "repo", "repository", "pr", "prs", "diff", "branch", "commit", "commits", "module", "modules",
+        "microservice", "microservices", "api", "apis", "endpoint", "endpoints", "function", "functions", "migration",
+        "migrations", "schema", "auth", "handling", "bug", "bugs", "app", "apps", "service", "services", "stack",
+        "logging", "logs", "tests", "testing", "deployment", "deployments", "infrastructure", "database", "databases",
+        "frontend", "backend", "dependencies", "configuration", "monitoring", "observability", "exceptions", "errors",
+        "error",
+    }
+)
+_SYSTEMATIC_REVIEW_LITERATURE_WORDS = frozenset(
+    {"literature", "studies", "study", "trials", "trial", "papers", "articles", "abstracts", "records", "evidence"}
+)
+
+
+def _systematic_review_objects(normalized_query: str) -> list[list[str]]:
+    """The words after each `of`/`on`/`about` that follows a review phrase."""
+    objects: list[list[str]] = []
+    for match in _SYSTEMATIC_REVIEW_PHRASE.finditer(normalized_query):
+        rest = _SYSTEMATIC_REVIEW_WORD.findall(re.split(r"[.!?;](?:\s|$)", normalized_query[match.end():], maxsplit=1)[0])
+        if len(rest) >= 2 and rest[0] in _SYSTEMATIC_REVIEW_TOPIC_LINKS:
+            objects.append(rest[1:])
+    return objects
+
+
+def _systematic_review_offers_itself(normalized_query: str, query_tokens: set[str]) -> bool:
+    """Withdraw from a review of a pointed-at software object."""
+    del query_tokens
+    if _SYSTEMATIC_REVIEW_LITERATURE_WORDS & set(_SYSTEMATIC_REVIEW_WORD.findall(normalized_query)):
+        return True
+    return not any(
+        words[0] in _SYSTEMATIC_REVIEW_OWNED_OBJECT and _SYSTEMATIC_REVIEW_SOFTWARE_WORDS & set(words)
+        for words in _systematic_review_objects(normalized_query)
+    )
+
+
+def _systematic_review_names_a_topic(normalized_query: str) -> bool:
+    """A review phrase followed by a topic: nothing owned, pointed at or software in its clause."""
+    return any(
+        words[0] not in _SYSTEMATIC_REVIEW_OWNED_OBJECT
+        and not (_SYSTEMATIC_REVIEW_SOFTWARE_WORDS | _SYSTEMATIC_REVIEW_OWNED_OBJECT - {"the", "all"}) & set(words)
+        for words in _systematic_review_objects(normalized_query)
+    )
+
+
 @lru_cache(maxsize=1)
 def _spend_gate_trigger_phrases() -> tuple[str, ...]:
     definition = next(item for item in builtin_definitions() if item.name == "spend-gate")
@@ -6208,6 +6555,9 @@ _SKILL_OFFERS_ITSELF: dict[str, Callable[[str, set[str]], bool]] = {
     # HellaSwag record with a paper's report, every word from an allow list
     # (`_repro_audit_offers_itself`). No boost, no stand-down.
     "repro-audit": _repro_audit_offers_itself,
+    # `systematic-review`: not a review of a pointed-at software object
+    # (`_systematic_review_offers_itself`). No stand-down.
+    "systematic-review": _systematic_review_offers_itself,
 }
 # A skill whose admission reads where the data goes reads a stricter predicate
 # when the masker removed quoted, code, link or relayed text from the message

@@ -8,14 +8,45 @@ The order never changes: an observed reproduction, then competing hypotheses, th
 
 | Field | What it holds |
 | --- | --- |
-| Command | the exact command, request, or test id, with its inputs |
-| Observed | the output, value, or assertion as it came back |
+| Command | the exact command, request, or test id, with its inputs; a credential is named by its environment variable, never written inline |
+| Observed | the output, value, or assertion as it came back: the lines that carry the signal, each secret in them replaced by `<redacted>` |
 | Expected | the output that would have been correct, and where that expectation comes from |
+| Symptom match | the observed failure quoted beside the one the user reported; a different failure near the same code is a different bug, and the record stays not_observed for this one |
 | Hit rate | failures over runs, for example `4/20`; one sighting is a report, not a reproduction |
+| Loop cost | wall time per run; what was pinned, which is only what neither the user's report nor a hypothesis already written implicates (before `competing_hypotheses/v1` exists); for an intermittent fault, how the rate was raised |
+| Minimised | what left the reproduction and what stayed, each element that stayed because the symptom (or the rate) went with it |
 | Environment | interpreter, dependency versions, OS, parallelism, and anything the failing run had that the passing run did not |
 | State | observed or not_observed; nothing between |
 
 An intermittent fault is reproduced when its rate is measured, not when it happened once. Run it in a loop first (`for i in $(seq 50); do <cmd> || echo FAIL $i; done`) and record the rate before changing anything; the same loop is what proves the fix later.
+
+**Size N from the rate before the fix.** With a failure rate p, an ineffective fix still passes all N runs with probability (1 - p) to the power N: at p = 0.02 and N = 50 that is 36%, at p = 0.2 and N = 20 it is 1%. Choose N >= ln(0.05) / ln(1 - p), about 3 / p, record it beside the rate (4/20 before gives N >= 14), and run the fix at that N. When N is too costly, say the fix is unproven at that confidence.
+
+If a capture is too redacted to diagnose, record that and ask for a narrower one; never record it unredacted.
+
+**Make the loop cheap before trusting it.** A loop that takes minutes per run is the next thing to fix, ahead of any hypothesis: narrow what it runs, skip setup the fault does not need, and assert the reported symptom rather than "it did not crash". What to do about variation depends on the fault:
+
+- **Deterministic fault.** Pin what varies between runs and no standing hypothesis implicates -- a clock, a seed, a temp directory, the network -- so the verdict repeats.
+- **Intermittent fault.** The rate is the signal (section 3). Raise it -- more iterations, parallel runs, load, a narrower timing window -- rather than pin the variation away.
+- **A pin that turns the loop green** is an observation about the cause, not a cleaner loop: record it in section 2 against the hypothesis that names what was pinned.
+
+Record time per run and what was pinned or raised under Loop cost.
+
+**Then minimise.** An element of the reproduction -- an input, a caller, a config value, a data row, a step -- leaves it only when the loop rerun without it still shows the symptom; otherwise it goes back. For an intermittent fault, "still shows" means the same rate at the same N, never one red run. The Minimised field lists what left and what stayed. What stayed leaves section 2 fewer parts to suspect, and it is what `fix_handoff/v1` turns into the regression test (or, under `regression_seam: none_correct`, the verifying reproduction loop).
+
+### When no test reaches the fault
+
+Choose the loop by what the fault needs; any row that yields one command going red on the reported symptom will do.
+
+| The fault | Loop |
+| --- | --- |
+| shows through an interface the repository serves | a test at whichever seam reaches the path; a request script against a local server; the CLI on a fixture with its output diffed against a known-good copy; a headless browser script asserting on the page, console, or network |
+| needs an input the repository cannot recreate | the captured payload or event log, saved to disk and replayed through the path alone; or a throwaway harness calling the path directly, with fakes only where the process leaves the repository's control |
+| shows only for some inputs | a property or fuzz loop over generated inputs |
+| appeared between two versions or two configurations | a differential run diffing both outputs for one input; or a bisect harness, handed to `omh-git-workflow` as `bisect_plan/v1` |
+| can be triggered only by a person, on a device, a GUI, or a third-party console | numbered steps for the person, and named fields reported after every run -- failed or not, the message as shown, the time -- so each run returns the same fields; the record takes them as user-observed. This is an observation capture: nobody is asked to approve anything |
+
+If no row yields a loop, `reproduction_record/v1` stays not_observed and lists each loop attempted and what stopped it. The request to the user is then for one of: an environment where the fault reproduces, a redacted capture (a log, a trace, a timestamped recording), or permission for tagged temporary instrumentation. `competing_hypotheses/v1` waits for an observed record.
 
 ## 2. Hypotheses on distinct axes
 
@@ -31,6 +62,8 @@ Write at least three before choosing an observation. Three phrasings of one gues
 | Dependency behaviour | a library, service, or OS call behaves differently than documented | pin or stub it and compare |
 
 For each hypothesis write the claim, the observation that would refute it, and which other hypotheses the same observation also settles. Choose the next observation by cost first, then by how many hypotheses its result eliminates; record the eliminations as they happen.
+
+Every probe added to code -- a print, a log line, an assert, a counter -- carries one tag chosen for the session, such as `[DBG-7f3a]`. Before the fix is handed over, an observed search for that tag returns nothing, and every throwaway harness file is deleted or listed in the handoff. A probe left in the tree lands in the fix diff, where a reviewer has to tell it apart from the change.
 
 ## 3. Flaky tests
 
@@ -60,7 +93,7 @@ Before trusting any reading, confirm the process executed the source you are loo
 
 - A stale editable install or build directory serves an older copy of a module; a newly added file is then missing and the failure reads as a regression in whoever added it.
 - A cached bytecode file is validated by timestamp and size, so two edits of equal length in the same second can reuse the old compile.
-- A test that reads its own teardown output, or a lock that times out inside a best-effort swallow, leaves the same trace as the fault being hunted; put the discriminator in the assertion message.
+- A process started before the edit, a container image built from an older commit, or a `PYTHONPATH` or `NODE_PATH` that shadows the checkout serves old code: print the module's file path and version from inside the failing run.
 
 ## 6. After three failed fixes
 
@@ -87,5 +120,10 @@ After the third failed fix, stop fixing. Every fix was tested against a structur
 | A hypothesis is eliminated | the observed value that contradicts it, quoted |
 | The root cause is known | an observation that explains every part of the symptom, including its rate, and one that ruled out each rival |
 | The fix works | the reproduction loop fails before the change and passes at the same run count after it |
+| The tree is free of probes | an observed search for the session's probe tag that returns nothing |
 
 A symptom that stopped after an edit, with no mechanism, is an open fault with a changed schedule.
+
+## Attribution
+
+The symptom match, the loop-cost and minimised fields, the loop table, the probe tag, the redaction rule, and the person-run capture adapt ideas from Matt Pocock's `diagnosing-bugs` skill at `mattpocock/skills@49dd158d1076134a641b33efb035946536778336`, MIT License, Copyright 2026 Matt Pocock. OMH keeps them as record fields under its observed-evidence boundary and executes none of the loops itself.

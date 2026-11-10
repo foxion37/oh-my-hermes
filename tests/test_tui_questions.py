@@ -14,14 +14,14 @@ import json
 from pathlib import Path
 import unittest
 
-from _tui_lines import info_row_index, INFO_INSET, composer_text, line_text, without_badge
+from _tui_lines import badge_text, info_row_index, INFO_INSET, composer_text, line_text, without_badge
 from test_tui_choice_ui import armed, drawn, press
 from test_tui_app import FakePoller, ScriptedTerminal
 from test_tui_modes import RecordingClient, make_app, type_text
 from omh.tui import app as app_module
 from omh.tui import prompts
 from omh.tui.gateway import Event, Response, ServerRequest
-from omh.tui.keys import CHAR, DOWN, ENTER, ESCAPE, UP, Key
+from omh.tui.keys import CHAR, DOWN, ENTER, ESCAPE, UP, Key, Paste
 from omh.tui.layout import MIN_COLS, allocate
 from omh.tui.app import BELL, App
 from omh.tui.pager import ALT_SCREEN_OFF, HistoryPager
@@ -139,9 +139,91 @@ class MultiSelectAppTests(unittest.TestCase):
         armed(app)
         press(app, Key(CHAR, " "), Key(DOWN), Key(CHAR, " "))
         self.assertIn("▌ ❯ [x] 2. ham", drawn(app))
-        press(app, Key(ENTER))
+        press(app, Key(DOWN), Key(DOWN), Key(ENTER))  # past Type something. to Submit
         self.assertEqual(client.answers, [("srq-6", {"result": {"answers": {"q0": '["cheese","ham"]'}}})])
         self.assertEqual(app.composer.text, "my draft")
+
+    def test_no_single_press_sends_a_multi_select_question(self) -> None:
+        # The owner's report of 2026-11-06: one press on a tick-box question moved on. Each key a person picks a row
+        # with leaves the question open; only Enter on Submit sends (a click: `test_tui_main_mouse`).
+        toppings = {"qid": "q0", "question": "Which toppings?", "choices": ["cheese", "ham"], "multi_select": True}
+        for keys in ([Key(ENTER)], [Key(CHAR, "1")], [Key(CHAR, " ")], [Key(DOWN), Key(ENTER)], [Key(CHAR, "2")]):
+            with self.subTest(keys=keys):
+                app, client = make_app(busy=True)
+                app._on_server_request(ServerRequest("srq-6", "clarify", {"questions": [toppings]}))
+                armed(app)
+                press(app, *keys)
+                self.assertEqual(client.answers, [])
+                self.assertIsNotNone(app.slot)
+                self.assertTrue([row for row in drawn(app) if "[x]" in row], drawn(app))
+                self.assertIn("▌          Submit", drawn(app))
+
+    def test_text_typed_in_the_field_goes_with_the_submit_row(self) -> None:
+        # Review of #2594: tick, type (the field opens), Down (back to the list, on Submit), Enter sent the ticks alone
+        # and the typed words were lost, unseen. They stay, show on the field's row, and go with the ticked choices.
+        toppings = {"qid": "q0", "question": "Which toppings?", "choices": ["cheese", "ham"], "multi_select": True}
+        app, client = make_app(busy=True)
+        app._on_server_request(ServerRequest("srq-6", "clarify", {"questions": [toppings]}))
+        armed(app)
+        press(app, Key(CHAR, "1"), Key(CHAR, "x"), Key(CHAR, "y"), Key(DOWN))
+        screen = drawn(app)
+        self.assertIn("▌       3. xy", screen)
+        self.assertIn("▌ ❯        Submit", screen)
+        self.assertTrue([row for row in screen if "Enter to send" in row], screen)
+        press(app, Key(ENTER))
+        self.assertEqual(client.answers, [("srq-6", {"result": {"answers": {"q0": '["cheese","xy"]'}}})])
+
+    def test_submit_sends_a_pasted_or_image_answer_as_enter_in_the_field_does(self) -> None:
+        # Delta review of #2594: Submit sent the composer's raw text, so a paste chip went as its label. It sends
+        # what Enter in the open field sends (`Composer.expanded`): the paste whole, an image token as its label.
+        toppings = {"qid": "q0", "question": "Which toppings?", "choices": ["cheese", "ham"], "multi_select": True}
+        pasted = "\n".join(f"line {n} of the pasted text" for n in range(1, 31))
+
+        def paste(app) -> None:
+            press(app, Paste(pasted))
+
+        def image(app) -> None:
+            press(app, Key(CHAR, "x"))
+            self.assertTrue(app.composer.insert_image("[Image #1]", object()))
+
+        for name, fill in (("paste", paste), ("image", image)):
+            sent = {}
+            for ending in ("field", "submit"):
+                app, client = make_app(busy=True)
+                app._on_server_request(ServerRequest("srq-6", "clarify", {"questions": [toppings]}))
+                armed(app)
+                press(app, Key(CHAR, "1"))
+                fill(app)
+                if ending == "submit":
+                    press(app, Key(DOWN))
+                    screen = drawn(app)
+                    self.assertTrue([row for row in screen if "[Pasted text #1" in row or "[Image #1]" in row], screen)
+                press(app, Key(ENTER))
+                sent[ending] = client.answers[0][1]["result"]["answers"]["q0"]
+            with self.subTest(name=name):
+                self.assertEqual(sent["submit"], sent["field"])
+                self.assertEqual(json.loads(sent["submit"])[0], "cheese")
+                if name == "paste":
+                    self.assertEqual(json.loads(sent["submit"])[1], pasted)
+                else:
+                    self.assertIn("[Image #1]", json.loads(sent["submit"])[1])
+
+    def test_a_second_question_is_shown_before_the_first_answer_goes(self) -> None:
+        first = {"qid": "q0", "question": "Which toppings?", "choices": ["cheese", "ham"], "multi_select": True}
+        second = {"qid": "q1", "question": "Which sauces?", "choices": ["red", "white"], "multi_select": True}
+        app, client = make_app(busy=True)
+        app._on_server_request(ServerRequest("srq-6", "clarify", {"questions": [first, second]}))
+        armed(app)
+        press(app, Key(CHAR, "1"), Key(ENTER))  # cheese ticked, then unticked by Enter: question 1 stays
+        self.assertIn("▌ ❯ [ ] 1. cheese", drawn(app))
+        press(app, Key(ENTER), Key(DOWN), Key(DOWN), Key(DOWN))
+        self.assertIn("▌ ❯        Next", drawn(app))
+        press(app, Key(ENTER))
+        self.assertEqual(client.answers, [])
+        armed(app)
+        self.assertTrue([row for row in drawn(app) if "Which sauces? (2/2)" in row], drawn(app))
+        press(app, Key(CHAR, "2"), Key(DOWN), Key(DOWN), Key(DOWN), Key(ENTER))
+        self.assertEqual(client.answers, [("srq-6", {"result": {"answers": {"q0": '["cheese"]', "q1": '["white"]'}}})])
 
 
 COLOUR = ServerRequest("srq-7", "clarify", {"questions": [
@@ -180,14 +262,14 @@ class QuestionOutcomeTests(unittest.TestCase):
         app, _client = opened(ServerRequest("srq-6", "clarify", {"questions": [
             {"qid": "q0", "question": "Which toppings?", "choices": ["cheese", "ham"], "multi_select": True},
         ]}))
-        press(app, Key(CHAR, "2"), Key(CHAR, "1"), Key(ENTER))
+        press(app, Key(CHAR, "2"), Key(CHAR, "1"), Key(DOWN), Key(DOWN), Key(DOWN), Key(ENTER))
         self.assertEqual(outcome_rows(app), [("ham, cheese · Which toppings?", NOTICE_OK)])
 
     def test_a_ticked_choice_is_recorded_without_hermes_display_tag(self) -> None:
         app, client = opened(ServerRequest("srq-6", "clarify", {"questions": [
             {"qid": "q0", "question": "Which toppings?", "choices": ["cheese (recommended)", "ham"], "multi_select": True},
         ]}))
-        press(app, Key(CHAR, "2"), Key(CHAR, "1"), Key(ENTER))
+        press(app, Key(CHAR, "2"), Key(CHAR, "1"), Key(DOWN), Key(DOWN), Key(DOWN), Key(ENTER))
         self.assertEqual(client.answers, [("srq-6", {"result": {"answers": {"q0": '["ham","cheese (recommended)"]'}}})])
         self.assertEqual(outcome_rows(app), [("ham, cheese · Which toppings?", NOTICE_OK)])
 
@@ -355,7 +437,7 @@ class WaitingTimeTests(unittest.TestCase):
         self.assertIn("1 tool · 9s", status())
         app._on_event(Event("message.complete", SID, {"text": "done"}))
         self.assertNotIn("tool", status())  # the snapshot still says live; the turn is over
-        self.assertTrue(status().startswith(INFO_INSET + "[⚚ OMH Native]   "), status())  # the badge alone on the left
+        self.assertTrue(status().startswith(INFO_INSET + badge_text() + "   "), status())  # the badge alone on the left
 
     def test_back_to_back_questions_are_one_wait(self) -> None:
         app, _client, now = self.clocked()
@@ -554,7 +636,7 @@ class TellRowTests(unittest.TestCase):
         self.assertIn(app_module.TELL_SAY[0], mode_row(app))
         self.assertNotIn("esc to interrupt", mode_row(app))  # Esc leaves the field, it interrupts nothing
         self.assertIn(f"❯ {app_module.TELL_PLACEHOLDER}", [composer_text(row) for row in drawn(app)])
-        self.assertEqual(client.named("session.steer"), [])  # nothing is sent until the person sends it
+        self.assertEqual(client.named("session.redirect"), [])  # nothing is sent until the person sends it
 
     def test_what_is_sent_goes_into_the_running_turn_as_a_steer_and_the_draft_comes_back(self) -> None:
         for key in (Key(ENTER), Key(ENTER, ctrl=True)):
@@ -562,7 +644,7 @@ class TellRowTests(unittest.TestCase):
                 app, client = self.told()
                 type_text(app, "use ./tmp instead")
                 press(app, key)
-                self.assertEqual(client.named("session.steer"), [{"session_id": SID, "text": "use ./tmp instead"}])
+                self.assertEqual(client.named("session.redirect"), [{"session_id": SID, "text": "use ./tmp instead"}])
                 self.assertEqual(client.named("prompt.submit"), [])
                 self.assertIsNone(app.tell_draft)
                 self.assertEqual(app.composer.text, "my draft")
@@ -572,7 +654,9 @@ class TellRowTests(unittest.TestCase):
         app, client = self.told()
         type_text(app, "use ./tmp instead")
         press(app, Key(ENTER))
-        app._on_response(Response(len(client.calls), {"status": "rejected", "text": "use ./tmp instead"}, None))
+        for method in ("session.redirect", "session.steer"):  # a redirect rejected mid-turn goes again as a steer
+            self.assertEqual(client.calls[-1][0], method)
+            app._on_response(Response(len(client.calls), {"status": "rejected", "text": "use ./tmp instead"}, None))
         self.assertEqual([line.text for line in app.queued], ["use ./tmp instead"])
         self.assertEqual(client.named("prompt.submit"), [])
 
@@ -584,14 +668,14 @@ class TellRowTests(unittest.TestCase):
         now[0] += app_module.CALL_ANSWER_SECONDS
         app._expire_calls()
         self.assertEqual(app.composer.text, "my draft\nuse ./tmp instead")  # given back, never sent again
-        self.assertEqual(len(client.named("session.steer")), 1)
+        self.assertEqual(len(client.named("session.redirect")), 1)
 
     def test_once_the_turn_has_ended_it_goes_as_an_ordinary_prompt(self) -> None:
         app, client = self.told()
         app.turn_pending = False
         type_text(app, "use ./tmp instead")
         press(app, Key(ENTER))
-        self.assertEqual(client.named("session.steer"), [])
+        self.assertEqual(client.named("session.redirect"), [])
         self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "use ./tmp instead"}])
 
     def test_after_the_denied_turn_ended_it_never_steers_the_queued_prompt_that_runs_now(self) -> None:
@@ -607,7 +691,7 @@ class TellRowTests(unittest.TestCase):
                 self.assertEqual(client.named("prompt.submit"), [{"session_id": SID, "text": "queued P", "queued": True}])
                 type_text(app, "use ./tmp instead")
                 press(app, Key(ENTER))
-                self.assertEqual(client.named("session.steer"), [])
+                self.assertEqual(client.named("session.redirect"), [])
                 self.assertEqual([line.text for line in app.queued], ["use ./tmp instead"])  # behind P's turn
                 app._on_event(Event("message.complete", SID, {"text": "done"}))
                 self.assertEqual(client.named("prompt.submit")[-1],
@@ -647,7 +731,7 @@ class TellRowTests(unittest.TestCase):
         app, client = self.told()
         press(app, Key(ENTER))
         self.assertIsNotNone(app.tell_draft)
-        self.assertEqual(client.named("session.steer"), [])
+        self.assertEqual(client.named("session.redirect"), [])
 
     def test_a_question_that_arrives_meanwhile_takes_the_keys_and_gives_the_field_back(self) -> None:
         app, client = self.told()
@@ -659,7 +743,7 @@ class TellRowTests(unittest.TestCase):
         self.assertEqual(app.composer.text, "use ./tmp")
         self.assertIn(app_module.TELL_SAY[0], mode_row(app))
         press(app, Key(ENTER))
-        self.assertEqual(client.named("session.steer"), [{"session_id": SID, "text": "use ./tmp"}])
+        self.assertEqual(client.named("session.redirect"), [{"session_id": SID, "text": "use ./tmp"}])
 
     def test_a_second_tell_row_keeps_the_open_field_and_the_draft_behind_it(self) -> None:
         # The tell row lets the turn go on, so the next approval can come while its field is open.
@@ -674,7 +758,7 @@ class TellRowTests(unittest.TestCase):
         self.assertIn(app_module.TELL_SAY[0], mode_row(app))
         type_text(app, ", then this")
         press(app, Key(ENTER))
-        self.assertEqual(client.named("session.steer"), [{"session_id": SID, "text": "first tell, then this"}])
+        self.assertEqual(client.named("session.redirect"), [{"session_id": SID, "text": "first tell, then this"}])
         self.assertIsNone(app.tell_draft)
         self.assertEqual(app.composer.text, "my draft")
 
@@ -726,7 +810,7 @@ class TellRowTests(unittest.TestCase):
         app._enter_session({"session_id": "other", "info": {}})
         self.assertIsNone(app.tell_draft)
         self.assertEqual(app.composer.text, "my draft")
-        self.assertEqual(client.named("session.steer"), [])
+        self.assertEqual(client.named("session.redirect"), [])
 
 
 class WireClient(RecordingClient):
@@ -789,7 +873,7 @@ class DenyStopsTests(unittest.TestCase):
         self.assertEqual(client.wire, [DENY])
         type_text(app, "use ./tmp")
         press(app, Key(ENTER))
-        self.assertEqual(client.wire, [DENY, ("call", "session.steer")])
+        self.assertEqual(client.wire, [DENY, ("call", "session.redirect")])
 
     def test_allowing_stops_nothing(self) -> None:
         app, client = self.wired()

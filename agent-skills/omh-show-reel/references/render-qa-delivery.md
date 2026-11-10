@@ -14,6 +14,10 @@ delivery-size (including actual mobile/chat thumbnail scale when applicable),
 not only full-resolution screenshots. Read essential text and brand names there;
 reduce copy or simplify hierarchy before shrinking type. No tiny crowded labels.
 A contact sheet checks composition/order, never pacing, flicker or audio sync.
+A model's critique of a downscaled sheet is a lead, not a finding: before
+changing geometry or materials, crop the flagged region from the full-resolution
+frame and ask one precise question about it, and before acting on "element
+missing" compare the sampled time with that element's entrance.
 
 For each segment record keep/fix/rebuild, evidence refs, reason, owner and cost;
 identify the weakest scene and spend the declared revision budget there first.
@@ -72,7 +76,7 @@ With audio measure integrated loudness, true peak and A/V sync; STT only when
 speech exists. No observed listening means listening not_observed even if metrics
 pass. No audio means checks not_applicable with reason, not fabricated zeros.
 
-Use `qa_check.py FINAL --policy policy.json` with the chosen delivery limits.
+Use `qa_check.py FINAL --audio-mode muted|music-only|narration|narration+bed/SFX --policy policy.json` with the chosen delivery limits (`--audio-mode` is required).
 `max_h264_level` compares ffprobe's stream `level` (42 means Level 4.2, 52 means
 Level 5.2; select for the intended 1080p/4K target). It fails on non-H.264 rather
 than pretending that codec has a comparable H.264 level. Measurements include
@@ -121,8 +125,9 @@ font/TTS/render support from fixtures.
 
 Separate generated, attached, received and published states with exact file
 hashes and target receipts. A local path is generated, not delivered. Attachment
-failure remains failed with a safe retry/alternative; external upload, spend or
-publication needs separate exact-target user approval and readback. Never infer
+failure remains failed with a safe retry/alternative; external upload or
+publication needs separate exact-target user approval and readback, and a spend
+goes through `omh-spend-gate`'s card and typed yes first. Never infer
 recipient receipt from an upload attempt. Include selected master/share/poster,
 subtitles and source package as requested, rights/gaps and a regeneration recipe.
 If a video was requested, a storyboard alone is not completion. Report the useful

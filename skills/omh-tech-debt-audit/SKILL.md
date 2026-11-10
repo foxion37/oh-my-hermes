@@ -1,6 +1,6 @@
 ---
 name: "omh-tech-debt-audit"
-description: "[omh] Accumulated tech debt to rank: build the severity-by-effort debt ledger from observed repo evidence - orient, audit the named dimensions with file:line citations, rank fixes and quick wins - and reconcile RESOLVED/NEW/CARRIED against the previous ledger on rerun. Use when the user says: tech-debt-audit, tech debt, tech debt audit, technical debt, technical debt audit, tech debt ledger, debt ledger, audit our tech debt."
+description: "[omh] Accumulated tech debt or architecture deepening to rank: build the severity-by-effort debt ledger from observed repo evidence - orient, audit the named dimensions with file:line citations, rank fixes and quick wins - and reconcile RESOLVED/NEW/CARRIED on rerun. Use when the user says: tech-debt-audit, tech debt, tech debt audit, technical debt, technical debt audit, tech debt ledger, debt ledger, audit our tech debt."
 license: MIT
 author: "oh-my-hermes maintainers"
 metadata:
@@ -39,7 +39,7 @@ Good example:
 Bad example:
 
 - Prompt: This module is a mess, rewrite it properly.
-- Expected behavior: Refuse the rewrite framing: audit the module into ledger findings with bounded fixes, or route a decided restructure to `refactor-plan`.
+- Expected behavior: Refuse the rewrite framing: audit the module into ledger findings with bounded fixes, or route a decided restructure to `omh-refactor-plan`.
 - Why: A rewrite recommendation is the failure mode the ledger exists to replace with bounded, ranked fixes.
 
 ## Completion Checklist
@@ -57,15 +57,15 @@ Bad example:
 
 ## Workflow Lane
 
-- Current lane: **Coding handoff** (`idea-to-deploy`, `llm-app-dev`, `cto-loop`, `deploy-and-monitor`, `code-review`, `build-failure-triage`, `verification-gate`, `security-safety-review`, `+28 more`) - coding owners, handoffs, review, CI, and merge evidence.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Coding handoff** - coding owners, handoffs, review, CI, and merge evidence.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
 
 Use when the codebase's accumulated debt should be measured and ranked as a ledger - findings with file:line, severity, and effort, quick wins separated from big fixes - rather than judged as a diff or cleaned up on the spot.
 
-    Strong routing signals: `tech-debt-audit`, `tech debt`, `tech debt audit`, `technical debt`, `technical debt audit`, `tech debt ledger`, `debt ledger`, `audit our tech debt`, `tech debt report`, `code debt audit`, `where is our tech debt`, `기술부채`, `기술 부채`, `기술부채 감사`, `기술부채 감사해줘`, `기술부채 점검`, `기술부채 장부`, `부채 원장`, `техдолг`, `технический долг`, `аудит техдолга`, `аудит технического долга`
+    Strong routing signals: `tech-debt-audit`, `tech debt`, `tech debt audit`, `technical debt`, `technical debt audit`, `tech debt ledger`, `debt ledger`, `audit our tech debt`, `tech debt report`, `code debt audit`, `where is our tech debt`, `improve the codebase architecture`, `improve the architecture of this repo`, `deepening opportunities in this codebase`, `shallow modules in this codebase`, `기술부채`, `기술 부채`, `기술부채 감사`, `기술부채 감사해줘`, `기술부채 점검`, `기술부채 장부`, `부채 원장`, `코드베이스 아키텍처 개선해줘`, `코드 아키텍처 개선해줘`, `техдолг`, `технический долг`, `аудит техдолга`, `аудит технического долга`
 
 ## Catalog Metadata
 
@@ -81,6 +81,7 @@ Quality bar:
 - Audit dimension by dimension from the named list - architectural decay, consistency rot, type and contract gaps, test debt, dependency and configuration debt, performance and resource debt, error-handling and observability debt, security hygiene, documentation drift; the full contract is `omh-tech-debt-audit/references/debt-dimensions.md`.
 - Every finding row carries a stable id, its dimension, a file:line citation, a severity, an effort class (S/M/L), and a bounded recommendation - never a rewrite.
 - Close with the mandatory looks-bad-but-is-actually-fine section: deliberate patterns that pattern-match to debt stay off the ledger, with the reason recorded.
+- For an architecture-improvement or deepening request, load `omh-tech-debt-audit/references/architecture-deepening.md`: candidates are architectural-decay ledger rows proven shallow by the deletion test, never by size, and the audit stops at ranked candidates with one named top pick - it proposes no interface.
 - On rerun, reconcile against the previous ledger before writing a new one: every prior finding is marked RESOLVED with the evidence gone, CARRIED with its age, or superseded by a NEW finding - a rerun that restarts from zero loses the ledger's point.
 
 Handoff policy:
@@ -96,7 +97,7 @@ Required inputs:
 Expected outputs:
 
 - orientation summary: manifests read, churn ranking, largest files, test and CI entry points
-- findings table per `tech_debt_ledger/v1`: id, category, file:line, severity, effort, recommendation
+- findings table per `tech_debt_ledger/v1`: id, dimension, file:line, severity, effort, recommendation
 - top fixes ranked by severity and the quick wins ranked by payoff-per-effort
 - the looks-bad-but-is-actually-fine list, and the RESOLVED/NEW/CARRIED reconciliation on rerun
 
@@ -118,7 +119,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

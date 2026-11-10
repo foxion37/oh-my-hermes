@@ -58,6 +58,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -70,9 +71,11 @@ from .dag_run import (
     ADDED_ORIGIN_KINDS,
     FINISHED_STATES,
     HANDOFF_NOT_CHECKED,
+    bound_children,
     derive,
     goal_verdict,
     handoff_unchecked,
+    node_role,
     run_state,
     session_runs,
 )
@@ -90,6 +93,8 @@ from .subagent_graph import _roster_progress_fields as roster_progress_fields
 GRAPH_SCHEMA_VERSION: Final = "delegation_graph/v1"
 GRAPH_NODE_LIMIT: Final = 48
 GRAPH_BYTE_LIMIT: Final = 24_576
+# The `sessions` columns a lane's `usage` reads, in the order `_usage` takes them.
+USAGE_COLUMNS: Final = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "actual_cost_usd", "estimated_cost_usd")
 GRAPH_LINGER_SECONDS: Final = 15 * 60
 CHILD_STALE_SECONDS: Final = 30 * 60
 TEAM_FILE_LIMIT: Final = 16
@@ -258,7 +263,8 @@ def _carry_on(
         row = facts["sessions"][session]
         written = [item["output_tokens"] for item in (row, *rows) if item["output_tokens"]]
         facts["sessions"][session] = {**row, "ended_at": last["ended_at"], "end_reason": last["end_reason"],
-                                      "output_tokens": sum(written) if written else None}
+                                      "output_tokens": sum(written) if written else None,
+                                      "usage": _sum_usage([item["usage"] for item in (row, *rows)])}
         usages = [usage for usage in (facts["usage"].get(session), *(extra["usage"].get(s) for s in segments)) if usage]
         if usages:
             models = {usage["model"] for usage in usages if usage["model"]}
@@ -266,6 +272,254 @@ def _carry_on(
             facts["usage"][session] = {"rows": sum(usage["rows"] for usage in usages),
                                        "model": models.pop() if len(models) == 1 else "",
                                        "last_seen": max(seen) if seen else None}
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _price(value: Any) -> float | None:
+    """A recorded cost, zero included; None where Hermes recorded none (NULL, or not a finite, non-negative number)."""
+    if not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _usage(values: Sequence[Any], output: Any) -> dict[str, Any] | None:
+    """What a session's row counted besides its output, in `USAGE_COLUMNS` order; None when it counted none.
+
+    ``output`` is the row's output tokens, kept under ``output`` beside the other counts.
+    ``cost_usd`` is Hermes' recorded cost: the actual one wherever the row holds one (a provider-reported 0 too, as
+    `actual_cost_usd` stays NULL until a provider reports one), else a positive estimate, marked ``cost_estimated``.
+    A session Hermes did not price carries no cost, and no token is converted into one here.
+    """
+    uncached, read, write = (_count(value) for value in values[:3])
+    actual, estimated = _price(values[3]), _price(values[4]) or 0.0
+    if not (uncached or read or write or actual is not None or estimated):
+        return None
+    usage: dict[str, Any] = {"input": uncached, "cache_read": read, "cache_write": write, "output": _count(output)}
+    if actual is not None:
+        usage["cost_usd"] = actual
+    elif estimated:
+        usage["cost_usd"] = estimated
+        usage["cost_estimated"] = True
+    return usage
+
+
+def _sum_usage(items: Sequence[Mapping[str, Any] | None]) -> dict[str, Any] | None:
+    """The usage of a conversation's segments (or of a row and its auxiliary calls) added up.
+
+    The cost is the priced parts' sum, ``cost_partial`` where some counted part (or part of one) has no cost, so the
+    figure is a floor; no cost where no part was priced.
+    """
+    held = [item for item in items if item]
+    if not held:
+        return None
+    total: dict[str, Any] = {key: sum(item[key] for item in held)
+                             for key in ("input", "cache_read", "cache_write", "output")}
+    priced = [item for item in held if "cost_usd" in item]
+    if priced:
+        total["cost_usd"] = sum(item["cost_usd"] for item in priced)
+        if any(item.get("cost_estimated") for item in priced):
+            total["cost_estimated"] = True
+        if len(priced) < len(held) or any(item.get("cost_partial") for item in priced):
+            total["cost_partial"] = True
+    return total
+
+
+# `session_model_usage` tasks that are main-loop calls, already counted in the `sessions` row: every value Hermes
+# gives `agent._turn_route_task`, which `agent/turn_usage.py` passes to `update_token_counts(task=...)` (its docstring
+# in `hermes_state_usage.py`: a per-turn route's calls "count in the session totals and land in session_model_usage
+# under that task"). Today one, `agent/voice_turn_route.py`'s `TASK`. An auxiliary task, by contrast, is any name a
+# caller hands `auxiliary_client` (`agent/aux_accounting.record_aux_usage`) or `background_review`, an open set, so
+# the route tasks are the closed list here and a new one must join it.
+ROUTE_TASKS: Final = ("voice_chat",)
+
+
+def _auxiliary_usage(
+    connection: sqlite3.Connection, marks: str, ids: Sequence[str], columns: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Each session's auxiliary calls, summed from `session_model_usage`, in `_usage`'s shape.
+
+    Hermes records an auxiliary call (compression, title generation, vision, ...) only there, under its task name,
+    and never in the `sessions` row (`record_auxiliary_usage`), so these add to the row's counts. The main loop's
+    own rows there repeat what the row already holds and are left out: task ``''``, a per-turn route's task
+    (`ROUTE_TASKS`), and any row with a `cost_status`, which only the main loop writes (`record_auxiliary_usage`
+    takes none, and the runtime worker refuses one for an auxiliary call). A table without `task` cannot tell the
+    two apart and gives nothing. An auxiliary row records no actual cost, so a positive estimate prices it; one with
+    tokens but no estimate is unpriced (Hermes stores an unknown estimate as 0), which makes the sum a floor.
+    """
+    if "task" not in columns:
+        return {}
+
+    def column(name: str) -> str:
+        return f"COALESCE({name}, 0)" if name in columns else "0"
+
+    tokens = " + ".join(column(name) for name in
+                        ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+    actual, estimated = column("actual_cost_usd"), column("estimated_cost_usd")
+    figure = f"CASE WHEN {actual} > 0 THEN {actual} WHEN {estimated} > 0 THEN {estimated} END"
+    routes = ", ".join("?" for _ in ROUTE_TASKS)
+    unstated = " AND cost_status IS NULL" if "cost_status" in columns else ""
+    found: dict[str, dict[str, Any]] = {}
+    for row in connection.execute(
+        f"SELECT session_id, SUM({column('input_tokens')}), SUM({column('cache_read_tokens')}), "
+        f"SUM({column('cache_write_tokens')}), SUM({column('output_tokens')}), SUM({figure}), "
+        f"SUM(CASE WHEN {actual} > 0 THEN 0 WHEN {estimated} > 0 THEN 1 ELSE 0 END), "
+        f"SUM(CASE WHEN ({tokens}) > 0 AND {figure} IS NULL THEN 1 ELSE 0 END) "
+        f"FROM session_model_usage WHERE session_id IN ({marks}) AND COALESCE(task, '') <> '' "
+        f"AND task NOT IN ({routes}){unstated} GROUP BY session_id",
+        (*ids, *ROUTE_TASKS),
+    ):
+        usage = {"input": _count(row[1]), "cache_read": _count(row[2]), "cache_write": _count(row[3]),
+                 "output": _count(row[4])}
+        cost = _price(row[5])
+        if cost:
+            usage["cost_usd"] = cost
+            if row[6]:
+                usage["cost_estimated"] = True
+            if row[7]:
+                usage["cost_partial"] = True
+        elif not any(usage.values()):
+            continue
+        found[str(row[0])] = usage
+    return found
+
+
+def session_usage(hermes_home: Path, session_id: str) -> dict[str, Any] | None:
+    """What Hermes recorded for one chat, its compaction segments added up: the figures of the pane's usage board.
+
+    ``session_id`` is the chat asked about, so the pane can tell this chat's figures from the last one's.
+    ``model`` is the one the chat's own row names, ``output`` its output tokens and, besides
+    them, the `_usage` keys; each segment's auxiliary calls count with it (`_auxiliary_usage`). The cost is what
+    Hermes priced, marked ``cost_partial`` where some counted part is unpriced, and no token is turned into one.
+    ``None`` where the chat has no row or its row counted nothing.
+    """
+    try:
+        connection = _connect(hermes_home)
+    except OSError:  # Python 3.11's `Path.is_file` raises where the home cannot be searched
+        return None
+    if connection is None:
+        return None
+    try:
+        ids = _segments(connection, session_id)
+        facts = state_facts(hermes_home, ids, [], connection=connection)
+    finally:
+        connection.close()
+    rows = [facts["sessions"][item] for item in ids if item in facts["sessions"]]
+    usage = _sum_usage([row["usage"] for row in rows]) or {}
+    output = sum(row["usage"]["output"] if row["usage"] else row["output_tokens"] or 0 for row in rows)
+    if not (usage or output):
+        return None
+    model = (facts["sessions"].get(session_id) or rows[0])["model"]
+    return {"session_id": session_id, "model": model, **usage, "output": output}
+
+
+# How many child sessions one run's usage reads: `state_facts` takes 160 ids a call, and a child's compaction
+# segments count among them, so a run past this many children is read in part and says so (`children_unread`).
+RUN_USAGE_CHILD_LIMIT: Final = 64
+
+
+def run_usage(hermes_home: Path, child_sessions: Sequence[str]) -> dict[str, Any] | None:
+    """What Hermes recorded for a run's children, added up: the closing figures of a dag-ulw run.
+
+    ``child_sessions`` are the sessions of every child the run bound, each attempt's included, so a retried or
+    repaired node's earlier child counts too. Each child is read as `session_usage` reads a chat (its compaction
+    segments and auxiliary calls with it). ``children`` counts the children Hermes counted anything for,
+    ``children_unrecorded`` those it counted nothing for; ``priced`` the counted ones it put a cost on. The cost is
+    Hermes' recorded one only, ``cost_partial`` where a counted child has none, so the figure is a floor; no token
+    is turned into a price, and nothing is compared with a model the run did not use. ``None`` where no child
+    counted anything or the database cannot be read.
+    """
+    wanted = [item for item in dict.fromkeys(child_sessions) if item]
+    unread = max(0, len(wanted) - RUN_USAGE_CHILD_LIMIT)
+    wanted = wanted[:RUN_USAGE_CHILD_LIMIT]
+    if not wanted:
+        return None
+    try:
+        connection = _connect(hermes_home)
+    except OSError:  # Python 3.11's `Path.is_file` raises where the home cannot be searched
+        return None
+    if connection is None:
+        return None
+    try:
+        segments = {child: _segments(connection, child) for child in wanted}
+        ids = [item for listed in segments.values() for item in listed]
+        facts: dict[str, Any] = {"sessions": {}}
+        for at in range(0, len(ids), 160):
+            facts["sessions"].update(state_facts(hermes_home, ids[at:at + 160], [], connection=connection)["sessions"])
+    finally:
+        connection.close()
+    per_child: list[dict[str, Any]] = []
+    for child in wanted:
+        rows = [facts["sessions"][item] for item in segments[child] if item in facts["sessions"]]
+        usage = _sum_usage([row["usage"] for row in rows])
+        output = sum(row["usage"]["output"] if row["usage"] else row["output_tokens"] or 0 for row in rows)
+        if usage:
+            per_child.append({**usage, "output": output})
+        elif output:
+            per_child.append({"input": 0, "cache_read": 0, "cache_write": 0, "output": output})
+    total = _sum_usage(per_child)
+    if total is None:
+        return None
+    result: dict[str, Any] = {
+        **total,
+        "children": len(per_child),
+        "children_unrecorded": len(wanted) - len(per_child),
+        "priced": sum(1 for usage in per_child if "cost_usd" in usage),
+    }
+    if unread:
+        # Children past the cap were not read: their spend is missing, so a cost is a floor.
+        result["children_unread"] = unread
+        if "cost_usd" in result:
+            result["cost_partial"] = True
+    return result
+
+
+def _token_text(count: int) -> str:
+    """`410`, `12.6k`, `1.2m`: the pane's and the TUI's token figure (`tokenCountText`, `panels._token_count_text`)."""
+    if count < 1000:
+        return str(count)
+    amount, unit = (count / 1000, "k") if count < 999_950 else (count / 1_000_000, "m")
+    return f"{amount:.1f}{unit}"
+
+
+def run_usage_text(usage: Mapping[str, Any]) -> str:
+    """`4 children · 182.4k tokens · cache 71.3% · $0.4210 (3/4 priced)`: `run_usage` as one line of figures.
+
+    Tokens are every count (uncached input, cache read, cache write, output); the cache share is cache read over
+    the prompt side, as the pane's figure is. The cost is Hermes' recorded one: ``≥`` where a counted child has
+    none, ``~`` where a part is Hermes' estimate, and ``cost not recorded`` where nothing was priced.
+    """
+    prompt = usage["input"] + usage["cache_read"] + usage["cache_write"]
+    said = [f"{usage['children']} child{'' if usage['children'] == 1 else 'ren'}",
+            f"{_token_text(prompt + usage['output'])} tokens"]
+    if prompt:
+        said.append(f"cache {usage['cache_read'] / prompt * 100:.1f}%")
+    if "cost_usd" in usage:
+        mark = "≥" if usage.get("cost_partial") else "~" if usage.get("cost_estimated") else ""
+        said.append(f"{mark}${usage['cost_usd']:.4f} ({usage['priced']}/{usage['children']} priced)")
+    else:
+        said.append("cost not recorded")
+    if usage["children_unrecorded"]:
+        said.append(f"{usage['children_unrecorded']} with no record")
+    if usage.get("children_unread"):
+        said.append(f"{usage['children_unread']} not read")
+    return " · ".join(said)
+
+
+def closing_usage(hermes_home: Path, record: Mapping[str, Any],
+                  children: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """What every child this dag run bound used, as Hermes recorded it (`run_usage`), or None.
+
+    Every child bound to the run counts, a retried or repaired attempt's earlier child too, since its spend is
+    spent. A node the parent did itself (``lane: parent``) or a fanout owner ran has no child here and is in
+    neither the counts nor the cost: those sit in the parent's own row and the fanout receipt.
+    """
+    bound = bound_children(children, str(record["run"]))
+    sessions = [str(child["child_session_id"]) for listed in bound.values() for child in listed
+                if child.get("child_session_id")]
+    return run_usage(hermes_home, sessions)
 
 
 def _effort(config: Mapping[str, Any]) -> str:
@@ -300,8 +554,10 @@ def state_facts(
                 ended = "ended_at" if "ended_at" in columns else "NULL"
                 reason = "end_reason" if "end_reason" in columns else "NULL"
                 written = "output_tokens" if "output_tokens" in columns else "NULL"
+                counted = ", ".join(name if name in columns else "NULL" for name in USAGE_COLUMNS)
                 for row in connection.execute(
-                    f"SELECT id, model, model_config, {ended}, {reason}, {written} FROM sessions WHERE id IN ({marks})",
+                    f"SELECT id, model, model_config, {ended}, {reason}, {written}, {counted} "
+                    f"FROM sessions WHERE id IN ({marks})",
                     ids,
                 ):
                     try:
@@ -315,6 +571,7 @@ def state_facts(
                         "ended_at": row[3] if isinstance(row[3], (int, float)) else None,
                         "end_reason": _text(row[4], 40),
                         "output_tokens": row[5] if isinstance(row[5], int) and row[5] > 0 else None,
+                        "usage": _usage(row[6:], row[5]),
                     }
                 facts["read"] = True
             except sqlite3.Error:
@@ -343,6 +600,19 @@ def state_facts(
                 facts["usage_read"] = True  # an empty answer now means no model call, not an unread table
             except sqlite3.Error:
                 pass
+            try:
+                auxiliary = _auxiliary_usage(connection, marks, ids, usage_columns) if facts["usage_read"] else {}
+            except sqlite3.Error:
+                auxiliary = {}
+            for session, extra in auxiliary.items():
+                row = facts["sessions"].get(session)
+                if row is None:
+                    continue
+                own_usage = row["usage"] or (
+                    {"input": 0, "cache_read": 0, "cache_write": 0, "output": row["output_tokens"]}
+                    if row["output_tokens"] else None
+                )
+                row["usage"] = _sum_usage([own_usage, extra])
             try:
                 for row in connection.execute(
                     f"SELECT session_id, substr(content, 1, {OPENER_CHARS}) FROM messages WHERE rowid IN ("
@@ -703,6 +973,9 @@ def _build(
             "ended_at": float(stop["observed_at"]) if isinstance(stop, Mapping) else None,
             "output_tokens": (facts["sessions"].get(session) or {}).get("output_tokens"),
         }
+        usage = (facts["sessions"].get(session) or {}).get("usage")
+        if usage:
+            row["usage"] = usage
         if reported:
             row["route_backend"] = reported["backend"]
             if reported.get("label"):
@@ -758,7 +1031,7 @@ def _build(
             if child is not None:
                 derived = facts_for(child, model_of_node["root"])
                 node.update({key: derived[key] for key in ("model", "effort", "category", "category_source",
-                                                           "output_tokens")})
+                                                           "output_tokens", "usage") if key in derived})
                 node["session_tail"] = session_tail(child_session)
                 if states[unit_id] in ("dispatched", "repairing"):
                     # The team record says the attempt was sent; only the child's own records say it is moving.
@@ -778,7 +1051,8 @@ def _build(
                 edges.append({"from": "root", "to": node_id, "kind": "dispatch"})
 
     if dag is not None:
-        order = _dag_nodes(dag, nodes, edges, order, facts_for, model_of_node, node_of_subagent, node_of_session)
+        order = _dag_nodes(dag, nodes, edges, order, facts_for, model_of_node, node_of_subagent, node_of_session,
+                           now)
 
     def parent_of(child: Mapping[str, Any]) -> str:
         parent_id = node_of_subagent.get(child["parent_subagent_id"], "") if child["parent_subagent_id"] else ""
@@ -879,6 +1153,8 @@ _DAG_VIEW: Final = {
     "waiting": ("waiting", "waiting"),
     "held": ("waiting", "held"),
     "cancelled": ("interrupted", "cancelled"),
+    # Settled to wait on a background process or a CI run until its `wake_at` (`dag_run.settle`): not over.
+    "parked": ("waiting", "parked"),
 }
 
 
@@ -936,19 +1212,27 @@ def _dag_run(
 def _dag_nodes(
     dag: Mapping[str, Any], nodes: list[dict[str, Any]], edges: list[dict[str, str]], order: int,
     facts_for: Callable[[Mapping[str, Any], str], dict[str, Any]], model_of_node: dict[str, str],
-    node_of_subagent: dict[str, str], node_of_session: dict[str, str],
+    node_of_subagent: dict[str, str], node_of_session: dict[str, str], now: float,
 ) -> int:
     """Add a dag run's nodes and its recorded edges; returns the next drawing order.
 
     A node a repair or an extend round added also gets an edge from where it
     came from (`dag_origin`) when nothing else of its own group leads to it,
-    so the drawing shows it below that node.
+    so the drawing shows it below that node. Each node carries its role
+    (`role`, `dag_run.node_role`: build, baseline, verify or review), which
+    the TUI names a finished child's briefing by, and its place in the run's
+    definition order (`node_index`: superseded and added nodes keep theirs),
+    which picks its handle's hue. A parked node is a waiting one
+    marked `parked`, with what its attempt recorded it waits on (`parked_at`,
+    `wake_at`, `wait_handle`, `wait_reason`); its elapsed time is the time
+    since it parked.
     """
     record, derived = dag["record"], dag["derived"]
     run = str(record["run"])
     # A held node of a run that is not moving (stopped, cancelled, or waiting on a repair) will not run on its own.
     stopped = dag["state"] not in DAG_OPEN_STATES
     drawn = {str(node["id"]) for node in record["nodes"] if derived[str(node["id"])]["state"] != "superseded"}
+    defined = {str(node["id"]): index for index, node in enumerate(record["nodes"])}
     for node_id, layer in _dag_layers(record, drawn).items():
         node = next(item for item in record["nodes"] if item["id"] == node_id)
         info = derived[node_id]
@@ -969,7 +1253,7 @@ def _dag_nodes(
             "category": _text(node.get("category"), 40) or "?", "category_source": "dag_plan", "model": "?",
             "effort": "", "state": state, "status": status, "elapsed_seconds": None, "order": order,
             "group": group, "waits_on": len(info["waits_on"]) if info["state"] == "waiting" else 0,
-            "dag_node": node_id, "dag_origin": origin,
+            "dag_node": node_id, "dag_origin": origin, "role": node_role(node), "node_index": defined[node_id],
         }
         summary = _prompt_summary(node.get("prompt"))
         if summary:
@@ -985,7 +1269,7 @@ def _dag_nodes(
             facts = facts_for(child, model_of_node["root"])
             # Once a child exists its category is the recorded route's, shown only where its model matches.
             entry.update({key: facts[key] for key in ("model", "effort", "category", "category_source",
-                                                       "output_tokens")})
+                                                       "output_tokens", "usage") if key in facts})
             entry.update({key: facts[key] for key in ("route_backend", "route_label", "route_origin") if key in facts})
             if facts["category_source"] == "backend_route":
                 # The plan's lane holds where Hermes ran the option this run handed out; any other option is not it.
@@ -1003,6 +1287,8 @@ def _dag_nodes(
             node_of_subagent[child["subagent_id"]] = graph_id
             node_of_session[child["child_session_id"]] = graph_id
             model_of_node[graph_id] = facts["model"] if facts["model"] != "?" else ""
+        if info["state"] == "parked":
+            entry.update(_parked_fields(node, now))
         nodes.append(entry)
         parents = [parent for parent in node["depends_on"] if parent in drawn]
         edges.extend({"from": dag_node_id(run, parent), "to": graph_id, "kind": "depends_on"} for parent in parents)
@@ -1012,6 +1298,25 @@ def _dag_nodes(
         elif not parents:
             edges.append({"from": "root", "to": graph_id, "kind": "dispatch"})
     return order
+
+
+def _parked_fields(node: Mapping[str, Any], now: float) -> dict[str, Any]:
+    """What a parked node's last attempt says it waits on, and how long it has: `settle` stamps `settled_at`,
+    `handle`, `wake_at` and `reason` on a park. A field the attempt does not carry is left out."""
+    attempts = node.get("attempts") if isinstance(node.get("attempts"), list) else []
+    attempt = attempts[-1] if attempts and isinstance(attempts[-1], Mapping) else {}
+    fields: dict[str, Any] = {"parked": True, "elapsed_seconds": None}  # never the child's run time
+    parked_at, wake_at = attempt.get("settled_at"), attempt.get("wake_at")
+    if isinstance(parked_at, int | float) and not isinstance(parked_at, bool) and 0 < parked_at <= now:
+        fields.update(parked_at=float(parked_at), elapsed_seconds=now - float(parked_at))
+    if isinstance(wake_at, int | float) and not isinstance(wake_at, bool) and wake_at > 0:
+        fields["wake_at"] = float(wake_at)
+    handle, reason = _text(attempt.get("handle"), 120), _text(attempt.get("reason"), 120)
+    if handle:
+        fields["wait_handle"] = handle
+    if reason:
+        fields["wait_reason"] = reason
+    return fields
 
 
 def _origin_parent(node: Mapping[str, Any], record: Mapping[str, Any], drawn: set[str]) -> str:

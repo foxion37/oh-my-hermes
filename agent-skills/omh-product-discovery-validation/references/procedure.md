@@ -40,7 +40,7 @@ Declared checks:
   - Criterion: Rank each value, usability, feasibility, viability, go-to-market, or ethics assumption by decision impact multiplied by evidence gap; every test must carry precommitted success, failure, and inconclusive conditions plus segment, deadline, cost, owner, and evidence re-entry before any observation is accepted.
 - `discovery_decision_receipt_check`
   - Required result fields: `decision`, `precommitted_criteria`, `observed_evidence`, `confidence_limits`, `rejected_paths`, `residual_risks`, `next_route`, `promotion_guard`
-  - Criterion: Decision must be kill, pivot, persevere, or inconclusive; missing external evidence, a refuted problem, unresolved contradiction, an expired test, an inconclusive result, or an audience that is unknown, synthetic-only, or non-recruitable must not produce persevere or a `product-brief`, `decision-prototype`, or coding route; rejected and falsified hypotheses are preserved, and no raw transcript is replayed.
+  - Criterion: Decision must be kill, pivot, persevere, or inconclusive; missing external evidence, a refuted problem, unresolved contradiction, an expired test, an inconclusive result, or an audience that is unknown, synthetic-only, or non-recruitable must not produce persevere or a `omh-product-brief`, `omh-decision-prototype`, or coding route; rejected and falsified hypotheses are preserved, and no raw transcript is replayed.
 - `discovery_gtm_hypothesis_check`
   - Required result fields: `beachhead_segment`, `buyer_user_distinction`, `current_alternative`, `value_proposition`, `pricing_wtp_hypothesis`, `initial_channel`, `first_cohort`, `learning_metrics`, `evidence_basis`
   - Criterion: Every field is a labeled hypothesis with its evidence basis; pricing, willingness-to-pay, and market-size figures require an observed source or behavioral evidence with explicit assumptions, and an unsupported field stays unknown instead of a generic ratio.
@@ -68,6 +68,7 @@ Prepare participant criteria, a past-behavior interview guide, consent and priva
 - Input refs: `target segment`, `known evidence and current alternatives`, `learning budget and deadline`
 - Output refs: `customer_discovery_plan/v1`
 - Check IDs: `discovery_customer_reentry_check`
+- If this step fails: tentative; still stands: `discovery_decision_frame/v1`, `discovery_evidence_ledger/v1`; hand back: Return the tentative customer_discovery_plan/v1 with missing participant criteria, past-behavior prompts, consent, bias controls, or evidence re-entry fields flagged for correction.
 
 ### `discovery_gate_problem` (validation)
 
@@ -76,14 +77,16 @@ Compare ledger entries against the precommitted criteria and record the problem 
 - Input refs: `problem hypothesis`, `known evidence and current alternatives`, `success, failure, and stop criteria`
 - Output refs: `discovery_decision_frame/v1`
 - Check IDs: `discovery_evidence_class_check`, `discovery_problem_gate_check`
+- If this step fails: unresolved; still stands: `discovery_decision_frame/v1`, `discovery_evidence_ledger/v1`, `customer_discovery_plan/v1`; hand back: Return the discovery_decision_frame/v1 as unresolved with missing target-segment human or behavioral evidence and the customer_discovery_plan/v1; keep solution work blocked.
 
 ### `discovery_rank_assumptions` (production)
 
-List the assumptions by category, score decision impact and evidence gap, and select for each top-ranked assumption the cheapest disconfirming test that could change the decision, with its precommitted conditions and bounded budget; a prototype is one optional instrument routed to `decision-prototype`, never validation by itself.
+List the assumptions by category, score decision impact and evidence gap, and select for each top-ranked assumption the cheapest disconfirming test that could change the decision, with its precommitted conditions and bounded budget; a prototype is one optional instrument routed to `omh-decision-prototype`, never validation by itself.
 
 - Input refs: `problem hypothesis`, `target segment`, `known evidence and current alternatives`, `decision owner`, `learning budget and deadline`, `success, failure, and stop criteria`
 - Output refs: `assumption_test_portfolio/v1`
 - Check IDs: `discovery_assumption_precommit_check`
+- If this step fails: tentative; still stands: `discovery_decision_frame/v1`, `discovery_evidence_ledger/v1`, `customer_discovery_plan/v1`; hand back: Return the tentative assumption_test_portfolio/v1 with unranked assumptions or missing success, failure, inconclusive, segment, budget, owner, and evidence re-entry conditions flagged.
 
 ### `discovery_draft_gtm_hypothesis` (production)
 
@@ -92,11 +95,13 @@ Draft the beachhead segment, buyer versus user, current alternative, value propo
 - Input refs: `problem hypothesis`, `target segment`, `known evidence and current alternatives`
 - Output refs: `initial_gtm_hypothesis/v1`
 - Check IDs: `discovery_gtm_hypothesis_check`
+- If this step fails: tentative; still stands: `discovery_decision_frame/v1`, `discovery_evidence_ledger/v1`, `customer_discovery_plan/v1`, `assumption_test_portfolio/v1`; hand back: Return the tentative initial_gtm_hypothesis/v1 with unsupported pricing, willingness-to-pay, or market-size fields left unknown and each missing evidence basis named.
 
 ### `discovery_validate_decision_receipt` (validation)
 
-Record the decision against the precommitted criteria and observed evidence, with confidence limits, rejected paths, residual risks, and the next route; a `persevere` receipt hands `product-brief` the validated problem, segment, MVP learning boundary, residual risks, and GTM hypotheses without transcript replay.
+Record the decision against the precommitted criteria and observed evidence, with confidence limits, rejected paths, residual risks, and the next route; a `persevere` receipt hands `omh-product-brief` the validated problem, segment, MVP learning boundary, residual risks, and GTM hypotheses without transcript replay.
 
 - Input refs: `problem hypothesis`, `target segment`, `known evidence and current alternatives`, `decision owner`, `learning budget and deadline`, `success, failure, and stop criteria`
 - Output refs: `discovery_decision_receipt/v1`
 - Check IDs: `discovery_decision_frame_check`, `discovery_evidence_class_check`, `discovery_customer_reentry_check`, `discovery_problem_gate_check`, `discovery_assumption_precommit_check`, `discovery_decision_receipt_check`, `discovery_gtm_hypothesis_check`
+- If this step fails: unresolved; still stands: `discovery_decision_frame/v1`, `discovery_evidence_ledger/v1`, `customer_discovery_plan/v1`, `assumption_test_portfolio/v1`, `initial_gtm_hypothesis/v1`; hand back: Return an unresolved discovery_decision_receipt/v1 naming unmet precommitted criteria, contradictions, rejected paths, and missing audience evidence; block persevere and product handoff.

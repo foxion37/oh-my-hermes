@@ -95,10 +95,11 @@ attached, sent or published.
 - A math proof, equation or algorithm animation: Hermes' `manim-video` skill
   when the host has it.
 - Existing footage converted to ASCII art: Hermes' `ascii-video` skill.
-- Summarizing, transcribing, captioning or trimming a recording that exists:
-  `media-input-operator`.
+- Summarizing or transcribing a recording that exists: `media-input-operator`.
+  Trimming, converting or burning in captions: plain ffmpeg through
+  `command-operator`.
 - An animation inside an app's own UI (a button, modal, page transition or
-  loading state): `frontend`.
+  loading state): `omh-frontend`.
 """,
     "brief-and-locales": """# Brief and locale decisions
 
@@ -200,6 +201,15 @@ instructions to run its scripts or reveal credentials.
   a real UI passes when the brief asks for it and it is labeled as stylised.
 - Identity marks the product renders (its logo, launch card, prompt glyphs)
   appear as rendered. A demo missing the product's own logo is REVISE.
+- A brand's look comes from its own live sources before any is drawn: its site
+  (the typeface its logo is set in, which a page often renders as live text
+  rather than an image file, its colour tokens and its hero art) and its repo
+  (app icon at full resolution). Record each in the asset register with URL,
+  revision or fetch date and hash. A generic face standing in for the brand's
+  own, or a palette guessed from memory, is REVISE.
+- When a film presents one product inside another (a plugin on a host app, an
+  add-on on a new platform), both names share the opening and closing frames
+  from frame 0. A second brand that first appears mid-film reads as a cut-in.
 - Every product fact on screen (install command, command and flag names,
   package name, URL, version, count) is copied byte-for-byte from its canonical
   source: the README install block, `--help` output, the producer of the
@@ -430,6 +440,10 @@ delivery-size (including actual mobile/chat thumbnail scale when applicable),
 not only full-resolution screenshots. Read essential text and brand names there;
 reduce copy or simplify hierarchy before shrinking type. No tiny crowded labels.
 A contact sheet checks composition/order, never pacing, flicker or audio sync.
+A model's critique of a downscaled sheet is a lead, not a finding: before
+changing geometry or materials, crop the flagged region from the full-resolution
+frame and ask one precise question about it, and before acting on "element
+missing" compare the sampled time with that element's entrance.
 
 For each segment record keep/fix/rebuild, evidence refs, reason, owner and cost;
 identify the weakest scene and spend the declared revision budget there first.
@@ -488,7 +502,7 @@ With audio measure integrated loudness, true peak and A/V sync; STT only when
 speech exists. No observed listening means listening not_observed even if metrics
 pass. No audio means checks not_applicable with reason, not fabricated zeros.
 
-Use `qa_check.py FINAL --policy policy.json` with the chosen delivery limits.
+Use `qa_check.py FINAL --audio-mode muted|music-only|narration|narration+bed/SFX --policy policy.json` with the chosen delivery limits (`--audio-mode` is required).
 `max_h264_level` compares ffprobe's stream `level` (42 means Level 4.2, 52 means
 Level 5.2; select for the intended 1080p/4K target). It fails on non-H.264 rather
 than pretending that codec has a comparable H.264 level. Measurements include
@@ -537,8 +551,9 @@ font/TTS/render support from fixtures.
 
 Separate generated, attached, received and published states with exact file
 hashes and target receipts. A local path is generated, not delivered. Attachment
-failure remains failed with a safe retry/alternative; external upload, spend or
-publication needs separate exact-target user approval and readback. Never infer
+failure remains failed with a safe retry/alternative; external upload or
+publication needs separate exact-target user approval and readback, and a spend
+goes through `omh-spend-gate`'s card and typed yes first. Never infer
 recipient receipt from an upload attempt. Include selected master/share/poster,
 subtitles and source package as requested, rights/gaps and a regeneration recipe.
 If a video was requested, a storyboard alone is not completion. Report the useful
@@ -677,6 +692,96 @@ Method notes informed by Scenario's Kinetic Film exploration (https://www.scenar
 skill ZIP sha256 2217ab5dbd452185a5c3c1509994da46b1ac20d2ebeaa888536244372ce73ebf). OMH wording and code;
 nothing was copied.
 """,
+    "launch-film": """# Launch-film lane
+
+## Select the lane, do not default to it
+
+Use this opt-in page only after concept selection chooses a 60-120 s launch film
+for a product the team can actually run and capture: a feature or mode release
+shown working in its own UI. A promo or social clip of 15 s or less keeps the
+one-scene rule in `references/craft-design.md` (Short promo clips); an explainer
+keeps its own pacing; a hype teaser built from type alone takes
+`references/kinetic-type.md`. Every source, rights, locale, capture and delivery
+contract still applies: each UI shot comes from the product's own renderer or a
+capture at a named revision, and every product fact on screen is cited.
+
+## Act sheet before scenes
+
+Write the acts with a time budget before any scene code, in `storyboard.md` or
+the timing source. The shape below is a default to adapt, not a template to fill:
+
+| Act | Share | Job |
+| --- | --- | --- |
+| Mark | 4-6% | The product mark alone on a quiet ground. |
+| Title becomes the product | 6-8% | The feature name turns into the captured UI without a cut. |
+| One honest loop | 25-30% | One complete real run: input, the work, the visible change, the result. |
+| Escalating range | 15-20% | Three examples, each more ambitious or more visual than the last. |
+| Turn | 15-18% | The product does something to itself or its own surface. |
+| Reach | 6-10% | Where else it runs or plugs in; the only act that may use illustration. |
+| Climax and close | 8-10% | Largest type of the film, then a small still tagline, then the mark again. |
+
+Record per act: the captured source and revision, the one thing the viewer must
+notice, the transition into the next act, and the act's music section.
+
+## Devices that carry a launch film
+
+- **Title becomes the product.** Stack copies of the feature name (seven to
+  nine lines, staggered from the centre, a few pixels of deterministic offset
+  per copy), drift the stack upward, bend the lowest lines back in perspective
+  (`rotateX` about 35-55 degrees) while their colour shifts to the accent, and
+  raise the captured window into the space they leave. The viewer sees one
+  continuous move from name to product.
+- **Anchored typing.** Measure the finished line in the actual renderer first,
+  centre that measured width, fix the left edge, and reveal characters inside
+  it, so the line never re-centres as it grows. Use a 2-3 px caret blinking on a
+  stepped 0.5 s cycle. When the product takes a prompt, type the real prompt in
+  the same field style: the prompt is the caption.
+- **Two-tone escalation copy.** Connective words in a neutral weight and colour
+  (`Like a`, `Or a`, `Even a`); only the noun arrives in the accent, unblurring
+  from about 8 px over roughly 0.3 s. The escalation lives in the words and in
+  the examples that follow them.
+- **Bracket agent work with word cards.** A one-word card opens a long run
+  (`Create`) and another closes it (`Ready`). Between them, show the log only as
+  texture: cropped, scrolling and partly faded, never asked to be read. State
+  the real duration or step count of the run you compressed in the delivery
+  manifest.
+- **One honest loop before any montage.** Show one full run end to end before
+  fast cuts begin: the typed request, the reported change (for example a file
+  count and a line diff taken from the captured screen), the new item where the
+  product lists it, and the finished result. The montage borrows its credibility
+  from this loop.
+- **Close-ups only on decisions.** A tilted, slightly blurred-edge close-up and
+  a visible cursor only where a person decides: a mode picker, a send button, a
+  colour choice. Leave routine clicks at normal framing.
+- **Window on a ground, not a device mock.** Present the captured window with a
+  soft shadow over a blurred gradient ground. Enter from full frame by easing
+  the scale from about 1.2 to 1 so the ground is revealed. Drop invented bezels.
+- **Ration colour.** Keep the product chrome neutral and let colour arrive with
+  results. Reserve full black for the opening mark and the close.
+- **A planned breath.** One near-empty frame with only a blinking caret for two
+  to three seconds before the last and heaviest montage resets attention.
+  Declare it in the act sheet and as an intentional hold with a reason.
+- **Climax by contrast.** The largest type of the film can overflow the frame
+  and carry directional blur; cut straight from it to a small still tagline on a
+  dark ground, then to the mark alone so the end rhymes with the first frame.
+- **Choose results a viewer reads in two seconds.** A timer, a board of notes,
+  a poster, a playable scene, a dashboard. Skip results that need reading.
+
+## Gate before delivery
+
+Render one still per act and the frames either side of each act boundary, and
+check them as one sheet: is the title-to-UI move continuous, is the honest loop
+complete, does each escalation step get bigger, is there exactly one breath, and
+does the close rhyme with the open. Run `motion_check.py` with the general
+profile, passing the breath and the end card through `--holds` and
+`--endcard`. Keep the existing audio, loudness, export and artistic gates in
+`references/render-qa-delivery.md`; a launch film is not exempt from any of them.
+
+Method notes informed by a public frame-by-frame study of a 99 s product launch
+film (DeepSeek Harness Creator Mode, https://x.com/DeepSeekHarness/status/2117256196227019194,
+measured 2026-11-03: 27 detected cuts, 8 acts, about -16 LUFS integrated). OMH
+wording; no footage, copy or assets were taken.
+""",
     "game-capture": """# Game and simulation capture lane
 
 Use this page when the reel is captured from a game or simulation (engine
@@ -775,6 +880,18 @@ The opt-in `eleven.py`/`narrate.py` (narration, SFX, music, STT) and
 `codex_ref_image.sh` run only when the user asks for them with their own
 `ELEVENLABS_API_KEY` or signed-in codex; they refuse without it, and the film
 falls back to local music and on-screen text.
+Each run that reaches ElevenLabs or codex (`eleven.py`, `narrate.py`,
+`codex_imagegen_batch.sh`, `codex_ref_image.sh`, and the `codex exec` script
+review and concept candidates, with a spend-only cap set in calls) spends the user's own
+subscription credits or plan usage, so it goes through `omh-spend-gate` before
+it runs: show the target (which lines, voice and model, or which SFX, music, STT
+or image job and its length) and the expected credits read from the provider's
+own price for that model. The estimates in `references/craft-brief.md` are only
+a rough guide; where no price gives a figure, the card says the cost is unknown
+and the gate's spend-only cap applies. Run it only after the person's typed yes
+to that card. That yes is the exact-target approval for that run and nothing
+wider; a regenerated line, a new take or a changed voice is a new card.
+`eleven.py check` and `eleven.py voices` only read the account and spend nothing.
 Audio comes before scenes: music beats and narration words set the picture's
 times. Craft depth (voices, music plans, SFX design, mix targets) is in
 `references/craft-audio.md`. `music_tools.py analyze` reads tempo, downbeats and
@@ -846,6 +963,28 @@ focal point, movement/weight, sound intent, entry/exit and cut motivation. Rende
 style frames at delivery size AND a short moving proof before full production.
 Authentic product captures, material/photographic composition, depth, kinetic
 phrases, seeded geometry and quiet holds are options, not a required effect list.
+
+## Hero-frame acceptance before the full render
+
+A film that passes every lint, layout and contact-sheet check can still be
+rejected on sight. Judge the hero frame (usually the first, which is also the
+thumbnail) as a launch frame before rendering the whole film. Ask whether a top
+product team could open its launch film on that frame. Then name each element
+that reads as template or cheap, with the change that fixes it:
+
+- A product shown in 3D is a lit model with real materials (a GLTF device, for
+  example, with the product screen as a live texture), not stacked CSS layers
+  or flat cards. A stacked-layer object reads as cardboard however it is
+  animated.
+- Materials are measured, not eyeballed: crop the product region from a
+  rendered frame and read its mean luminance and clipped share. A light-coloured
+  surface whose bulk sits near white with a radial hotspot reads as a glowing
+  panel, so raise roughness, lower clearcoat or dim the key light until its
+  tonal range opens.
+- The title is set in the brand's own face and colour (see
+  `references/storyboard-and-evidence.md`), the background carries the brand's
+  own art or a deliberate material, and on-screen product UI reads as a
+  shipped app rather than bare boxes.
 
 ## Frame checks before the first style frame
 

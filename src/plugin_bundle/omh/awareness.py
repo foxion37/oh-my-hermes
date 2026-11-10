@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 import hashlib
 import re
@@ -15,6 +15,7 @@ from .dag_ulw_cues import (
     dispatches_dag_ulw,
     sized_without_evidence,
     invokes_dag_ulw,
+    names_several_features,
     reports_or_asks_after_the_name,
     work_is_split,
     work_over_many_targets,
@@ -38,6 +39,7 @@ from .hermes_session_commands import (
     loop_timer_verdict,
     person_request_text,
 )
+from .capability_off import capability_off_sentence
 from .installed_skills import skill_not_installed
 from .native_tools import NATIVE_TODO_TOOL, OMH_TODO_HELD_PLANS, native_tool_presence_clause
 from .spend_signals import SPEND_GATE_PHRASES, spend_request_phrases
@@ -695,7 +697,7 @@ LANE_CROSS_LANE_EXAMPLES = {
         "new repo -> codebase-onboarding -> reading path -> first-task runway",
         "stale code index -> codegraph-refresh -> summary or task-scoped handoff",
         "show me the codebase -> codebase-uml -> one rendered package or focus diagram -> legend read back",
-        "fuzzy feature request -> deep-interview -> ralplan -> accepted plan",
+        "fuzzy feature request -> deep-interview -> ralplan -> accepted plan -> dag-ulw or ultrawork on go-ahead",
     ],
     "research_and_ops": [
         "customer signal -> feedback-triage -> investigation plan -> coding handoff -> status",
@@ -754,11 +756,12 @@ WORKFLOW_CONTEXT_CARDS = (
         "id": "intent_to_plan",
         "label": "Intent to plan",
         "user_signal": "fuzzy goal, ambitious target, safe feature, or one-cycle delivery request",
-        "omh_pattern": "clarify or plan first, then move to an ultrawork delivery cycle, loop, or handoff only when concrete and only after the user confirms the recommended follow-on path",
+        "omh_pattern": "clarify or plan first, then move to a dag-ulw task graph, an ultrawork delivery cycle, loop, or handoff only when concrete and only after the user confirms the recommended follow-on path",
         "representative_workflows": (
             "context",
             "deep-interview",
             "ralplan",
+            "dag-ulw",
             "codebase-onboarding",
             "codegraph-refresh",
             "codebase-uml",
@@ -913,6 +916,7 @@ _WORKFLOW_CONTEXT_CARD_BY_WORKFLOW = {
     "research-department": "research_and_ops",
     "source-finder": "research_and_ops",
     "repro-audit": "research_and_ops",
+    "systematic-review": "research_and_ops",
     "paper-learning": "research_and_ops",
     "long-document-reading": "research_and_ops",
     "jit-learn": "research_and_ops",
@@ -926,6 +930,7 @@ _WORKFLOW_CONTEXT_CARD_BY_WORKFLOW = {
     "model-optimization": "research_and_ops",
     "inference-serving": "research_and_ops",
     "model-finetuning": "research_and_ops",
+    "model-compression": "research_and_ops",
     "feedback-triage": "research_and_ops",
     "meeting-brief": "research_and_ops",
     "strategy-brief": "research_and_ops",
@@ -4841,7 +4846,7 @@ _ROUTE_HINT_RULES = (
             "show oh-my-hermes menu",
         ),
         "tokens": (),
-        "adjacent_workflows": ("deep-interview", "ralplan", "loop", "ultrawork"),
+        "adjacent_workflows": ("deep-interview", "ralplan", "dag-ulw", "loop", "ultrawork"),
     },
     {
         "id": "hermes_coding_team_path",
@@ -4989,7 +4994,7 @@ _ROUTE_HINT_RULES = (
             "기능 안전하게",
         ),
         "tokens": (),
-        "adjacent_workflows": ("deep-interview", "ultrawork", "code-review"),
+        "adjacent_workflows": ("deep-interview", "dag-ulw", "ultrawork", "code-review"),
     },
     {
         "id": "risky_refactor_plan",
@@ -5723,7 +5728,9 @@ def _data_share_awareness_marked(text: str) -> bool:
     return bool(data_share_phrases_said(text)) and data_share_request_admitted(text)
 
 
-def awareness_route_hint(message: str, *, max_hints: int = 2, context_removed: bool = False) -> dict[str, object]:
+def awareness_route_hint(
+    message: str, *, max_hints: int = 2, context_removed: bool = False, profile_owner: str = ""
+) -> dict[str, object]:
     """Return bounded message-specific workflow hints without exposing raw text.
 
     The hint reads the person's own words (`person_request_text`), never the
@@ -5737,6 +5744,10 @@ def awareness_route_hint(message: str, *, max_hints: int = 2, context_removed: b
     `context_removed`: a caller that already cut the person's words from the
     turn says whether a reply pointer or an attachment note went with it
     (`host_context_removed`); this reader also finds one in `message` itself.
+
+    `profile_owner`: the setup profile's default coding owner, from a caller
+    that read it (`setup_profile_owner`). A coding hint then reports it as the
+    profile's owner, as the wrapper does, instead of an owner to ask for.
     """
     request = "" if host_command_turn(message) else person_request_text(message)
     context_removed = context_removed or host_context_removed(message)
@@ -5744,7 +5755,7 @@ def awareness_route_hint(message: str, *, max_hints: int = 2, context_removed: b
     # newline and the executable projection masks the URL or fence that mark work.
     plain = bool(request) and plain_question(message)
     return _copy_awareness_route_hint_payload(
-        _awareness_route_hint_cached(request, max(max_hints, 0), context_removed, plain)
+        _awareness_route_hint_cached(request, max(max_hints, 0), context_removed, plain, profile_owner)
     )
 
 
@@ -5833,7 +5844,8 @@ def _route_hint_with_action_labels(hint: dict[str, object]) -> dict[str, object]
 
 @lru_cache(maxsize=512)
 def _awareness_route_hint_cached(
-    message: str, max_hints: int, context_removed: bool = False, plain_knowledge_question: bool = False
+    message: str, max_hints: int, context_removed: bool = False, plain_knowledge_question: bool = False,
+    profile_owner: str = "",
 ) -> dict[str, object]:
     degraded: list[tuple[str, str]] = []
     matching_message = executable_routing_text(message)
@@ -6010,6 +6022,19 @@ def _awareness_route_hint_cached(
             # the router's explicit invocation does ("use git-workflow: 열린 PR들 전부 리베이스해줘").
             hints = [_dag_ulw_by_size_hint(), *(hint for hint in hints if hint.get("workflow") != "dag-ulw")][:hint_limit]
         elif (
+            hint_limit
+            and not direct_hint
+            and getattr(intent, "intent_class", "") not in {"meta_discussion", "feedback_signal"}
+            and not any(hint.get("workflow") in {"dag-ulw", "ultrawork"} for hint in hints)
+            and len(hints) < hint_limit
+            and names_several_features(matching_message, links)
+        ):
+            # Several features or stages named and asked to be built ("메일 가져오기, 파일 업로드, 검색 기능 개발해줘", "build
+            # the upload, preview and download screens"): offered first, ahead of a rule one item's word matched
+            # ("검색" for web-research); the person names the parts, not how each is run, so nothing starts. Only with room
+            # for it: the offer never pushes out a hint already there.
+            hints = [_dag_ulw_offer_hint(), *hints]
+        elif (
             not hints
             and hint_limit
             and not matching_message.rstrip().endswith(("?", "？"))
@@ -6091,7 +6116,7 @@ def _awareness_route_hint_cached(
         # how does it work", "code-review 결과가 이상해"), or a stop, a status request or a question about the skill
         # after the sigil that invokes it ("/ulw-work stop"): the router answers it, so no hint offers a run either.
         hints = []
-    hints = [_route_hint_with_coding_route_decision(hint, routing_normalized) for hint in hints]
+    hints = [_route_hint_with_coding_route_decision(hint, routing_normalized, profile_owner) for hint in hints]
     hints = [_route_hint_with_action_labels(hint) for hint in hints]
     # Emission boundary (#1249): every consumer above keys off the catalog name
     # (rule tables, retired-engine folding, context-card lookup, the coding
@@ -6148,7 +6173,9 @@ def _awareness_route_hint_cached(
     return payload
 
 
-def _route_hint_with_coding_route_decision(hint: dict[str, object], routing_normalized: str) -> dict[str, object]:
+def _route_hint_with_coding_route_decision(
+    hint: dict[str, object], routing_normalized: str, profile_owner: str = ""
+) -> dict[str, object]:
     """Attach the shared coding-owner decision to every coding-delivery route hint.
 
     Direct `ultraprocess`, broad `coding_delivery`, and `test_until_pass_delivery` all
@@ -6162,7 +6189,7 @@ def _route_hint_with_coding_route_decision(hint: dict[str, object], routing_norm
         copied["coding_route_decision"] = _standalone_user_choice_decision_payload()
         return copied
     copied["coding_route_decision"] = _coding_route_decision_payload(
-        _resolve_coding_route_decision(routing_normalized)
+        _resolve_coding_route_decision(routing_normalized, recorded_owner=profile_owner)
     )
     return copied
 
@@ -6720,6 +6747,75 @@ def route_hint_for_installed_skills(
     return _route_hint_without(payload, lambda name: skill_not_installed(name, installed))
 
 
+def route_hint_without_disabled_skills(
+    payload: dict[str, object], disabled: Mapping[str, str]
+) -> dict[str, object]:
+    """The route hint with every skill of a turned-off capability family left out (`capability_off`).
+
+    Left out the way an uninstalled skill is: a selected hint goes whole and
+    the next becomes `selected=`; adjacent workflows are cut per hint. Hint
+    workflows may be display labels (`ulw-plan`), so each is read back to its
+    workflow name first. Nothing turned off returns the payload unchanged.
+    """
+    if not disabled:
+        return payload
+    names = _canonical_workflow_by_display_name()
+    return _route_hint_without(payload, lambda name: names.get(name, name) in disabled)
+
+
+def route_hint_withheld(payload: dict[str, object]) -> dict[str, object]:
+    """The route hint with every hint left out: the `no_hint` shape a request answered elsewhere renders."""
+    return _route_hint_without(payload, lambda name: True)
+
+
+CAPABILITY_OFF_HINT_HEAD = "[OMH Capability Off]"
+
+
+def capability_family_verdict(message: str, disabled: Mapping[str, str]) -> dict[str, object]:
+    """The router's verdict on a turned-off family for `message` (`routing.chat.capability_family_verdict`).
+
+    `{"verdict": "off" | "note", ...record}` or `{}`. A standalone host has no
+    router to ask and gets `{}`: the turned-off skills are still cut from the
+    hint, and the turn adds nothing.
+    """
+    if not disabled or not message.strip():
+        return {}
+    try:
+        from ...routing.chat import capability_family_verdict as router_verdict
+    except ImportError:
+        try:
+            from omh.routing.chat import capability_family_verdict as router_verdict
+        except ImportError:  # pragma: no cover - exercised by standalone plugin hosts.
+            return {}
+    return router_verdict(message, disabled)
+
+
+def capability_off_block(verdict: Mapping[str, object]) -> str:
+    """The turn's block for an "off" verdict, or "".
+
+    Only "off": the router decides, not the hint rail, which names skills on
+    medium evidence too. A "note" verdict (an open question) adds no block,
+    because 23 to 261 negative controls per family get one; the turn
+    withholds its route hint and candidate line instead.
+    """
+    if verdict.get("verdict") != "off":
+        return ""
+    workflow = str(verdict.get("workflow") or "")
+    family_id = str(verdict.get("family") or "")
+    if not workflow or not family_id:
+        return ""
+    return (
+        f"{CAPABILITY_OFF_HINT_HEAD} {capability_off_sentence(workflow, family_id)} "
+        "Do not load it or hand the request to another workflow; tell the person the family is off "
+        "and give them that command."
+    )
+
+
+def capability_off_hint_context(message: str, disabled: Mapping[str, str]) -> str:
+    """`capability_off_block` for `message`: the turn's "off" block, or ""."""
+    return capability_off_block(capability_family_verdict(message, disabled))
+
+
 def route_hint_without_engine_workflows(payload: dict[str, object]) -> dict[str, object]:
     """The route hint with every orchestrating-engine hint left out, for a delegated child.
 
@@ -6814,12 +6910,14 @@ def awareness_primer_payload() -> dict[str, object]:
                 "model-optimization",
                 "inference-serving",
                 "model-finetuning",
+                "model-compression",
                 "research-brief",
                 "market-research",
                 "strategy-brief",
                 "feedback-triage",
                 "research-department",
                 "repro-audit",
+                "systematic-review",
                 "paper-learning",
                 "long-document-reading",
                 "jit-learn",
@@ -7214,7 +7312,8 @@ def awareness_primer_markdown() -> str:
     for lane in payload["lanes"]:
         if not isinstance(lane, dict):
             continue
-        skills = [str(skill) for skill in lane["skills"][:4]]
+        # The per-turn primer has no render pass, so each key is written as its loadable label.
+        skills = [_loadable_skill_label(str(skill)) for skill in lane["skills"][:4]]
         lane_lines.append(
             f"- **{lane['label']}**: {lane['use_for']}. Key: `{'`, `'.join(skills)}`."
         )
@@ -7273,12 +7372,7 @@ def awareness_workflow_context_markdown(skill_name: str) -> str:
     lane = _lane_for_skill(skill_name, payload["lanes"])
     lane_line = "Use `omh_recommend` or the `oh-my-hermes` router for workflow choice, and `omh_capabilities` for manifest detail."
     if lane:
-        lane_skills = tuple(str(skill) for skill in lane["skills"])
-        shown_skills = lane_skills[:8]
-        skills = "`, `".join(shown_skills)
-        if len(lane_skills) > len(shown_skills):
-            skills = f"{skills}`, `+{len(lane_skills) - len(shown_skills)} more"
-        lane_line = f"Current lane: **{lane['label']}** (`{skills}`) - {lane['use_for']}."
+        lane_line = f"Current lane: **{lane['label']}** - {lane['use_for']}."
     return "\n".join(
         [
             "## Workflow Lane",
@@ -7291,32 +7385,40 @@ def awareness_workflow_context_markdown(skill_name: str) -> str:
     )
 
 
+# The cue, card and checkpoint lines name each skill by the label `skill_view`
+# loads, written out because this bundle cannot import `omh` to derive it; the
+# per-turn primer carries these lines as they are, with no render pass.
 def _compact_workflow_cue_line() -> str:
     return (
-        "notes/retros -> operating-rhythm/meeting-brief; PR/issue/bug/feedback/release -> github-event-ops, "
-        "feedback-triage, report-package, or img-summary; papers -> paper-learning; sources/news -> research/research-department; "
-        "premium visuals -> design-quality-gate; frontend -> frontend; accessibility/WCAG -> accessibility-audit; screenshots/render -> visual-qa; files/docs -> materials/report-package; image cards -> img-summary; "
-        "failed checks -> build-failure-triage; code/CI/merge -> ultrawork/code-review/verification-gate; "
-        "agent failure/drift -> agent-debug; hidden failures -> failure-signal-audit; lessons -> instinct-ledger; regression -> workflow-learning"
+        "notes/retros -> omh-operating-rhythm/omh-meeting-brief; PR/issue/bug/feedback/release -> omh-github-event-ops, "
+        "omh-feedback-triage, omh-report-package, or omh-image-cards; papers -> omh-paper-learning; "
+        "sources/news -> ulw-research/omh-research-department; premium visuals -> omh-design-quality-gate; "
+        "frontend -> omh-frontend; accessibility/WCAG -> omh-accessibility-audit; screenshots/render -> omh-visual-qa; "
+        "files/docs -> omh-materials-package/omh-report-package; image cards -> omh-image-cards; "
+        "failed checks -> omh-build-failure-triage; code/CI/merge -> ulw-work/omh-code-review/omh-verification-gate; "
+        "agent failure/drift -> omh-agent-debug; hidden failures -> omh-failure-signal-audit; lessons -> omh-instinct-ledger; "
+        "regression -> omh-workflow-learning"
     )
 
 
 def _compact_workflow_context_cards_line() -> str:
     return (
-        "intent -> deep-interview/ralplan/codebase-onboarding/codegraph-refresh/loop; "
-        "signals -> research/research-department/feedback-triage; "
-        "materials -> design-quality-gate/frontend/accessibility-audit/visual-qa/materials-package; "
-        "ops -> automation/workspace/production/context-budget/agent-debug/failure-signal-audit/instinct-ledger/skill-health/learning/doctor; "
-        "eval/rules -> agent-evaluation/rules-distill; "
-        "code -> ultrawork/code-review/build-failure-triage/verification-gate/ultraqa"
+        "intent -> ulw-interview/ulw-plan/omh-codebase-onboarding/omh-codegraph-refresh/ulw-loop; "
+        "signals -> ulw-research/omh-research-department/omh-feedback-triage; "
+        "materials -> omh-design-quality-gate/omh-frontend/omh-accessibility-audit/omh-visual-qa/omh-materials-package; "
+        "ops -> omh-automation-blueprint/omh-workspace-audit/omh-production-audit/omh-context-budget-review/omh-agent-debug/"
+        "omh-failure-signal-audit/omh-instinct-ledger/omh-skill-health/omh-workflow-learning/omh-doctor; "
+        "eval/rules -> omh-agent-evaluation/omh-rules-distill; "
+        "code -> ulw-work/omh-code-review/omh-build-failure-triage/omh-verification-gate/ulw-qa"
     )
 
 
 def _compact_generic_tool_checkpoint_line() -> str:
     return (
-        "image->img-summary; frontend->frontend/a11y/visual-qa; paper->paper-learning; content->content-operator; media->media-input-operator; file->materials-package; "
-        "search->research; live->live-info-operator; audit->workspace/production/security; "
-        "failures->build-failure; verify->verification-gate; code->codegraph/onboarding/ultrawork"
+        "image->omh-image-cards; frontend->omh-frontend/omh-accessibility-audit/omh-visual-qa; paper->omh-paper-learning; "
+        "content->omh-content-operator; media->omh-media-input; file->omh-materials-package; "
+        "search->ulw-research; live->omh-live-info; audit->omh-workspace-audit/omh-production-audit/omh-security-safety-review; "
+        "failures->omh-build-failure-triage; verify->omh-verification-gate; code->omh-codegraph-refresh/omh-codebase-onboarding/ulw-work"
     )
 
 
@@ -7332,6 +7434,7 @@ _DIRECT_WORKFLOW_NEXT_ACTIONS = {
     "workflow-learning": "audit_learning_readiness",
     "data-analysis": "prepare_data_analysis_card",
     "repro-audit": "prepare_repro_audit",
+    "systematic-review": "prepare_systematic_review",
     "geospatial-analysis": "prepare_geospatial_analysis",
     "biomedical-evidence": "prepare_biomedical_evidence",
     "molecular-docking": "prepare_molecular_docking",
@@ -7379,6 +7482,7 @@ _DIRECT_WORKFLOW_NEXT_ACTIONS = {
     "codegraph-refresh": "prepare_codegraph_refresh",
     "inference-serving": "prepare_inference_serving",
     "model-finetuning": "prepare_finetune_decision",
+    "model-compression": "prepare_compression_plan",
     "award-bar-score": "prepare_award_bar_score",
     "tech-debt-audit": "prepare_tech_debt_audit",
     "refactor-plan": "prepare_refactor_plan",
@@ -7616,6 +7720,43 @@ def _ulw_retired_hint_target(
     return _ULW_RETIRED_TARGET_HOME, remapped_actions.get(next_action, next_action)
 
 
+# Hand-picked labels the mechanical prefix rule cannot derive. Mirrors
+# `skills/catalog_types.OMH_SKILL_DISPLAY_NAME_OVERRIDES`; the copy exists
+# because a copied plugin bundle has no catalog import, and
+# `tests/test_display_names.py` locks the two together.
+_DISPLAY_LABEL_OVERRIDES: tuple[tuple[str, str], ...] = (
+    ("omh-docs", "product-docs"),
+    ("omh-decide", "strategy-brief"),
+    ("ulw-context", "context"),
+    ("ulw-interview", "deep-interview"),
+    ("ulw-plan", "ralplan"),
+    ("ulw-goal", "ultragoal"),
+    ("ulw-process", "ultraprocess"),
+    ("ulw-qa", "ultraqa"),
+    ("ulw-work", "ultrawork"),
+    ("ulw-perf", "ultraperf"),
+    ("omh-browser", "browser-operator"),
+    ("omh-files", "workspace-file-operator"),
+    ("omh-terminal", "command-operator"),
+    ("omh-apps", "connector-operator"),
+    ("omh-live-info", "live-info-operator"),
+    ("omh-media-input", "media-input-operator"),
+    ("omh-voice-input", "voice-operator"),
+    ("omh-image-cards", "img-summary"),
+    ("dag-ulw", "dag-ulw"),
+)
+
+
+def _loadable_skill_label(workflow: str) -> str:
+    """The label `skill_view` loads for a catalog workflow name, by the same rules as the map below."""
+    if workflow == "oh-my-hermes":
+        return "omh-routing"
+    for display, name in _DISPLAY_LABEL_OVERRIDES:
+        if name == workflow:
+            return display
+    return f"{'ulw-' if workflow in _ULW_ENGINE_WORKFLOWS else 'omh-'}{workflow}"
+
+
 @lru_cache(maxsize=1)
 def _canonical_workflow_by_display_name() -> dict[str, str]:
     """Map every `omh-`/`ulw-` display label this module knows back to its workflow name.
@@ -7630,31 +7771,7 @@ def _canonical_workflow_by_display_name() -> dict[str, str]:
         f"{'ulw-' if workflow in _ULW_ENGINE_WORKFLOWS else 'omh-'}{workflow}": workflow for workflow in workflows
     }
     mapping["omh-routing"] = "oh-my-hermes"
-    # Hand-picked labels the mechanical prefix rule cannot derive. Mirrors
-    # `skills/catalog_types.OMH_SKILL_DISPLAY_NAME_OVERRIDES`; the copy exists
-    # because a copied plugin bundle has no catalog import, and
-    # `tests/test_display_names.py` locks the two together.
-    for display, workflow in (
-        ("omh-docs", "product-docs"),
-        ("omh-decide", "strategy-brief"),
-        ("ulw-context", "context"),
-        ("ulw-interview", "deep-interview"),
-        ("ulw-plan", "ralplan"),
-        ("ulw-goal", "ultragoal"),
-        ("ulw-process", "ultraprocess"),
-        ("ulw-qa", "ultraqa"),
-        ("ulw-work", "ultrawork"),
-        ("ulw-perf", "ultraperf"),
-        ("omh-browser", "browser-operator"),
-        ("omh-files", "workspace-file-operator"),
-        ("omh-terminal", "command-operator"),
-        ("omh-apps", "connector-operator"),
-        ("omh-live-info", "live-info-operator"),
-        ("omh-media-input", "media-input-operator"),
-        ("omh-voice-input", "voice-operator"),
-        ("omh-image-cards", "img-summary"),
-        ("dag-ulw", "dag-ulw"),
-    ):
+    for display, workflow in _DISPLAY_LABEL_OVERRIDES:
         if workflow in workflows:
             mapping[display] = workflow
         else:

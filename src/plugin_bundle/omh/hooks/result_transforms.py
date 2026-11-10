@@ -1,7 +1,7 @@
 """Composed ``transform_tool_result`` seam, and the ``transform_llm_output``
 half of unarmed remote waits.
 
-This is the single registered entry for the hook; it chains the six OMH
+This is the single registered entry for the hook; it chains the seven OMH
 result transforms in a fixed order:
 
 1. Code-mode discipline annotation — the first ``execute_code`` result of a
@@ -26,7 +26,15 @@ result transforms in a fixed order:
    exits (``remote_wait_nudge.py``). The same pass reads, without changing
    them, ``delegate_task`` and ``cronjob_manage`` results, to record that a
    turn opened by a failed watcher armed its next wake another way.
-6. Full-width diff band padding — tool-result diffs get their painted lines
+6. Shell round end -- a ``terminal`` / ``execute_code`` call that changed a
+   Python file, in a turn with no ``patch`` / ``write_file`` call, gets the
+   round-end export, test and caller notes under its own JSON key, once per
+   turn, when one of them names a line (``verify_hooks.annotate_shell_round_end``).
+   Only the last call of a model message that is not a read is looked at:
+   ``post_api_request`` keeps the message's call ids.
+   Hermes calls ``pre_verify`` only after those two tools, so without this a
+   shell-only edit gets no round-end check.
+7. Full-width diff band padding — tool-result diffs get their painted lines
    padded to a uniform band (``diff_presentation.py``), except Kanban readback
    tools: their serialized records must retain the bound and valid JSON even
    when a string contains Unicode line separators and diff-looking text.
@@ -60,17 +68,25 @@ web_search, web_extract}`` plus the delegation tools for engagement nudges,
 for kanban bounding, and ``terminal`` for unarmed remote waits. Engagement
 nudges deliberately do NOT watch ``terminal``, so no result reaches both of
 those. ``tests/test_remote_wait_nudge.py`` derives those sets from the
-modules and pins the disjointness, so a pass that later widens into
-``terminal`` fails there rather than silently sharing a result.
+modules and pins the disjointness, so a pass placed before unarmed remote
+waits that widens into ``terminal`` fails there rather than silently sharing
+a result.
 
-**Why unarmed remote waits runs last of the annotating passes.** It is the
+**The shell round end runs after unarmed remote waits.** It watches
+``terminal`` and ``execute_code``, so it can meet both code-mode guidance and
+unarmed remote waits on one result. It reads no field of the result (its
+evidence is the workspace on disk), parses the string it is handed, and
+writes its own key, ``omh_round_end``; running after them, it leaves both of
+them the host's own object. The composed case is pinned in
+``tests/test_shell_round_end.py``.
+
+**Why unarmed remote waits runs before the shell round end.** It is the
 pass which reads terminal-specific outcome fields: ``exit_code`` to know the
 command succeeded, ``status`` /
 ``approval_pending`` for the gate, and ``session_id`` to recognise a
-background spawn. Being disjoint from the others it always sees the host's
-own object anyway, and running it immediately before the diff pass states
-that ordering as an invariant rather than an accident: every pass that reads
-host fields runs before the one that reformats text.
+background spawn. No pass before it watches ``terminal``, so it always sees
+the host's own object, and every pass that reads host fields runs before the
+ones that only add a key or reformat text.
 """
 
 from __future__ import annotations
@@ -82,10 +98,11 @@ from ..code_mode_guidance import annotate_execute_code_result
 from ..delegation_snapshot import appended, messenger_snapshot
 from ..engagement_nudges import annotate_engagement_nudge
 from ..kanban_readback import KANBAN_READBACK_TOOLS, transform_kanban_readback
+from ..messenger_judgement import judged_reply
 from ..remote_wait_nudge import annotate_remote_wait, honest_stop_output
 from ..truncated_read_recovery import annotate_truncated_read_recovery
 from .diff_presentation import transform_tool_result as _pad_diff_result
-from .verify_hooks import restore_round_end_answer
+from .verify_hooks import annotate_shell_round_end, restore_round_end_answer
 
 # Failures of the delegation snapshot by exception type; a block that failed is a reply without one.
 snapshot_failures: Counter[str] = Counter()
@@ -160,6 +177,18 @@ def transform_tool_result(**kwargs: Any) -> str | None:
     if waited is not None:
         annotated = waited
         kwargs = {**kwargs, "result": waited}
+    # After unarmed remote waits, which must read the host's own terminal object: this pass parses what
+    # it is handed and adds its own key. It reads the disk, not the result.
+    round_end = annotate_shell_round_end(
+        tool_name=kwargs.get("tool_name"),
+        result=kwargs.get("result"),
+        session_id=session_id,
+        turn_id=kwargs.get("turn_id"),
+        tool_call_id=kwargs.get("tool_call_id"),
+    )
+    if round_end is not None:
+        annotated = round_end
+        kwargs = {**kwargs, "result": round_end}
     # Board readbacks are serialized records, not presentation diffs. Python's
     # splitlines() also splits Unicode separators inside JSON strings; padding
     # that text could corrupt JSON and invalidate the final readback ceiling.
@@ -194,9 +223,24 @@ def transform_llm_output(**kwargs: Any) -> str | None:
     swapped back to the answer the turn stopped with, which `pre_verify`
     stashed. Hermes fires this hook before the final row is persisted, so the
     stored transcript and every caller get that answer byte for byte. This is
-    the one place OMH replaces a reply instead of appending to it.
+    one of two places OMH replaces a reply instead of appending to it.
+
+    Then the judged messenger room (`messenger_judgement`), on the answer the
+    sentinel restored, which can itself be a marker: on a turn `pre_llm_call`
+    gave the marker instruction, ``[SHUTUP]`` becomes Hermes' ``[SILENT]`` (the
+    thread muted, the 🫡 scheduled), and a silence marker comes back clean.
+    Nothing is appended to either, or the marker would stop being one and reach
+    the chat. A token at the edge of that turn's answer is removed; every other
+    answer passes unchanged.
     """
     restored = restore_round_end_answer(session_id=kwargs.get("session_id"), response_text=kwargs.get("response_text"))
+    handled, replacement = judged_reply(
+        kwargs.get("turn_id"), restored if restored is not None else kwargs.get("response_text"),
+    )
+    if handled:
+        return replacement if replacement is not None else restored
+    if replacement is not None:
+        restored = replacement
     if restored is not None:
         kwargs = {**kwargs, "response_text": restored}
     honest = honest_stop_output(

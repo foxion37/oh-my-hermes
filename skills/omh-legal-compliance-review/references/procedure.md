@@ -11,8 +11,8 @@ Expert clarification questions:
   - English: Which supplied authority identifiers, issuers, versions, effective status, exact pinpoints, hierarchy, and verification state may be used?
   - Korean: 사용 가능한 제공 근거의 식별자, 발행기관, 버전, 효력 상태, 정확한 인용 위치, 위계, 검증 상태는 무엇인가요?
 - `review objective`
-  - English: Which decision, risk tolerance, approval owner, deadline, and mandatory counsel questions should the review support?
-  - Korean: 이 검토가 지원할 의사결정, 위험 허용 범위, 승인 책임자, 기한, 필수 법률 자문 질문은 무엇인가요?
+  - English: Which decision, risk tolerance, approval owner, deadline, and mandatory counsel questions should the review support, and which playbook applies if it is a redline?
+  - Korean: 이 검토가 지원할 의사결정, 위험 허용 범위, 승인 책임자, 기한, 필수 법률 자문 질문, 협상안 작성이라면 적용할 플레이북은 무엇인가요?
 
 ## Procedure
 
@@ -25,10 +25,10 @@ Declared checks:
   - Criterion: Each authority-dependent proposition must trace to supplied or observed authority and an exact locator and status; user summaries and inferences stay unverified.
 - `legal_issue_matrix_check`
   - Required result fields: `applicability_facts`, `obligation_position`, `definitions_dependencies`, `exceptions_carveouts_conflicts`, `evidence_status`, `risk_uncertainty`, `action_owner`, `recommended_disposition`, `counsel_question`, `issue_family_applicability`
-  - Criterion: Map facts to operative text, dependencies, exceptions and conflicts; when triggered cover warranty, disclaimer, indemnity and liability interactions or privacy roles, basis, transfers, security, breach, retention, rights and DPIA, marking other families not applicable.
+  - Criterion: Map facts to operative text, dependencies, exceptions and conflicts; inventory the families and mark each reviewed, not applicable with the reason, or not in the supplied documents: parties and authority to sign; term, renewal, termination and notice deadlines; payment; scope and deliverables; IP and licence; confidentiality (definition, exclusions, term, permitted recipients, compelled disclosure, return or destruction); warranty and disclaimer; indemnity and liability caps; data protection roles, basis, transfers, security, breach, retention, rights and DPIA; assignment and change of control; governing law and forum; boilerplate that changes risk such as entire agreement, amendment and order of precedence.
 - `legal_counsel_hold_check`
   - Required result fields: `trigger_ids`, `impact`, `likelihood_applicability`, `urgency`, `evidence_confidence`, `reversibility`, `hold_status`, `counsel_owner`
-  - Criterion: Mandatory HOLD triggers include uncertain or conflicting authority, missing jurisdiction or dates, enforceability or privilege, material or uncapped liability or indemnity, regulatory deadlines, and sensitive, high-risk or cross-border privacy or DPIA uncertainty.
+  - Criterion: Mandatory HOLD triggers include uncertain or conflicting authority, missing jurisdiction or dates, enforceability or privilege, material or uncapped liability or indemnity, regulatory deadlines, contractual notice or auto-renewal deadlines before the deadline in the review objective (with none supplied, list the dates found and ask for the deadline), and sensitive, high-risk or cross-border privacy or DPIA uncertainty.
 - `legal_negotiation_preparation_check`
   - Required result fields: `playbook_position`, `gap`, `proposed_language`, `fallback_position`, `walk_away_trigger`, `concession_order`, `counsel_hold_state`
   - Criterion: Every proposed clause traces to a cited playbook position and carries its fallback and walk-away; a row whose position cannot be cited becomes a counsel question, an open hold blocks its row, and the concession order states which rows are linked.
@@ -46,11 +46,12 @@ Record actors, roles, facts, instrument set and precedence, governing law, forum
 
 ### `legal_trace_authority` (validation)
 
-Create a citation ledger using only supplied or observed sources, exact pinpoints and effective status; route absent authority to research or counsel instead of filling it in.
+Create a citation ledger using only supplied or observed sources, exact pinpoints and effective status; route absent authority to `ulw-research` or counsel instead of filling it in.
 
 - Input refs: `supplied authority`, `document or process version`
 - Output refs: `legal_scope_authority_record/v1`
 - Check IDs: `legal_authority_citation_check`, `legal_final_determination_guard`
+- If this step fails: unresolved; still stands: `legal_scope_authority_record/v1`; hand back: Return legal_scope_authority_record/v1 with scope facts intact and each missing, stale or unverified authority, pinpoint and effective status listed for research or counsel.
 
 ### `legal_map_issues_exceptions` (analysis)
 
@@ -67,6 +68,7 @@ Rank impact, applicability, urgency, confidence and reversibility, then impose m
 - Input refs: `jurisdiction`, `supplied authority`, `review objective`
 - Output refs: `legal_risk_counsel_hold_register/v1`
 - Check IDs: `legal_counsel_hold_check`
+- If this step fails: tentative; still stands: `legal_scope_authority_record/v1`, `legal_issue_traceability_matrix/v1`; hand back: Return the draft legal_risk_counsel_hold_register/v1 with uncovered trigger IDs, missing risk assessments and counsel owners for correction; no affected issue is cleared.
 
 ### `legal_prepare_negotiation_positions` (production)
 
@@ -75,6 +77,7 @@ When the objective is a redline, build one row per contested clause -- playbook 
 - Input refs: `document or process version`, `supplied authority`, `review objective`
 - Output refs: `legal_negotiation_preparation/v1 when the objective is a redline rather than an assessment`
 - Check IDs: `legal_negotiation_preparation_check`, `legal_counsel_hold_check`
+- If this step fails: unresolved; still stands: `legal_scope_authority_record/v1`, `legal_issue_traceability_matrix/v1`, `legal_risk_counsel_hold_register/v1`; hand back: Return legal_negotiation_preparation/v1 with held or uncited clause rows blocked as counsel questions and missing fallback, walk-away or linked concession positions identified; issue no proposal for a held clause.
 
 ### `legal_validate_disposition` (validation)
 
@@ -83,3 +86,4 @@ Return PASS, REVISE, or HOLD with exact open triggers and counsel route; prohibi
 - Input refs: `jurisdiction`, `document or process version`, `supplied authority`, `review objective`
 - Output refs: `legal_review_disposition/v1`
 - Check IDs: `legal_scope_facts_instruments_check`, `legal_authority_citation_check`, `legal_issue_matrix_check`, `legal_counsel_hold_check`, `legal_final_determination_guard`
+- If this step fails: unresolved; still stands: `legal_scope_authority_record/v1`, `legal_issue_traceability_matrix/v1`, `legal_risk_counsel_hold_register/v1`; hand back: Return legal_review_disposition/v1 as HOLD with exact failed authority or issue checks, open triggers and counsel owners; retain earlier drafts without issuing a final legal or compliance determination.

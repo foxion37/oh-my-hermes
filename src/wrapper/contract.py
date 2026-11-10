@@ -47,11 +47,20 @@ from ..routing.chat import (
     route_explanation_payload,
     route_question_observation,
 )
-from ..routing.coding_route_actions import coding_route_decision_payload, resolve_coding_route_decision
+from ..routing.coding_route_actions import (
+    NON_CLI_OWNERS,
+    coding_route_decision_payload,
+    mentioned_executor_owners,
+    named_executor_owners,
+    resolve_coding_route_decision,
+)
+from ..routing.executor_cues import owner_named_as_doer
 from ..routing.localization import normalized_phrase
 from ..routing.route_plan import public_workflow_identifier, with_public_skill_names
 from ..routing.route_question import apply_route_question_mode
 from ..plugin_bundle.omh.route_question_mode import read_route_question_mode
+from ..plugin_bundle.omh.capability_off import disabled_skill_families
+from ..routing.capability_off import CAPABILITY_NOTE_KEY, CAPABILITY_OFF_KEY
 from ..routing.policy import POINT_IN_TIME_WEB_GUARD
 from ..workflows.realtime_voice_trial_receipts import build_prepared_realtime_voice_chat_state
 from ..workflows.temporal_source_receipts import (
@@ -119,6 +128,7 @@ from .domain_context_attachment import (
 from ..skills.expert_question_rendering import domain_expert_question_body
 from .localized_copy import (
     SUPPORTED_COPY_LOCALES,
+    capability_note_sentence,
     chat_copy,
     consolidation_notice_line,
     detect_copy_locale,
@@ -167,7 +177,6 @@ VISIBLE_ACTIONS = (
     "prepare_handoff",
     "prepare_project_terms_context",
     "choose_executor",
-    "reset_coding_owner_preference",
     "show_prompt_handoff",
     "copy_prompt_handoff",
     "copy_fanout_resume",
@@ -233,6 +242,7 @@ VISIBLE_ACTIONS = (
     "show_acquisition_status",
     "prepare_learning_brief",
     "prepare_repro_audit",
+    "prepare_systematic_review",
     "prepare_paper_learning",
     "choose_explanation_level",
     "show_paper_source_requirements",
@@ -310,6 +320,8 @@ VISIBLE_ACTIONS = (
     "show_replay_plan",
     "prepare_finetune_decision",
     "show_promotion_gate",
+    "prepare_compression_plan",
+    "show_compression_quality_gate",
     "prepare_mobile_release_plan",
     "show_rollout_halt",
     "prepare_control_test_plan",
@@ -649,7 +661,7 @@ _CONTEXT_PRIMER_GROUPS = (
     {
         "id": "intent_to_plan",
         "label": "Intent to plan",
-        "workflows": ("deep-interview", "ralplan", "loop", "ultrawork"),
+        "workflows": ("deep-interview", "ralplan", "dag-ulw", "loop", "ultrawork"),
         "use_when": "The user has a fuzzy goal, a large goal, or one delivery cycle that needs research, planning, execution, review, and sync.",
     },
     {
@@ -684,6 +696,7 @@ _CONTEXT_PRIMER_GROUPS = (
 _RETAINED_DELEGATION_SKILLS = set(retained_delegation_skill_names())
 _DIRECT_WORKFLOW_SKILLS = {
     "repro-audit",
+    "systematic-review",
     "geospatial-analysis",
     "biomedical-evidence",
     "molecular-docking",
@@ -1079,7 +1092,7 @@ _ACK_PRIMARY_ACTIONS_BY_NEXT_ACTION = {
     "run_omh_update": ("run_omh_update", "Run omh update"),
     "run_omh_setup": ("run_omh_setup", "Run omh setup"),
     "run_omh_doctor": ("run_omh_doctor", "Run omh doctor"),
-    "run_omh_uninstall": ("run_omh_uninstall", "Run omh uninstall"),
+    "run_omh_uninstall": ("run_omh_uninstall", "Preview omh uninstall"),
     "run_omh_install": ("run_omh_install", "Run omh install"),
     "run_omh_list": ("run_omh_list", "Run omh list"),
     "run_hermes_research": ("run_hermes_research", "Start research"),
@@ -1112,6 +1125,7 @@ _ACK_PRIMARY_ACTIONS_BY_NEXT_ACTION = {
     "prepare_source_finder_plan": ("prepare_source_finder_plan", "Prepare sources"),
     "prepare_learning_brief": ("prepare_learning_brief", "Confirm learning target"),
     "prepare_repro_audit": ("prepare_repro_audit", "Prepare result audit"),
+    "prepare_systematic_review": ("prepare_systematic_review", "Prepare screening"),
     "prepare_paper_learning": ("prepare_paper_learning", "Prepare paper learning"),
     "prepare_workspace_audit": ("prepare_workspace_audit", "Prepare audit"),
     "prepare_production_audit": ("prepare_production_audit", "Audit production"),
@@ -1185,6 +1199,8 @@ _ACK_PRIMARY_ACTIONS_BY_NEXT_ACTION = {
     "show_replay_plan": ("show_replay_plan", "Show the replay plan"),
     "prepare_finetune_decision": ("prepare_finetune_decision", "Decide on fine-tuning"),
     "show_promotion_gate": ("show_promotion_gate", "Show the promotion gate"),
+    "prepare_compression_plan": ("prepare_compression_plan", "Plan the compression"),
+    "show_compression_quality_gate": ("show_compression_quality_gate", "Show the quality gate"),
     "prepare_mobile_release_plan": ("prepare_mobile_release_plan", "Plan the store release"),
     "show_rollout_halt": ("show_rollout_halt", "Show the halt thresholds"),
     "prepare_control_test_plan": ("prepare_control_test_plan", "Plan the control test"),
@@ -2080,6 +2096,17 @@ _DELIVERY_RUNTIME_CHAT_CARDS: dict[str, dict[str, object]] = {
 }
 
 _WORKFLOW_OPERATIONS_CHAT_CARDS: dict[str, dict[str, object]] = {
+    "systematic-review": {
+        "kind": "systematic_review",
+        "headline": "Screen records against criteria you freeze first, with two blind reviewers.",
+        "body": "Agree the inclusion and exclusion criteria and exclusion codes, then I freeze them, prepare blind batches for reviewers A and B, merge their answers and show every conflict and pending record. Agreement is between reviewers, not accuracy.",
+        "phase": "systematic_review_prepared",
+        "next_action": "prepare_systematic_review",
+        "artifact_schema": "screening_merge/v1",
+        "actions": [{"id": "prepare_systematic_review", "label": "Prepare screening", "style": "primary"}],
+        "recommended_flow": ["freeze_criteria", "prepare_blind_batches", "dispatch_two_reviewers", "merge_and_resolve_conflicts"],
+        "evidence_not_observed": ["reviewer answers", "merge output", "adjudication", "review team verification"],
+    },
     "repro-audit": {
         "kind": "repro_audit",
         "headline": "Compare existing evaluation records with reported conditions.",
@@ -2444,6 +2471,37 @@ _WORKFLOW_OPERATIONS_CHAT_CARDS: dict[str, dict[str, object]] = {
             "training run",
             "eval score",
             "checkpoint promoted",
+        ],
+    },
+    "model-compression": {
+        "kind": "compression_plan",
+        "headline": "I can plan how to make this model smaller, and keep it only if it still does your task.",
+        "body": (
+            "I will size the target from your hardware, memory budget and runtime, measure the uncompressed model on your "
+            "held-out task examples, pick the cheapest method that fits (post-training quantization before pruning or "
+            "distillation), plan calibration data kept apart from that eval, and keep a smaller model only within your "
+            "stated tolerance. I compress nothing and run no eval."
+        ),
+        "phase": "compression_plan_prepared",
+        "next_action": "prepare_compression_plan",
+        "artifact_schema": "compression_target/v1",
+        "claim_boundary_suffix": "It is not a compressed model, a measured size, or an eval score until the output is observed.",
+        "actions": [
+            {"id": "prepare_compression_plan", "label": "Plan the compression", "style": "primary"},
+            {"id": "show_compression_quality_gate", "label": "Show the quality gate", "style": "secondary"},
+            {"id": "show_status", "label": "Show status", "style": "secondary"},
+        ],
+        "recommended_flow": [
+            "size_the_target_from_hardware_and_runtime",
+            "measure_the_uncompressed_baseline_on_the_task",
+            "choose_the_cheapest_method_that_fits",
+            "plan_calibration_data_apart_from_the_eval",
+            "keep_only_a_candidate_within_tolerance",
+        ],
+        "evidence_not_observed": [
+            "compressed model",
+            "measured size",
+            "eval score",
         ],
     },
     "mobile-release": {
@@ -3639,7 +3697,7 @@ _WORKFLOW_OPERATIONS_CHAT_CARDS: dict[str, dict[str, object]] = {
         "headline": "I can prepare the external app action without claiming it ran.",
         "body": (
             "I will prepare the connector task card: provider, target object, allowed action, recipient or assignee, "
-            "payload summary, credential boundary, confirmation gate, result-evidence slots, and stop condition. "
+            "exact payload, credential boundary, confirmation gate, result-evidence slots, and stop condition. "
             "API calls, message sends, ticket mutations, external writes, webhook delivery, and connector success stay observed-only."
         ),
         "phase": "connector_operator_prepared",
@@ -5699,6 +5757,9 @@ def _build_chat_interaction_payload_uncached(
         include_message=include_message,
         skill_policy=skill_policy,
         active_design_direction_iteration=design_direction_iteration_context,
+        # The families this home turned off, read per call from the field the
+        # memory tool reads: a profile-scoped home is another file.
+        disabled_skills=disabled_skill_families(paths.omh_home) if paths is not None else None,
     )
     resolved_mode = _resolve_mode(mode, route_payload, message=message)
     domain_context = None
@@ -5730,6 +5791,17 @@ def _build_chat_interaction_payload_uncached(
             legacy_thread_key=str(base["thread_key"]),
         )
         base["platform"] = platform_envelope
+    capability_off = route_payload.get(CAPABILITY_OFF_KEY)
+    if isinstance(capability_off, dict):
+        # The person asked for work whose family this home turned off. The
+        # answer says so and names the command that turns it back on; no
+        # picker, plan, handoff or other workflow is offered in its place.
+        base["route"] = route_payload
+        base["chat_response"] = _capability_off_response(
+            capability_off, reason=str(route_payload.get("reason", "")), thread_key=str(base["thread_key"])
+        )
+        base["next_action"] = "show_command_preview"
+        return _finish_interaction(base, target_notice)
     is_catalog_question = _is_generic_skill_catalog_route(message, route_payload)
     if is_catalog_question and _route_recommendation_next_action(route_payload) != "show_command_preview":
         route_payload = _catalog_question_route_payload(route_payload)
@@ -5827,7 +5899,9 @@ def _build_chat_interaction_payload_uncached(
         base["next_action"] = str(_nested(base["chat_response"], "state").get("next_action", "show_command_preview"))
         return _finish_interaction(base, target_notice)
 
-    resolved_executor_target, executor_resolution = _resolve_delegate_executor_target(executor_target, paths, message=message)
+    resolved_executor_target, executor_resolution = _resolve_delegate_executor_target(
+        executor_target, paths, message=message, status_subject=_route_is_coding_status_request(route_payload)
+    )
 
     if resolved_mode == "delegate":
         delegation = build_coding_delegation_payload(
@@ -5965,9 +6039,16 @@ def _build_chat_interaction_payload_uncached(
     return _finish_interaction(base, target_notice)
 
 
-def _resolve_delegate_executor_target(executor_target: str, paths: OmhPaths | None, *, message: str = "") -> tuple[str, dict[str, object]]:
+def _resolve_delegate_executor_target(
+    executor_target: str, paths: OmhPaths | None, *, message: str = "", status_subject: bool = False
+) -> tuple[str, dict[str, object]]:
     requested = str(executor_target or "choose").strip() or "choose"
-    message_hint = _executor_target_from_message(message)
+    offered_owner = ""
+    # An owner named as the doer ("use codex"). A status question about a CLI ("is the codex session stuck?")
+    # names the CLI it asks about; that is the subject of the card, not a choice of who writes code.
+    message_hint = _executor_choice_from_message(message) or (
+        _executor_target_from_message(message) if status_subject else ""
+    )
     setup_default = "choose"
     setup_available = False
     if paths is not None:
@@ -5981,26 +6062,31 @@ def _resolve_delegate_executor_target(executor_target: str, paths: OmhPaths | No
                 setup_default = candidate
                 setup_available = True
 
+    doers = named_executor_owners(normalized_phrase(message)) if requested == "choose" else ()
     if requested != "choose":
         resolved = requested
         source = "explicit"
+    elif len(doers) > 1:
+        # Two owners named as the doer ("use codex or claude code"): the person picks, as the route decision asks.
+        resolved = "choose"
+        source = "multiple_owners_named"
     elif message_hint:
         resolved = message_hint
         source = "message_mention"
     elif setup_available:
         resolved = setup_default
         source = "setup_profile"
-    else:
-        learned = resolve_coding_route_decision(
-            normalized_phrase(message),
-            owner_preference_state=read_owner_preference(paths) if paths else None,
-        )
-        if learned.source == "learned_owner_preference":
-            resolved = learned.selected_owner
-            source = "learned_owner_preference"
-        else:
+        conflict = profile_owner_conflict(message, resolved)
+        if conflict:
+            # Safety net: another CLI is mentioned, but not as the doer ("fix the login bug in codex"). Running the
+            # profile default would silently pick a different CLI than the one named, so ask, offering it first.
             resolved = "choose"
-            source = "caller_default"
+            source = "mentioned_owner_unclear"
+            offered_owner = conflict
+    else:
+        # An earlier request's choice never selects the owner: the person chooses again.
+        resolved = "choose"
+        source = "caller_default"
 
     return resolved, {
         "schema_version": "executor_resolution/v1",
@@ -6010,8 +6096,51 @@ def _resolve_delegate_executor_target(executor_target: str, paths: OmhPaths | No
         "default_executor": setup_default,
         "resolved_executor_target": resolved,
         "explicit_override": requested != "choose",
+        "status_subject": bool(status_subject and message_hint and source == "message_mention"),
+        "offered_owner": offered_owner,
         "claim_boundary": "Executor default resolution is routing preference only; it is not dispatch, execution, review, CI, or merge evidence.",
     }
+
+
+def executor_target_named_in_message(message: str) -> str:
+    """The coding owner the message names as the doer, read as the chat wrapper reads it (`message_mention`), or ""."""
+    return _executor_choice_from_message(message)
+
+
+def profile_owner_conflict(message: str, owner: str) -> str:
+    """A coding CLI the message mentions but not as the doer, when ``owner`` would run a different CLI; else "".
+
+    Read with the route decision's whole-word, negation-aware matcher (`mentioned_executor_owners`), so the
+    wrapper, `coding delegate` and the route decision agree. Hermes and `generic` start no CLI: no conflict.
+    """
+    if owner in NON_CLI_OWNERS or owner == "choose":
+        return ""
+    folded = normalized_phrase(message)
+    if named_executor_owners(folded):
+        return ""
+    return next((mentioned for mentioned in mentioned_executor_owners(folded)
+                 if mentioned != owner and mentioned not in NON_CLI_OWNERS), "")
+
+
+@lru_cache(maxsize=4096)
+def _executor_choice_from_message(message: str) -> str:
+    """The owner the message names with an owner cue ("use codex", "codex로"); a bare product word is not one.
+
+    `_executor_target_from_message` still finds any mention, for the status checks that ask whether a CLI is named
+    at all; only this reader picks an owner.
+    """
+    folded = normalized_phrase(message)
+    lowered = f" {message.lower()} "
+    named: list[str] = []
+    for target, hints in _MESSAGE_EXECUTOR_HINTS:
+        # Hermes's hints are already doer phrases ("hermes coding", "with hermes", "헤르메스만으로").
+        if target == "hermes":
+            if any(hint in lowered for hint in hints):
+                named.append(target)
+        elif any(owner_named_as_doer(folded, normalized_phrase(hint)) for hint in hints):
+            named.append(target)
+    # Two owners named as the doer ("use codex or claude code") are the user's choice, as in the route decision.
+    return named[0] if len(named) == 1 else ""
 
 
 @lru_cache(maxsize=4096)
@@ -6054,9 +6183,9 @@ def _attach_coding_owner_handoff(
         # Narrower than `force_coding_handoff` above (which this call always
         # sets): only "explicit" (an operator/CLI-named owner) and
         # "message_mention" (named in the chat message text) are a genuine
-        # per-run owner choice. "setup_profile", "learned_owner_preference",
-        # and "caller_default" are resolved defaults, never a choice for this
-        # run, so they never bypass the intent-genre veto.
+        # per-run owner choice. "setup_profile" and "caller_default" are
+        # resolved defaults, never a choice for this run, so they never bypass
+        # the intent-genre veto.
         explicit_owner_choice=executor_resolution.get("source") in {"explicit", "message_mention"},
         preferred_workflow=str(route_payload.get("selected_skill", "")),
         preferred_workflow_score=_intish(route_payload.get("score", 0)),
@@ -6150,7 +6279,11 @@ def _coding_route_decision_for_delegation(
     return coding_route_decision_payload(
         resolve_coding_route_decision(
             normalized_phrase(message),
-            requested_owner=str(executor_resolution.get("requested_executor_target", "") or ""),
+            # A status card's subject CLI is the owner it reports on, in the decision as in the resolution.
+            requested_owner=str(
+                executor_resolution.get("resolved_executor_target", "") if executor_resolution.get("status_subject")
+                else executor_resolution.get("requested_executor_target", "") or ""
+            ),
             recorded_owner=str(executor_resolution.get("default_executor", "") or ""),
             owner_preference_state=read_owner_preference(paths) if paths else None,
         )
@@ -6166,27 +6299,9 @@ def _owner_preference_state(delegation: Mapping[str, object]) -> dict[str, objec
     }
 
 
-def _append_owner_preference_actions(
-    actions: list[dict[str, object]],
-    delegation: Mapping[str, object],
-    *,
-    before_last: bool = False,
-) -> None:
-    decision = _nested(delegation, "coding_route_decision")
-    if not decision.get("owner_preference_override_available"):
-        actions.append(_action("choose_executor", "Change coding agent", "secondary"))
-        return
-    owner_actions = [
-        _action("choose_executor", "Override learned coding agent", "secondary"),
-        _action(
-            "reset_coding_owner_preference",
-            "Reset learned coding agent",
-            "secondary",
-            payload={"route_family": decision.get("owner_preference_route_family", "")},
-        ),
-    ]
-    insertion = max(0, len(actions) - 1) if before_last else len(actions)
-    actions[insertion:insertion] = owner_actions
+def _append_owner_preference_actions(actions: list[dict[str, object]]) -> None:
+    """The person can always change the coding agent; no learned default exists to override or reset."""
+    actions.append(_action("choose_executor", "Change coding agent", "secondary"))
 
 
 def _delegation_next_action(delegation: dict[str, object]) -> str:
@@ -8176,7 +8291,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                     },
                 )
             )
-        _append_owner_preference_actions(actions, delegation_payload)
+        _append_owner_preference_actions(actions)
         actions.append(_action("show_status", "Show status", "secondary"))
         next_action = "show_coding_handoff_status" if status_request else "send_to_executor"
         actions, next_action = _apply_action_gate_arbitration(actions, next_action, gate)
@@ -8243,7 +8358,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 _action("copy_prompt_handoff", f"Copy {label} prompt", "secondary", payload={"selected_executor_profile": selected}),
             ]
         )
-        _append_owner_preference_actions(actions, delegation_payload)
+        _append_owner_preference_actions(actions)
         if status_request:
             actions.append(
                 _action(
@@ -8334,7 +8449,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
             _action("start_swarm", "Start swarm", "secondary", enabled=False, payload={"selected_executor_profile": selected}),
             _action("show_status", "Show status", "secondary"),
         ]
-        _append_owner_preference_actions(runtime_actions, delegation_payload, before_last=True)
+        _append_owner_preference_actions(runtime_actions)
         runtime_next_action = "show_coding_handoff_status" if status_request else "show_runtime_handoff"
         runtime_actions, runtime_next_action = _apply_action_gate_arbitration(runtime_actions, runtime_next_action, gate)
         return _chat_response(
@@ -8392,9 +8507,11 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "in parallel. Main coding stays delegated."
             )
         owner_preference_state = _owner_preference_state(delegation_payload)
-        reset_reason = str(owner_preference_state.get("owner_preference_reset_reason", ""))
-        if reset_reason:
-            body = f"{body} The learned coding-agent streak was reset: {reset_reason}."
+        offered = str(_nested(delegation_payload, "coding_route_decision").get("offered_owner", "") or "")
+        if offered:
+            # The safety net asked instead of running the profile default: name the CLI the request mentioned first.
+            body = (f"The request mentions {executor_label(offered)}, and the setup profile names another coding "
+                    f"agent. Which one should do this work: {executor_label(offered)}, or another one? {body}")
         choice_actions, choice_next_action = _apply_action_gate_arbitration(
             [
                 _action("choose_executor", "Choose coding agent", "primary"),
@@ -9409,6 +9526,41 @@ def enhance_chat_interaction_with_routing_observation(
     return updated
 
 
+def _capability_off_response(record: Mapping[str, object], *, reason: str, thread_key: str) -> dict[str, object]:
+    command = str(record.get("enable_command", ""))
+    return _chat_response(
+        kind="capability_family_off",
+        headline=f"The {record.get('family_label', '')} capability family is turned off in this OMH home.",
+        body=reason,
+        phase="capability_family_off",
+        next_action="show_command_preview",
+        thread_key=thread_key,
+        actions=[_action("show_command_preview", "Turn it back on", "primary", payload={"command": command})],
+        claim_boundary="Nothing was dispatched; the family stays off until the command runs.",
+        extra_state={"capability_family_off": dict(record)},
+    )
+
+
+def _chat_response_with_capability_note(response: dict[str, object], note: Mapping[str, object]) -> dict[str, object]:
+    """The reply with the turned-off-family sentence in its body's own language, once.
+
+    The English clarification already says it and names the command; a
+    localized body (Korean, Japanese, ...) replaces that text, so it gets the
+    sentence in the language the body is written in, read from the body itself.
+    """
+    command = str(note.get("enable_command") or "")
+    body = str(response.get("body") or "")
+    if not command or command in body:
+        return response
+    sentence = capability_note_sentence(
+        detect_copy_locale(f"{response.get('plain_headline') or ''} {body}"),
+        skill=str(note.get("workflow") or ""),
+        family=str(note.get("family_label") or ""),
+        command=command,
+    )
+    return {**response, "body": f"{body}\n\n{sentence}" if body else sentence}
+
+
 def _finish_interaction(payload: dict[str, object], target_notice: dict[str, object] | None) -> dict[str, object]:
     if target_notice:
         payload["target_notice"] = target_notice
@@ -9418,6 +9570,14 @@ def _finish_interaction(payload: dict[str, object], target_notice: dict[str, obj
     response = payload.get("chat_response")
     if isinstance(response, dict):
         response = _chat_response_with_route_explanation(response, _nested(payload, "route"))
+        # A clarify whose best match is in a turned-off family carries that
+        # note on the reply in every language, not only in the English
+        # clarification text a localized body replaces.
+        capability_note = _nested(payload, "route").get(CAPABILITY_NOTE_KEY)
+        state = response.get("state")
+        if isinstance(capability_note, dict) and isinstance(state, dict):
+            state[CAPABILITY_NOTE_KEY] = dict(capability_note)
+            response = _chat_response_with_capability_note(response, capability_note)
         # A retired-engine alias route (#954 stage 5) shows exactly one line on
         # the status card -- the capability reason -- while the full
         # machine-readable selection stays on `route.alias_resolution` (Q5).
@@ -10662,6 +10822,9 @@ def workflow_explanation_payload(
     # (`prepare_ultraperf_loop`), so spelling one out puts the catalog key back
     # into a sentence every other field here just had it taken out of.
     next_action_label = with_public_skill_names(next_action.replace("_", " "))
+    if next_action == "run_omh_uninstall":
+        # A flagless uninstall is the full purge, so the explanation says the preview, not the purge.
+        next_action_label = "omh uninstall --dry-run"
     not_evidence_yet = _workflow_explanation_not_evidence(state, claim_boundary=claim_boundary)
     payload: dict[str, object] = {
         "schema_version": WORKFLOW_EXPLANATION_SCHEMA_VERSION,

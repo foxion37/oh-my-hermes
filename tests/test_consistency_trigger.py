@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -87,6 +88,15 @@ class CopySignalTest(_Workspace):
         verdict = self.verdict(changed)
         self.assertEqual((verdict.fire, verdict.reason), (True, "copy"))
         self.assertIn("_to_cents in src/app/receipt.py", verdict.detail)
+
+    def test_a_note_that_the_look_alike_differs_on_purpose_does_not_suppress_the_copy(self):
+        # declared_divergent was dropped after four review rounds of #2494: text never suppresses the
+        # copy check, so a documented look-alike fires exactly as it does on main.
+        self.write("src/app/invoice.py", INVOICE)
+        self.write("src/app/duty.py", RECEIPT.replace(
+            '"""Receipt totals."""', '"""Duty amounts. This rounding is intentionally different from invoice.py."""'))
+        changed = self.edit("src/app/invoice.py", "ROUND_HALF_EVEN)\n\n\n", "ROUND_HALF_UP)\n\n\n")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "copy", "_to_cents in src/app/duty.py"))
 
     def test_both_copies_already_edited_skips(self):
         self.write("src/app/invoice.py", INVOICE)
@@ -278,6 +288,102 @@ class OpaqueEditTest(_Workspace):
         changed = self.edit("src/app/a.py", "return 1", "return 2")
         self.assertEqual(self.verdict(changed), ct.Verdict(True, "opaque_edit", "src/app/b.py"))
 
+    def widen_racy_window(self) -> None:
+        """An hour-wide racy window: a runner stalled between a fixture write and the index must not
+        turn a fresh file stale and decide the test (the window itself is not what these tests pin)."""
+        patcher = mock.patch.object(ct, "RACY_WINDOW_NS", 3600 * 1_000_000_000)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def rewrite_in_one_clock_tick(self, relative: str, text: str) -> None:
+        """A same-size rewrite that keeps the file's mtime, as two writes inside one tick of a coarse
+        filesystem clock do (Windows CI, where this let a sed pass unseen)."""
+        path = self.root / relative
+        before = os.stat(path)
+        self.write(relative, text)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = os.stat(path)
+        self.assertEqual((after.st_mtime_ns, after.st_size), (before.st_mtime_ns, before.st_size),
+                         "precondition: the rewrite must leave (mtime, size) where the index saw it")
+
+    def test_a_same_size_sed_inside_one_clock_tick_fires(self):
+        self.widen_racy_window()
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.write("src/app/b.py", "def old_step():\n    return 1\n")
+        self.tool()
+        self.rewrite_in_one_clock_tick("src/app/b.py", "def new_step():\n    return 1\n")
+        changed = self.edit("src/app/a.py", "return 1", "return 2")
+        entry = ct._sessions[SESSION]["index"].get(str(self.root / "src/app/b.py"))
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "opaque_edit", "src/app/b.py"),
+                         f"b.py indexed as {entry!r}: a third field is the digest of a file the index "
+                         "saw as racy; without one the racy window did not cover it")
+
+    def test_a_same_size_sed_then_a_patch_of_the_same_file_inside_one_clock_tick_fires(self):
+        self.widen_racy_window()
+        self.write("src/app/a.py", "def old_name(a):\n    return a\n\n\ndef other():\n    return 1\n")
+        self.write("src/app/use.py", "from app.a import old_name\nold_name(1)\n")
+        self.tool()
+        self.rewrite_in_one_clock_tick("src/app/a.py",
+                                       "def new_name(a):\n    return a\n\n\ndef other():\n    return 1\n")
+        changed = self.edit("src/app/a.py", "return 1", "return 2")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "opaque_edit", "src/app/a.py"))
+
+    def test_only_a_file_inside_the_racy_window_is_digested(self):
+        self.widen_racy_window()
+        old = self.write("src/app/old.py", "def old():\n    return 1\n")
+        fresh = self.write("src/app/fresh.py", "def fresh():\n    return 1\n")
+        long_ago = time.time_ns() - 2 * ct.RACY_WINDOW_NS
+        os.utime(self.root / old, ns=(long_ago, long_ago))
+        with mock.patch.object(ct, "_digest", wraps=ct._digest) as digests:
+            self.tool()
+        index = ct._sessions[SESSION]["index"]
+        self.assertEqual(len(index[str(self.root / old)]), 2)
+        self.assertEqual(len(index[str(self.root / fresh)]), 3)
+        digests.assert_called_once_with(str(self.root / fresh))
+
+    def test_a_racy_file_that_could_not_be_digested_fires(self):
+        self.widen_racy_window()
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.write("src/app/locked.py", "def locked():\n    return 1\n")
+        digest = ct._digest
+        with mock.patch.object(ct, "_digest", lambda path: None if path.endswith("locked.py") else digest(path)):
+            self.tool()
+        changed = self.edit("src/app/a.py", "return 1", "return 2")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "opaque_edit", "src/app/locked.py"))
+
+    def test_an_oversized_racy_file_is_not_read_and_fires(self):
+        self.widen_racy_window()
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        big = str(self.root / self.write("src/app/big.py", "#" * 256))
+        reads: list[tuple[str, int]] = []
+        real_open = open
+
+        class Recording:
+            def __init__(self, path, mode="r"):
+                self.path, self.handle = path, real_open(path, mode)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def read(self, size=-1):
+                reads.append((self.path, size))
+                return self.handle.read(size)
+
+        with mock.patch.object(ct, "MAX_FILE_BYTES", 200), \
+                mock.patch.object(ct, "open", Recording, create=True):
+            self.tool()
+        self.assertEqual([size for path, size in reads if path == big], [],
+                         "the oversized file was read for a digest instead of refused on its size")
+        self.assertEqual(ct._sessions[SESSION]["index"][big][2:], (None,))
+        changed = self.edit("src/app/a.py", "return 1", "return 2")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "opaque_edit", "src/app/big.py"))
+
     def test_a_tool_call_that_changes_no_python_file_does_not_fire(self):
         self.write("src/app/a.py", "def other():\n    return 1\n")
         self.tool()
@@ -302,9 +408,131 @@ class OpaqueEditTest(_Workspace):
         self.assertEqual(self.verdict(first, second), ct.Verdict(True, "opaque_edit", "src/app/b.py"))
 
 
+class NamedFileSnapshotTest(_Workspace):
+    """A `terminal` or `execute_code` call keeps the text of the Python files it names before it runs."""
+
+    def command(self, command: str, tool: str = "terminal") -> None:
+        key = "command" if tool == "terminal" else "code"
+        ct.snapshot_before_edit({"tool_name": tool, "session_id": SESSION, "turn_id": self.turn}, {key: command})
+
+    def test_a_test_appended_through_the_shell_is_diffed_not_opaque(self):
+        test = "from app.units import parse_duration\n\n\ndef test_minutes():\n    assert parse_duration('5m') == 300\n"
+        self.write("src/app/units.py", UNITS)
+        self.write("tests/test_units.py", test)
+        changed = self.edit("src/app/units.py", '{"s": 60,', '{"s": 1,')
+        self.command("printf '\\n\\ndef test_seconds():\\n    assert parse_duration(\"90s\") == 90\\n' >> tests/test_units.py")
+        self.write("tests/test_units.py", test + "\n\ndef test_seconds():\n    assert parse_duration('90s') == 90\n")
+        self.assertEqual(self.verdict(changed), ct.Verdict(False, "no_copy_or_reference"))
+
+    def test_a_sed_rename_of_a_named_file_is_judged_by_its_diff(self):
+        self.write("src/app/a.py", "def old_name(a):\n    return a\n")
+        self.write("src/app/use.py", "from app.a import old_name\nold_name(1)\n")
+        self.command("sed -i '' 's/old_name/renamed_name/' src/app/a.py")
+        self.write("src/app/a.py", "def renamed_name(a):\n    return a\n")
+        self.assertEqual(self.verdict(), ct.Verdict(True, "renamed", "old_name in src/app/use.py"))
+
+    def test_a_file_execute_code_names_and_creates_is_diffed(self):
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.command("open('src/app/generated.py', 'w').write('def made():\\n    return 1\\n')", tool="execute_code")
+        self.write("src/app/generated.py", "def made() -> int:\n    return 1\n")
+        self.assertEqual(self.verdict(), ct.Verdict(False, "nothing_changed"))
+
+    def test_only_whole_python_paths_are_named_and_the_count_is_bounded(self):
+        self.assertEqual(ct._named_python_files({"command": "cat a.pyc b.py.bak c.pyi 'd/e.py' f.py. x ~/g.py *.py src/*.pyi",
+                                                 "n": 3}), ["c.pyi", "d/e.py"])
+        many = " ".join(f"m{index}.py" for index in range(20))
+        self.assertEqual(len(ct._named_python_files({"command": many})), ct.MAX_NAMED_FILES)
+
+    def test_files_read_only_commands_name_never_take_the_edits_budget(self):
+        # Review of #2494: five `cat` calls naming 40 files filled the 32 slots, and a later patch fired
+        # `opaque_edit` where main said `no_copy_or_reference`.
+        for index in range(40):
+            self.write(f"src/app/m{index}.py", f"def f{index}():\n    return {index}\n")
+        self.write("src/app/units.py", UNITS)
+        for batch in range(5):
+            self.command("cat " + " ".join(f"src/app/m{index}.py" for index in range(batch * 8, batch * 8 + 8)))
+        changed = self.edit("src/app/units.py", '{"s": 60,', '{"s": 1,')
+        self.assertEqual(ct._sessions[SESSION]["named"], {})
+        self.assertEqual(self.verdict(changed), ct.Verdict(False, "no_copy_or_reference"))
+
+    def test_the_named_budget_is_its_own_and_bounded(self):
+        for index in range(ct.MAX_NAMED_SNAPSHOTS + 4):
+            self.write(f"src/app/m{index}.py", "x = 1\n")
+        self.command("cat " + " ".join(f"src/app/m{index}.py" for index in range(8)))
+        self.command("cat " + " ".join(f"src/app/m{index}.py" for index in range(8, 16)))
+        self.assertLessEqual(len(ct._sessions[SESSION]["named"]), ct.MAX_NAMED_SNAPSHOTS)
+        self.assertEqual(ct._sessions[SESSION]["before"], {})
+
+    def test_a_stop_with_no_edited_path_keeps_no_snapshot(self):
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.command("cat src/app/a.py")
+        self.assertIn(SESSION, ct._sessions)
+        self.assertIsNone(verify_hooks.pre_verify(session_id=SESSION, coding=True, attempt=0, changed_paths=[]))
+        self.assertNotIn(SESSION, ct._sessions)
+
+    def test_a_file_changed_before_the_call_that_names_it_is_still_opaque(self):
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.command("true")
+        # An unnamed change first, of the same size: the racy-file digest sees it even when the clock
+        # leaves (mtime, size) unmoved.
+        self.write("src/app/a.py", "def other():\n    return 2\n")
+        self.command("cat src/app/a.py")
+        self.assertEqual(self.verdict(), ct.Verdict(True, "opaque_edit", "src/app/a.py"))
+
+
 class IndexCostTest(_Workspace):
     def first_call(self, session: str = SESSION) -> None:
-        ct.snapshot_before_edit({"tool_name": "read_file", "session_id": session, "turn_id": self.turn}, {"path": "x"})
+        """A call that can change a file (a command naming none): the turn's first one takes the index."""
+        ct.snapshot_before_edit({"tool_name": "terminal", "session_id": session, "turn_id": self.turn}, {"command": "ls"})
+
+    def read(self, tool: str = "read_file") -> None:
+        ct.snapshot_before_edit({"tool_name": tool, "session_id": SESSION, "turn_id": self.turn},
+                                {"path": "src/app/a.py", "pattern": "a"})
+
+    def test_a_turn_that_only_reads_takes_no_index(self):
+        self.write("src/app/a.py", "def a():\n    return 1\n")
+        with mock.patch.object(ct, "_index", wraps=ct._index) as walks:
+            for tool in sorted(ct._READ_TOOLS):
+                self.read(tool)
+        walks.assert_not_called()
+        self.assertEqual(ct.turn_root(SESSION), str(self.root))
+        # Nothing this turn could change a file; a reported one still fires, as it did with an index.
+        self.assertEqual(self.verdict(str(self.root / "src/app/a.py")),
+                         ct.Verdict(True, "opaque_edit", "src/app/a.py"))
+
+    def test_the_index_is_taken_at_the_first_call_after_the_reads_and_only_once(self):
+        self.write("src/app/a.py", "def a():\n    return 1\n")
+        self.write("src/app/b.py", "def b():\n    return a()\n")
+        with mock.patch.object(ct, "_index", wraps=ct._index) as walks:
+            self.read()
+            self.read("search_files")
+            walks.assert_not_called()
+            changed = self.edit("src/app/a.py", "return 1", "return 2")
+            self.first_call()
+            walks.assert_called_once()
+        self.assertEqual(self.verdict(changed)[:2], (False, "no_copy_or_reference"))
+
+    def test_a_file_changed_outside_the_tools_before_the_first_non_read_call_is_baseline(self):
+        # The admitted cost of deferring the index past reads: an editor or a background process that
+        # writes during the read-only stretch is part of the turn's baseline, not an opaque edit.
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.write("src/app/b.py", "def helper():\n    return 1\n")
+        self.read()
+        self.write("src/app/b.py", "def helper():\n    return 3\n")
+        changed = self.edit("src/app/a.py", "return 1", "return 2")
+        verdict = self.verdict(changed)
+        self.assertNotEqual(verdict.reason, "opaque_edit")
+        self.assertEqual(verdict[:2], (False, "no_copy_or_reference"))
+
+    def test_a_call_that_is_not_a_read_indexes_before_it_runs(self):
+        self.write("src/app/a.py", "def other():\n    return 1\n")
+        self.write("src/app/b.py", "def helper():\n    return 1\n")
+        self.read()
+        ct.snapshot_before_edit({"tool_name": "delegate_task", "session_id": SESSION, "turn_id": self.turn},
+                                {"goal": "x"})
+        self.edit("src/app/b.py", "return 1", "return 3", session="child-session")
+        changed = self.edit("src/app/a.py", "return 1", "return 2")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "opaque_edit", "src/app/b.py"))
 
     def test_an_over_budget_root_is_not_walked_again_within_the_ttl(self):
         self.write("src/app/a.py", "def a():\n    return 1\n")
@@ -601,6 +829,10 @@ class ScanBoundsTest(_Workspace):
     def test_an_oversized_unedited_python_file_fires_and_an_oversized_config_does_not(self):
         self.write("src/app/units.py", TO_CENTS)
         self.write("src/app/big.py", "#" * 256)
+        # Older than the racy window, so the scan rules on it: a racy oversized file is refused before
+        # the scan (`test_an_oversized_racy_file_is_not_read_and_fires`).
+        long_ago = time.time_ns() - 2 * ct.RACY_WINDOW_NS
+        os.utime(self.root / "src/app/big.py", ns=(long_ago, long_ago))
         self.write("package-lock.json", "x" * 256)
         self.write("src/app/use.py", CART)
         changed = self.edit("src/app/units.py", "def to_cents(", "def amount_to_cents(")
@@ -668,6 +900,147 @@ class PreVerifyGateTest(_Workspace):
             tool_hooks.pre_tool_call(tool_name="patch", args={"path": "src/app/units.py", "old_string": "a", "new_string": "b"},
                                      session_id=SESSION, turn_id="t1")
         self.assertEqual(list(ct._sessions[SESSION]["before"].values()), [UNITS])
+
+
+HTTP_CLIENT = (
+    '"""A fake HTTP client."""\n\n\n'
+    "def fetch(url: str, *, timeout: float = 5.0, retries: int = 1) -> dict[str, object]:\n"
+    '    return {"url": url, "timeout": timeout, "retries": retries}\n'
+)
+FALLBACKS = (
+    "def fetch_primary(client):\n    try:\n        return client.fetch()\n    except RuntimeError:\n"
+    "        return {'source': 'fallback'}\n"
+)
+PRICING = '"""Fee arithmetic."""\n\n\ndef compute_fee(amount_cents: int, rate_bp: int) -> int:\n    return amount_cents * rate_bp // 10000\n'
+REEXPORT = 'from .pricing import compute_fee as fee\n\n__all__ = ["fee"]\n'
+
+
+class SettledReferenceTest(_Workspace):
+    """A `signature` hit is dropped only when every mention of the name in that file is proven not to
+    need the change; anything else fires as before."""
+
+    def rename_timeout(self) -> str:
+        return self.edit("src/app/http_client.py", "timeout: float = 5.0", "timeout_s: float = 5.0")
+
+    def test_another_objects_method_of_the_same_name_is_settled(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("src/app/fallbacks.py", FALLBACKS)
+        self.assertEqual(self.verdict(self.rename_timeout()),
+                         ct.Verdict(False, "no_copy_or_reference", "settled fetch"))
+
+    def test_an_attribute_of_an_assigned_name_fires(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("src/app/fallbacks.py", "from app import http_client\n\nclient = http_client\n\n\n"
+                                           "def ping():\n    return client.fetch('u')\n")
+        self.assertEqual(self.verdict(self.rename_timeout())[:2], (True, "signature"))
+
+    def test_an_attribute_of_the_imported_module_fires(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("src/app/health.py", "from app import http_client as hc\n\n\n"
+                                        "def ping(url):\n    return hc.fetch(url, timeout=1.0)\n")
+        self.assertEqual(self.verdict(self.rename_timeout())[:2], (True, "signature"))
+
+    def test_a_call_that_binds_the_same_way_is_settled(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("tests/test_http_client.py", "from app.http_client import fetch\n\n\n"
+                                                "def test_fetch_defaults():\n    assert fetch(\"u\")[\"url\"] == \"u\"\n")
+        self.assertEqual(self.verdict(self.rename_timeout()),
+                         ct.Verdict(False, "no_copy_or_reference", "settled fetch"))
+
+    def test_calls_that_do_not_bind_the_same_way_fire(self):
+        cases = {
+            "renamed_keyword": ("fetch('u', timeout=2.0)", "timeout: float = 5.0", "timeout_s: float = 5.0"),
+            "star_args": ("fetch(*ARGS)", "timeout: float = 5.0", "timeout_s: float = 5.0"),
+            "double_star": ("fetch('u', **OPTIONS)", "timeout: float = 5.0", "timeout_s: float = 5.0"),
+            "changed_default": ("fetch('u')", "timeout: float = 5.0", "timeout: float = 9.0"),
+            "removed_default": ("fetch('u')", "timeout: float = 5.0", "timeout: float"),
+            "new_required": ("fetch('u')", "retries: int = 1)", "retries: int = 1, verify: bool)"),
+            "shifted_positional": ("fetch('u', 'GET')", "(url: str, *,", "(url: str, method: str = 'GET', *,"),
+            "changed_return": ("fetch('u')", "-> dict[str, object]", "-> dict[str, str]"),
+        }
+        for label, (call, old, new) in cases.items():
+            with self.subTest(label):
+                ct.reset()
+                self.write("src/app/http_client.py", HTTP_CLIENT if label != "shifted_positional"
+                           else HTTP_CLIENT.replace("(url: str, *,", "(url: str, mode: str = 'x', *,"))
+                if label == "shifted_positional":
+                    old, new = "(url: str, mode: str = 'x', *,", "(url: str, method: str = 'GET', mode: str = 'x', *,"
+                self.write("src/app/sync.py", f"from app.http_client import fetch\n\nARGS = ()\nOPTIONS = {{}}\n\n\n"
+                                              f"def sync():\n    return {call}\n")
+                self.assertEqual(self.verdict(self.edit("src/app/http_client.py", old, new))[:2], (True, "signature"))
+
+    def test_a_keyword_pass_through_fires(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("src/app/wrap.py", "from app.http_client import fetch\n\n\n"
+                                      "def fetch_with(url, **options):\n    return fetch(url, **options)\n")
+        self.assertEqual(self.verdict(self.rename_timeout()), ct.Verdict(True, "signature", "fetch in src/app/wrap.py"))
+
+    def test_a_star_import_fires(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("src/app/sync.py", "from app.http_client import *\n\n\ndef sync():\n    return fetch('u')\n")
+        self.assertEqual(self.verdict(self.rename_timeout()), ct.Verdict(True, "signature", "fetch in src/app/sync.py"))
+
+    def test_an_alias_re_exported_from_a_plain_module_and_used_elsewhere_fires(self):
+        self.write("src/app/pricing.py", PRICING)
+        self.write("src/app/invoices.py", "from app.pricing import compute_fee as calc_fee\n")
+        self.write("src/app/cli.py", "from app.invoices import calc_fee\n\n\ndef cli(argv):\n    return calc_fee(1, 2)\n")
+        changed = self.edit("src/app/pricing.py", "rate_bp: int)", "rate_bp: int, minimum_cents: int)")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "signature", "compute_fee in src/app/invoices.py"))
+
+    def test_a_mention_outside_code_fires(self):
+        for label, extra in {"comment": "# fetch is called above\n", "string": "NOTE = 'see fetch'\n",
+                             "value": "HANDLER = fetch\n"}.items():
+            with self.subTest(label):
+                ct.reset()
+                self.write("src/app/http_client.py", HTTP_CLIENT)
+                self.write("tests/test_http_client.py", "from app.http_client import fetch\n\n" + extra +
+                           "\n\ndef test_fetch():\n    assert fetch('u')\n")
+                self.assertEqual(self.verdict(self.rename_timeout())[:2], (True, "signature"))
+
+    def test_a_re_export_no_unedited_file_uses_is_settled(self):
+        self.write("src/app/pricing.py", PRICING)
+        self.write("src/app/__init__.py", REEXPORT)
+        changed = self.edit("src/app/pricing.py", "rate_bp: int)", "rate_bp: int, minimum_cents: int)")
+        self.assertEqual(self.verdict(changed), ct.Verdict(False, "no_copy_or_reference", "settled compute_fee"))
+
+    def test_a_re_export_an_unedited_file_uses_fires(self):
+        self.write("src/app/pricing.py", PRICING)
+        self.write("src/app/__init__.py", REEXPORT)
+        self.write("src/app/cli.py", "from app import fee\n\n\ndef cli_fee(argv):\n    return fee(int(argv[0]), 50)\n")
+        changed = self.edit("src/app/pricing.py", "rate_bp: int)", "rate_bp: int, minimum_cents: int)")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "signature", "compute_fee in src/app/__init__.py"))
+
+    def test_a_re_export_named_in_config_fires(self):
+        self.write("src/app/pricing.py", PRICING)
+        self.write("src/app/__init__.py", REEXPORT)
+        self.write("pyproject.toml", "[project.scripts]\nfee = 'app:fee'\n")
+        changed = self.edit("src/app/pricing.py", "rate_bp: int)", "rate_bp: int, minimum_cents: int)")
+        self.assertEqual(self.verdict(changed)[:2], (True, "signature"))
+
+    def test_an_import_from_another_module_fires(self):
+        self.write("src/app/pricing.py", PRICING)
+        self.write("src/app/use.py", "from vendor.fees import compute_fee\n\n\ndef f():\n    return compute_fee(1, 2)\n")
+        changed = self.edit("src/app/pricing.py", "rate_bp: int)", "rate_bp: int = 0)")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "signature", "compute_fee in src/app/use.py"))
+
+    def test_a_method_needle_is_never_settled_by_attribute(self):
+        self.write("src/app/client.py", "class Client:\n    def fetch(self, url: str) -> str:\n        return url\n")
+        self.write("src/app/use.py", "def ping(client):\n    return client.fetch('u')\n")
+        changed = self.edit("src/app/client.py", "(self, url: str)", "(self, url: str, *, timeout: float)")
+        self.assertEqual(self.verdict(changed), ct.Verdict(True, "signature", "fetch in src/app/use.py"))
+
+    def test_a_decorated_function_is_never_settled(self):
+        self.write("src/app/http_client.py", "import functools\n\n\n@functools.cache\n" + HTTP_CLIENT.split("\n\n\n", 1)[1])
+        self.write("src/app/fallbacks.py", FALLBACKS)
+        self.assertEqual(self.verdict(self.rename_timeout())[:2], (True, "signature"))
+
+    def test_a_name_whose_signature_changed_in_two_edited_files_is_never_settled(self):
+        self.write("src/app/http_client.py", HTTP_CLIENT)
+        self.write("src/app/mirror.py", HTTP_CLIENT)
+        self.write("src/app/fallbacks.py", FALLBACKS)
+        first = self.rename_timeout()
+        second = self.edit("src/app/mirror.py", "timeout: float = 5.0", "timeout_s: float = 5.0")
+        self.assertEqual(self.verdict(first, second)[:2], (True, "signature"))
 
 
 if __name__ == "__main__":

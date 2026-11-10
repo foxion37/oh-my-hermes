@@ -28,7 +28,7 @@ import re
 import unittest
 from unittest import mock
 
-from _tui_lines import RULE_ROW, line_text, lines_text, without_badge
+from _tui_lines import RULE_ROW, badge_text, line_text, lines_text, without_badge
 from test_tui_modes import drawn, make_app, show_mode, type_text
 from omh.skin_pack import SKIN_THEMES
 from omh.tui.app import (
@@ -319,6 +319,7 @@ class WorkingRowTests(unittest.TestCase):
         app.transcript.activity = "(⌐■_■) pondering..."
         app.transcript.status = "🧠 OMH — recalled 4 memories"
         clock.now += 1086
+        app.inbound_at = clock.now  # the status just came from the gateway: no silence to name
         rows = working_rows(app, 140)
         self.assertEqual(rows[0][2:], "Pondering… (18m 6s · thinking with high effort · esc to interrupt) · "
                                       "OMH — recalled 4 memories")
@@ -506,7 +507,7 @@ class InfoLineInsetTests(unittest.TestCase):
         composer, info = screen[-3], screen[-1]
         self.assertTrue(composer.startswith(PROMPT), screen)
         self.assertEqual(info.index("["), len(PROMPT))  # the badge under the composer's text, two cells in
-        self.assertTrue(info.startswith("  [⚚ OMH Native]   "), info)  # the badge alone on the left
+        self.assertTrue(info.startswith(f"  {badge_text()}   "), info)  # the badge alone on the left
         self.assertEqual(line_width(app._info_line(80)), 80)  # the right side still ends on the last cell
 
     def test_a_tiny_terminal_draws_no_rules_and_the_line_starts_on_the_edge(self) -> None:
@@ -573,23 +574,23 @@ class ResumedHistoryTests(unittest.TestCase):
         app._draw_history(RESUME)
         return [line for line in app.transcript.take_stable_lines(width, THEME)]
 
-    def test_each_recorded_call_is_one_row_with_a_neutral_mark_and_a_blank_row_between_as_live(self) -> None:
-        # Since the rail and kind colours (2026-10-22) a live turn puts a blank row between two calls; a record too.
+    def test_each_recorded_call_is_one_row_with_a_neutral_mark_and_two_blank_rows_between_as_live(self) -> None:
+        # Since 2026-11-09 a live turn puts two blank rows between two calls (one between other blocks); a record too.
         lines = self.history()
         texts = lines_text(lines)
         first, after = texts.index("┃ ● read_file(README.md)"), texts.index("┃ ● terminal(sleep 6 + 1 command)")
-        self.assertEqual(texts[first + 1 : first + 5], ["", "┃ ● read_file(calc.py)", "", "┃ ● patch(calc.py)"])
-        diff = texts[first + 5 : after - 1]
+        self.assertEqual(texts[first + 1 : first + 7], ["", "", "┃ ● read_file(calc.py)", "", "", "┃ ● patch(calc.py)"])
+        diff = texts[first + 7 : after - 2]
         self.assertTrue(diff and all(text.startswith("┃ ") for text in diff), texts)  # the diff, on the edit's rail
-        self.assertEqual(texts[after - 1 : after + 4],
-                         ["", "┃ ● terminal(sleep 6 + 1 command)", "", "┃ ● terminal(ls does-not-exist)", ""])
-        self.assertEqual(texts[after + 4], "┃ ⚚ Hermes", texts)  # the reply's header, then its words
-        self.assertTrue(texts[after + 5].startswith("┃   Done — div added to calc.py"), texts)
-        calls = [lines[index] for index in (first, first + 2, first + 4, after, after + 2)]
+        self.assertEqual(texts[after - 2 : after + 5],
+                         ["", "", "┃ ● terminal(sleep 6 + 1 command)", "", "", "┃ ● terminal(ls does-not-exist)", ""])
+        self.assertEqual(texts[after + 5], "┃ ⚚ Hermes", texts)  # the reply's header, then its words
+        self.assertTrue(texts[after + 6].startswith("┃   Done — div added to calc.py"), texts)
+        calls = [lines[index] for index in (first, first + 3, first + 6, after, after + 3)]
         # The record says what ran, not how it ended: neither green nor red, its mark grey on the look's rail.
         self.assertEqual({row[0] for row in calls}, {rail_cell(THEME.accent)})
         self.assertEqual({row[2] for row in calls}, {Span("●", THEME.dim)})
-        self.assertNotIn("·", "".join(texts[first : after + 3]))  # no old-style `· name  args` row
+        self.assertNotIn("·", "".join(texts[first : after + 4]))  # no old-style `· name  args` row
 
     def test_a_record_whose_result_metadata_is_not_a_mapping_draws_its_row_alone(self) -> None:
         for junk in ("inline_diff", ["inline_diff"], 7):
@@ -602,7 +603,7 @@ class ResumedHistoryTests(unittest.TestCase):
     def test_the_edit_shows_the_diff_a_live_call_shows(self) -> None:
         texts = lines_text(self.history())
         start = texts.index("┃ ● patch(calc.py)") + 1
-        recorded = texts[start : texts.index("┃ ● terminal(sleep 6 + 1 command)") - 1]  # up to the blank row
+        recorded = texts[start : texts.index("┃ ● terminal(sleep 6 + 1 command)") - 2]  # up to the two blank rows
         patch = next(message for message in RESUME if message.get("name") == "patch")
         transcript = Transcript(clock=Clock())
         transcript.cwd = RESUME_CWD

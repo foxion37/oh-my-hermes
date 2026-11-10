@@ -28,7 +28,7 @@ Declared checks:
   - Criterion: Choose the smallest artifact that can answer the question (wireframe, CLI spike, API probe, fixture, timing probe, test harness, or mocked interaction), use synthetic fixtures by default, and refuse expansion into general feature implementation.
 - `prototype_execution_evidence_check`
   - Required result fields: `execution_status`, `observed_outputs`, `evidence_refs`, `interpretation`, `confidence`, `unresolved_questions`
-  - Criterion: When no executor is available, emit the prepared handoff and report results as unobserved; when execution occurred, record only observed outputs and bounded evidence references, keep interpretation and confidence separate, and mark timeout or inconclusive runs as such; tool success is never product validation.
+  - Criterion: When no executor is available, emit the prepared handoff and report results as unobserved; when execution occurred, record only observed outputs and bounded evidence references, keep interpretation and confidence separate, and mark timeout or inconclusive runs as such; tool success is never product validation. A performance or concurrency probe fixes its pass threshold before the run, warms up once, repeats at least five times and records min, median and max of the repeats, plus p95 over the requests inside a run when it issues many, and machine load; fewer runs are inconclusive.
 - `prototype_cleanup_receipt_check`
   - Required result fields: `keep_discard_decision`, `cleanup_status`, `supported_option`, `rejected_option`, `residual_risk`, `evidence_limits`, `prototype_code_reference_permission`, `promotion_status`
   - Criterion: Report `discarded` only after cleanup is observed and record cleanup failure distinctly; the receipt names the supported option, rejected option, residual risk, evidence limits, and whether prototype code may be referenced, and promotion stays blocked until a separate accepted plan and implementation handoff exist.
@@ -56,6 +56,7 @@ Write the exact commands, expected observations, workspace identity, and stop co
 - Input refs: `experiment budget`, `scratch boundary`, `measurement method`
 - Output refs: `prepared prototype handoff with exact commands and expected observations`
 - Check IDs: `prototype_budget_isolation_check`, `prototype_smallest_artifact_check`
+- If this step fails: unresolved; still stands: `decision_prototype/v1`; hand back: Return decision_prototype/v1 with draft commands, expected observations and the exact budget, runtime or write-boundary blocker; no command is authorized outside the declared scratch boundary.
 
 ### `prototype_record_observations` (validation)
 
@@ -64,11 +65,13 @@ Ingest only observed outputs and bounded evidence references, then derive interp
 - Input refs: `experiment budget`, `measurement method`
 - Output refs: `observation ledger separating observed outputs from interpretation and confidence`
 - Check IDs: `prototype_execution_evidence_check`
+- If this step fails: not_observed; still stands: `decision_prototype/v1`, `prepared prototype handoff with exact commands and expected observations`; hand back: Return the prepared prototype handoff with executor-unavailable or timeout status and any captured failure evidence; leave experiment results unobserved rather than filling the observation ledger with guesses.
 
 ### `prototype_close_receipt` (validation)
 
-Decide keep or discard, observe cleanup before reporting `discarded`, and close with a compact decision receipt that `ralplan` can consume without transcript replay and without any implementation handoff.
+Decide keep or discard, observe cleanup before reporting `discarded`, and close with a compact decision receipt, handed to `ulw-plan` for planning, that needs no transcript replay and without any implementation handoff.
 
 - Input refs: `decision question`, `experiment budget`, `scratch boundary`, `measurement method`
 - Output refs: `decision receipt for planning with supported option, rejected option, residual risk, and evidence limits`, `decision_prototype/v1`
 - Check IDs: `prototype_scope_check`, `prototype_budget_isolation_check`, `prototype_smallest_artifact_check`, `prototype_execution_evidence_check`, `prototype_cleanup_receipt_check`
+- If this step fails: unresolved; still stands: `decision_prototype/v1`, `prepared prototype handoff with exact commands and expected observations`, `observation ledger separating observed outputs from interpretation and confidence`; hand back: Return the observation ledger and a decision receipt naming unresolved options, residual risk, evidence limits, keep/discard and cleanup status; block promotion until a separate accepted plan and handoff exist.

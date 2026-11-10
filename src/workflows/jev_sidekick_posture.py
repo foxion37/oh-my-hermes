@@ -9,10 +9,10 @@ the model carrying two nominations.
 
 This builder answers that from three local reads and nothing else: the plugin
 directories under ``$HERMES_HOME/plugins``, Hermes' ``plugins.enabled`` list,
-and the NAMES (never the values) in ``$HERMES_HOME/.env``. It imports no
-plugin, spawns nothing, opens no socket, and writes nothing anywhere. The
-`omh_jev_ask` block beside it reports OMH's own opt-in Jev tool from names,
-the operator setting, and the local ask ledger, and it reads no value either.
+and the NAMES of filled lines (never the values) in ``$HERMES_HOME/.env``. It
+imports no plugin, spawns nothing, opens no socket, and writes nothing anywhere.
+The `omh_jev_ask` block beside it reports OMH's own opt-in Jev tool from names,
+the operator setting, and the local ask ledger, and it copies no value either.
 
 What the tiers mean, and what they do not. ``installed`` means a directory
 with a manifest exists. ``enabled`` means Hermes' config lists the name.
@@ -67,6 +67,8 @@ from .plugin_manifest_yaml import (
 )
 
 JEV_SIDEKICK_POSTURE_SCHEMA_VERSION: Final = "jev_sidekick_posture/v1"
+TYPESAFE_BASE_URL_ENV_NAME: Final = "TYPESAFE_BASE_URL"
+JEV_ENV_NAMES: Final = JEV_CREDENTIAL_ENV_NAMES | {TYPESAFE_BASE_URL_ENV_NAME}
 
 # Monotonic, lowest first. `credential_name_present` sits above `enabled`
 # because a credential name matters only for a plugin Hermes will load.
@@ -106,7 +108,7 @@ MAX_PLUGIN_NAME_CHARS: Final = 128
 # in the surface an operator actually sees.
 CLAIM_BOUNDARY: Final = (
     "Presence of a plugin directory, an enabled name, or a credential NAME is not evidence that Jev is "
-    "served, that the plugin ran, or that any request left the machine; this check never reads credential values."
+    "served, that the plugin ran, or that any request left the machine; this check never copies or reports credential values."
 )
 
 
@@ -126,12 +128,14 @@ def omh_jev_ask_posture(
     Kept beside, not inside, the third-party posture rule above: a
     `TYPESAFE_API_KEY` exists only for Jev, so its name is read whether or
     not a plugin was detected, while an OpenRouter key counts only when the
-    operator setting turned that route on. No value is read.
+    operator setting turned that route on. No value is copied.
     """
-    names = set(env_key_names(Path(hermes_home), environ, allowed=JEV_CREDENTIAL_ENV_NAMES))
-    route = route_available_by_names(Path(omh_home), names)
+    names = set(env_key_names(Path(hermes_home), environ, allowed=JEV_ENV_NAMES))
+    credential_names = names & JEV_CREDENTIAL_ENV_NAMES
+    route = route_available_by_names(Path(omh_home), credential_names)
     return {
         "route_available": route,
+        "typesafe_base_url_configured": TYPESAFE_BASE_URL_ENV_NAME in names,
         "openrouter_setting": openrouter_route_enabled(Path(omh_home)),
         "setting_path": str(settings_path(Path(omh_home))),
         "setting_key": OPENROUTER_SETTING_KEY,
@@ -149,7 +153,9 @@ def omh_jev_ask_sentence(block: dict[str, Any]) -> str:
             f"{{\"{OPENROUTER_SETTING_KEY}\": true}} in {block.get('setting_path', '')})"
         )
     else:
-        head = f"omh_jev_ask: route {route} by variable name"
+        custom_base = route == "typesafe" and bool(block.get("typesafe_base_url_configured"))
+        suffix = " (custom base URL configured)" if custom_base else ""
+        head = f"omh_jev_ask: route {route}{suffix} by variable name"
     calls = int(block.get("ledger_calls", 0) or 0)
     tier = f"{calls} ask(s) recorded, last status {block.get('last_status')}" if calls else "no ask recorded"
     return f"{head}; {tier}; {OMH_JEV_ASK_DISCLOSURE.rstrip('.')}"

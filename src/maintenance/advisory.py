@@ -16,6 +16,7 @@ this module matches that convention.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +31,14 @@ from ..config_adapter import anchor_external_dir_entry, external_dirs, read_conf
 from ..paths import default_hermes_home, expand_path, find_project_root
 from ..plugin_bundle.omh import hermes_memory
 from ..plugin_bundle.omh.memory_dreaming import MODE_SETTING_UNRECOGNIZED, read_dreaming_mode_setting
+from ..plugin_bundle.omh.memory_recall_settings import (
+    RECALL_LINES,
+    RECALL_MODES,
+    RECALL_SETTING_UNRECOGNIZED,
+    read_recall_line_setting,
+    read_recall_mode_setting,
+)
+from ..plugin_bundle.omh.runtime_paths import RuntimeBindingError, plugin_setting_text
 from ..routing.owner_preference import owner_preference_path, validate_owner_preference
 from ..surfaces.hermes_model_settings import HERMES_AUX_ALIASES
 from ..system.local_store import read_json_object_result
@@ -390,17 +399,18 @@ def _owner_learning_status(paths: OmhPaths) -> dict[str, object]:
         if not isinstance(route, dict):
             continue
         count = int(route.get("consecutive_accepted_explicit_choices", 0) or 0)
-        route_status = "learned" if count >= 3 else "learning"
-        if count == 0 and route.get("reset_at"):
-            route_status = "reset"
+        # A stored choice is history: a coding-owner choice counts only for the request it was made in, so no
+        # count of them selects an owner.
+        route_status = "recorded" if count else "reset" if route.get("reset_at") else "none"
         routes[str(family)] = {
             "status": route_status,
-            "selected_owner": str(route.get("selected_owner", "")),
+            "recorded_owner": str(route.get("selected_owner", "")),
+            "selects_owner": False,
             "evidence_count": count,
             "reset_at": str(route.get("reset_at", "")),
             "reset_reason": str(route.get("reset_reason", "")),
         }
-    overall = "learned" if any(value.get("status") == "learned" for value in routes.values() if isinstance(value, dict)) else "unlearned"
+    overall = "recorded" if any(value.get("status") == "recorded" for value in routes.values() if isinstance(value, dict)) else "none"
     return {"status": overall, "path": str(path), "routes": routes}
 
 
@@ -725,7 +735,8 @@ def check_legacy_plan_artifacts(hermes_home: str | Path | None = None) -> Advice
     remediation = (
         "OMH used to write plan artifacts into Hermes' own home. It now writes them to "
         "`<repo>/.omh/plans`, so these older files are no longer read by anything. They are "
-        "plain markdown: `omh hermes plan-accept <path>` still works on one, and they are "
+        "plain markdown: `omh hermes plan-accept <path>` still works on one (a scaffold-only "
+        "file needs `--allow-scaffold`), and they are "
         "safe to delete or archive by hand. OMH will not touch them."
     )
     counts: list[str] = []
@@ -1289,6 +1300,54 @@ def check_dreaming_mode_setting(hermes_home: str | Path | None = None) -> Advice
     return AdviceEntry(MODE_SETTING_UNRECOGNIZED, "advice", remediation, evidence_boundary, observed)
 
 
+def check_recall_settings(hermes_home: str | Path | None = None) -> AdviceEntry:
+    """Are this profile's `recall_line` and `recall_mode` settings values OMH reads?
+
+    The same advice as `dreaming_mode`'s: a value OMH does not read leaves the
+    default in force (`console`, `auto`) while the person who wrote, say,
+    `recall_line: discord` believes it chose something. Report-only; `omh
+    memory recall-line` and `recall-mode` write these keys.
+    """
+    home = _resolve_hermes_home(hermes_home)
+    config_path = home / "config.yaml"
+    evidence_boundary = (
+        "Local read of this profile's config.yaml `plugins.entries.omh.settings.recall_line` and "
+        "`recall_mode` with the block-style scan the OMH memory provider reads them with. The managed "
+        "config overlay is not read."
+    )
+    remediation = (
+        "Run `omh memory recall-line all|console|off` or `omh memory recall-mode auto|on_demand|off`, "
+        "or write one of those values in block style in this profile's config.yaml. Any other value, "
+        "or a file OMH cannot read, keeps the default."
+    )
+    if not config_path.exists():
+        return AdviceEntry(RECALL_SETTING_UNRECOGNIZED, "unobserved", remediation, evidence_boundary, f"{config_path} not found")
+    readings = (
+        ("recall_line", read_recall_line_setting(home), RECALL_LINES),
+        ("recall_mode", read_recall_mode_setting(home), RECALL_MODES),
+    )
+    unread = [(name, setting, values) for name, setting, values in readings if not setting["recognized"]]
+    if not unread:
+        observed = "; ".join(
+            f"{name}: {setting['raw'] if setting['raw'] is not None else 'unset'}, {setting['value']} is in force"
+            for name, setting, _values in readings
+        )
+        return AdviceEntry(RECALL_SETTING_UNRECOGNIZED, "ok", remediation, evidence_boundary, observed)
+    if any(setting.get("reason") != "unknown_value" for _name, setting, _values in unread):
+        observed = (
+            "config.yaml could not be read by OMH's block-style scan (a tab indent, an inline section, "
+            "or a `<<:` merge key a recall setting could be inherited through); "
+            + ", ".join(f"{name} {setting['value']}" for name, setting, _values in readings)
+            + " is in force"
+        )
+    else:
+        observed = "; ".join(
+            f"{name} is {setting['raw']!r}, which is not {', '.join(values)}; {setting['value']} is in force"
+            for name, setting, values in unread
+        )
+    return AdviceEntry(RECALL_SETTING_UNRECOGNIZED, "advice", remediation, evidence_boundary, observed)
+
+
 # What a nested-scalar read can conclude. "absent" and "ambiguous" are
 # different answers and the two advisories say different things about them:
 # an absent key means the host default is in force and can be named, while a
@@ -1387,6 +1446,73 @@ def _personal_file_skipped(check_id: str, files: str) -> AdviceEntry:
     )
 
 
+_LSP_TOOLS_ON = frozenset({"1", "true", "yes", "on"})
+
+
+def check_lsp_tools_disabled(hermes_home: str | Path | None = None) -> AdviceEntry:
+    """Is the opt-in `omh-lsp` toolset enabled for this profile?
+
+    The `lsp_definition` / `lsp_references` / `lsp_rename` / `lsp_diagnostics`
+    tools stay out of every turn's schema unless the operator sets
+    `OMH_LSP_TOOLS=1` or `plugins.entries.omh.settings.lsp_tools`. The
+    cross-file impact check runs without them; the tools only add direct
+    semantic navigation and re-check. An unset or off value is advice, not a
+    health failure, so this lives in the advisory lane.
+
+    Report-only. OMH does not write this key.
+    """
+    home = _resolve_hermes_home(hermes_home)
+    config_path = home / "config.yaml"
+    evidence_boundary = (
+        "Local read of this profile's config.yaml `plugins.entries.omh.settings.lsp_tools` "
+        "plus the `OMH_LSP_TOOLS` environment, with the same block-style scan the tool gate "
+        "reads it with. The managed config overlay is not read."
+    )
+    remediation = (
+        "Set `OMH_LSP_TOOLS=1` or `plugins.entries.omh.settings.lsp_tools` to `true` in this "
+        "profile's config.yaml (block style), then restart Hermes so the `omh-lsp` toolset "
+        "registers."
+    )
+    if os.environ.get("OMH_LSP_TOOLS", "").strip().lower() in _LSP_TOOLS_ON:
+        return AdviceEntry(
+            "lsp_tools_disabled",
+            "ok",
+            remediation,
+            evidence_boundary,
+            "lsp_tools is enabled via OMH_LSP_TOOLS",
+        )
+    if not config_path.exists():
+        return AdviceEntry(
+            "lsp_tools_disabled", "unobserved", remediation, evidence_boundary, f"{config_path} not found"
+        )
+    try:
+        text = config_path.read_text(encoding="utf-8")
+        value = plugin_setting_text(text, "lsp_tools")
+    except (OSError, UnicodeDecodeError, RuntimeBindingError):
+        return AdviceEntry(
+            "lsp_tools_disabled",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            "config.yaml could not be read by the block-style scan, so the setting is unknown",
+        )
+    if value is not None and value.strip().lower() in _LSP_TOOLS_ON:
+        return AdviceEntry(
+            "lsp_tools_disabled",
+            "ok",
+            remediation,
+            evidence_boundary,
+            f"lsp_tools: {value.strip()}; the omh-lsp toolset is enabled",
+        )
+    observed = (
+        "lsp_tools is unset; the omh-lsp toolset stays hidden and the impact check "
+        "reports without direct re-check"
+        if value is None
+        else f"lsp_tools is {value.strip()!r}; the omh-lsp toolset stays hidden"
+    )
+    return AdviceEntry("lsp_tools_disabled", "advice", remediation, evidence_boundary, observed)
+
+
 def run_config_advisories(
     hermes_home: str | Path | None = None,
     *,
@@ -1427,5 +1553,7 @@ def run_config_advisories(
             check_turn_budget_loop_exposure(hermes_home),
             check_loop_hard_stop_disabled(hermes_home),
             check_dreaming_mode_setting(hermes_home),
+            check_recall_settings(hermes_home),
+            check_lsp_tools_disabled(hermes_home),
         ],
     )

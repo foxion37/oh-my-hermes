@@ -26,6 +26,7 @@ This is an OMH `feedback-triage` workflow skill, projected for Agent Skills host
 - The user wants current market research rather than triage of supplied signals.
 - The triage result asks for a retention or activation intervention rather than another cluster; use `omh-lifecycle-growth`.
 - The supplied material is opportunity records and the request is portfolio health or forecast review; use `omh-sales-pipeline-review`.
+- The request is one reproducible bug with a fix asked for, not a set of reports to cluster; use the coding handoff.
 
 ## Examples
 
@@ -46,11 +47,14 @@ Bad example:
 - The source boundary, signal clusters, severity, and follow-up lane are named.
 - Bug, feature, research, strategy, and coding handoff outcomes stay separate.
 - The next workflow is recommended before any implementation claim.
+- A cluster is ranked by distinct customers reporting it (one customer counted once), severity (lost data or money, then a blocked task, then annoyance), and whether a workaround exists, with the count and its source.
+- Quotes carry names, emails, order ids, and card digits masked, and keep the raw item reference.
 
 ## Recovery Notes
 
-- If feedback lacks source or severity, ask for the missing signal before coding handoff.
-- If the item is actually a plan or research request, route to that workflow instead of triage.
+- If no feedback items are supplied, no cluster stands; mark triage not_observed and hand back the request for feedback items or a summary, source boundary, and product area.
+- If bug and feature signals cannot be separated from the supplied reports, retain source-bounded clusters, mark their classification and ranking tentative, and hand back the missing evidence with research or strategy follow-up options.
+- If a triaged cluster has no explicit coding intent or accepted-plan evidence, retain the clusters and ranking, mark the coding handoff unresolved, and hand back the next workflow recommendation with product_evidence_loop/v1 still prepared-only.
 
 
 

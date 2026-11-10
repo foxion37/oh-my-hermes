@@ -14,7 +14,10 @@ TUI only has to own five kinds:
   to reach the gateway itself: `slash.exec` runs commands in a separate
   per-session worker, so a rescan there would leave the gateway's skill
   commands as they were. The TUI handles them, calling the gateway method
-  underneath where there is one.
+  underneath where there is one. `/gateway restart` runs Hermes' own
+  `hermes gateway restart` once the person confirms, then reattaches
+  (`gateway_restart.py`); `/gateway` with anything else goes to Hermes as
+  typed, where it is Hermes' alias of `/platforms`.
 - `hermes`: commands whose surface is Ink-only (voice, the pet, the billing
   flows, overlays) or that would make the TUI persist raw prompts (`/save`,
   `/prompt`). The TUI names the Hermes door instead of half-supporting them.
@@ -80,6 +83,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
     # The terminal's own commands.
     SlashCommand("help", LOCAL, "Show commands"),
     SlashCommand("keys", LOCAL, "List every key (also ? on an empty composer)", echo_bare=False),
+    SlashCommand("whats-new", LOCAL, "Show what changed in this version of OMH (also said once after an update)",
+                 ("whatsnew",)),
     SlashCommand("quit", LOCAL, "Leave the OMH TUI", ("exit",)),
     SlashCommand("new", LOCAL, "Start a new session", ("clear", "reset")),
     SlashCommand("sessions", LOCAL, "Switch to a stored session (a picker; an id or exact title after it switches)",
@@ -102,12 +107,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("dag", LOCAL, "Show the delegation graph whole, with full boxes, in a pager", echo_bare=False),
     SlashCommand("bots", LOCAL, "Watch this machine's Hermes profiles, gateways and sessions, read-only (also Ctrl+S)",
                  echo_bare=False),
+    SlashCommand("gateway", LOCAL, "Restart Hermes' gateway and reattach to this session (/gateway restart)"),
     SlashCommand("copy", LOCAL, "Copy the last reply to the clipboard"),
     SlashCommand("image", LOCAL, "Attach an image file to the next message (/image <path>)"),
     SlashCommand("paste", LOCAL, "Attach the clipboard image to the next message (also Ctrl+V)"),
     SlashCommand("theme", LOCAL, "Pick the launch look (a picker), or /theme <look|palette|auto|light|dark>",
                  echo_bare=False),
-    SlashCommand("glow", LOCAL, "Turn the light that goes round the screen during a turn on or off (/glow on|off)"),
     SlashCommand("wallpaper", LOCAL,
                  "Turn the look's background colour and its moving scene on or off (/wallpaper on|off)"),
     SlashCommand("omh-model", LOCAL, "Pick OMH model chains"),

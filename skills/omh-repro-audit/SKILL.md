@@ -10,6 +10,7 @@ metadata:
     phase: result-audit
     role: researcher
     quality_tier: evidence-gated
+    related_skills: [omh-app-debugging]
 ---
 
 # Repro Audit
@@ -18,7 +19,7 @@ This is a Hermes-native `repro-audit` workflow skill.
 
 ## Why This Exists
 
-A displayed score is not evidence that evaluation conditions match. This workflow compares retained source claims without executing an evaluator or inventing missing conditions.
+A displayed score is not evidence that evaluation conditions match. This audit covers lm-eval HellaSwag results only. This workflow compares retained source claims without executing an evaluator or inventing missing conditions.
 
 ## First Steps
 
@@ -31,6 +32,8 @@ A displayed score is not evidence that evaluation conditions match. This workflo
 
 ## Do Not Use When
 
+- A bug report whose reproduction steps need checking is software debugging, not an evaluation audit; use `omh-app-debugging`.
+- A results file for any benchmark other than HellaSwag (the importer reads only the HellaSwag task); say it is unsupported and do not map it onto HellaSwag.
 - A supplied article needs section-by-section explanation rather than comparison of retained records.
 - A pull request needs code correctness review rather than research evidence mapping.
 - The request requires running an evaluator, downloading weights or verifying scientific reproduction.
@@ -63,8 +66,8 @@ Bad example:
 
 ## Workflow Lane
 
-- Current lane: **Research and company ops** (`product-docs`, `source-finder`, `web-research`, `research`, `model-optimization`, `inference-serving`, `model-finetuning`, `research-brief`, `+27 more`) - research, signals, ops, and briefings.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Research and company ops** - research, signals, ops, and briefings.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -123,7 +126,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

@@ -173,7 +173,7 @@ Per-segment art direction (medium·palette·typeface·motion) is in concept.md.
 
 ## Writing script.json
 
-The full format is at the top of `scripts/narrate.py`. Write it in the following order.
+The full format is at the top of `toolkit/scripts/narrate.py`. Write it in the following order.
 
 1. Following the scene times in the storyboard, write `at` (the time the speech starts) for each line. The first line goes at 0.4-0.8 seconds, and a name-reveal line is matched to the hit time.
 2. Name the words to align with scene transitions and kinetic typography as `cues`. Example: `"cues": {"name": "이훈희"}`
@@ -221,6 +221,8 @@ If the codex CLI is available, have a different model read the narration script 
 ```bash
 codex exec --sandbox read-only --skip-git-repo-check --ephemeral -o <project>/research/narration_review.md - < <project>/research/narration_review_prompt.md
 ```
+
+> OMH note: `codex exec` draws on the user's own ChatGPT plan, and no price gives a call's cost. Run it only after `omh-spend-gate`'s card, which names the calls and what each sends, with a spend-only cap set in calls, and the person's typed yes to that card.
 
 Criteria to put in the prompt (pass it on stdin; if you pass it as an argument, codex stalls waiting for input):
 

@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from tempfile import TemporaryDirectory
 import time
 import unittest
@@ -133,6 +134,16 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(env["OMH_TUI_SESSION_FILE"], str(Path("/t/s")))
         self.assertEqual(env["PATH"], "/bin")
         self.assertEqual(env["HERMES_HOME"], "/h")
+
+    def test_only_a_bare_resume_asks_for_the_picker_and_an_inherited_ask_is_dropped(self) -> None:
+        for pick, expected in ((True, "1"), (False, None)):
+            with self.subTest(pick=pick):
+                env = launch.omh_tui_environment(
+                    {launch.PICK_SESSION_ENV: "1"},
+                    python="/py", site="/site", omh_home=Path("/o"), fallback_sentinel=Path("/t/f"),
+                    session_file=Path("/t/s"), pick_session=pick,
+                )
+                self.assertEqual(env.get(launch.PICK_SESSION_ENV), expected)
 
     def test_a_site_left_in_the_environment_is_replaced(self) -> None:
         env = launch.omh_tui_environment(
@@ -262,6 +273,14 @@ class FallbackSentinelTests(unittest.TestCase):
 class ShimTests(unittest.TestCase):
     """Run the shipped `entry.js` under Node with a fake interpreter that records what it got."""
 
+    def setUp(self) -> None:
+        self._isolated_entry_dir = tempfile.TemporaryDirectory(prefix="omh-tui-entry-")
+        self.addCleanup(self._isolated_entry_dir.cleanup)
+        entry_root = Path(self._isolated_entry_dir.name)
+        (entry_root / "package.json").write_text('{"type": "commonjs"}\n', encoding="utf-8")
+        self.entry_path = entry_root / "entry.js"
+        self.entry_path.write_bytes(launch.FRONTEND_ENTRY.read_bytes())
+
     def _run_shim(self, tmp: Path, *, exit_code: int = 0, extra_env: dict[str, str] | None = None):
         record = tmp / "record.json"
         fake_python = _executable(
@@ -280,7 +299,7 @@ class ShimTests(unittest.TestCase):
             **(extra_env or {}),
         }
         result = subprocess.run(
-            ["node", str(launch.FRONTEND_ENTRY)], env=env, capture_output=True, text=True, timeout=30
+            ["node", str(self.entry_path)], env=env, capture_output=True, text=True, timeout=30
         )
         recorded = json.loads(record.read_text(encoding="utf-8")) if record.exists() else None
         return result, recorded
@@ -316,7 +335,7 @@ class ShimTests(unittest.TestCase):
             sentinel = Path(tmp) / "fallback"
             no_site = _executable(Path(tmp) / "python", f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n')
             result = subprocess.run(
-                ["node", str(launch.FRONTEND_ENTRY)],
+                ["node", str(self.entry_path)],
                 env={
                     "PATH": os.environ.get("PATH", ""),
                     "OMH_TUI_PYTHON": str(no_site),
@@ -340,7 +359,7 @@ class ShimTests(unittest.TestCase):
             )
             self.assertNotEqual(alone.returncode, 0, "this interpreter must not import omh by itself")
             result = subprocess.run(
-                ["node", str(launch.FRONTEND_ENTRY)],
+                ["node", str(self.entry_path)],
                 env={
                     "PATH": os.environ.get("PATH", ""),
                     "OMH_TUI_PYTHON": str(no_site),
@@ -372,7 +391,7 @@ class ShimTests(unittest.TestCase):
     def _run_stub(self, tmp: Path, python: Path, site: Path) -> dict:
         record = tmp / "record.json"
         result = subprocess.run(
-            ["node", str(launch.FRONTEND_ENTRY)],
+            ["node", str(self.entry_path)],
             env={
                 "PATH": os.environ.get("PATH", ""),
                 "OMH_TUI_PYTHON": str(python),
@@ -421,7 +440,7 @@ class ShimTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             sentinel = Path(tmp) / "fallback"
             result = subprocess.run(
-                ["node", str(launch.FRONTEND_ENTRY)],
+                ["node", str(self.entry_path)],
                 env={"PATH": os.environ.get("PATH", ""), launch.FALLBACK_SENTINEL_ENV: str(sentinel)},
                 capture_output=True, text=True, timeout=30,
             )
@@ -433,7 +452,7 @@ class ShimTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             sentinel = Path(tmp) / "fallback"
             result = subprocess.run(
-                ["node", str(launch.FRONTEND_ENTRY)],
+                ["node", str(self.entry_path)],
                 env={
                     "PATH": os.environ.get("PATH", ""),
                     "OMH_TUI_PYTHON": str(Path(tmp) / "missing-python"),
@@ -449,6 +468,7 @@ class ShimTests(unittest.TestCase):
         # the shim alone then reaches only the failing kill, and the child goes on to exit 0 on its own.
         with TemporaryDirectory() as tmp:
             sentinel, started = Path(tmp) / "fallback", Path(tmp) / "started"
+            (Path(tmp) / "package.json").write_text('{"type": "commonjs"}\n', encoding="utf-8")
             preload = Path(tmp) / "failing-kill.js"
             preload.write_text(
                 "const cp = require('node:child_process')\n"
@@ -462,13 +482,13 @@ class ShimTests(unittest.TestCase):
             )
             fake_python = _executable(Path(tmp) / "fake-python", f'#!/bin/sh\ntouch "{started}"\nsleep 1\nexit 0\n')
             shim = subprocess.Popen(
-                ["node", "-r", str(preload), str(launch.FRONTEND_ENTRY)],
+                ["node", "-r", str(preload), str(self.entry_path)],
                 env={
                     "PATH": os.environ.get("PATH", ""),
                     "OMH_TUI_PYTHON": str(fake_python),
                     launch.FALLBACK_SENTINEL_ENV: str(sentinel),
                 },
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmp,
             )
             try:
                 deadline = time.monotonic() + 20
@@ -486,7 +506,7 @@ class ShimTests(unittest.TestCase):
     def test_a_fallback_without_a_sentinel_name_still_exits_75(self) -> None:
         # `python -m omh.tui` by hand, or a launcher that set no name: the code is the same, no file is made.
         result = subprocess.run(
-            ["node", str(launch.FRONTEND_ENTRY)], env={"PATH": os.environ.get("PATH", "")},
+            ["node", str(self.entry_path)], env={"PATH": os.environ.get("PATH", "")},
             capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(result.returncode, launch.FALLBACK_EXIT)

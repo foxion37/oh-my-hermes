@@ -66,9 +66,11 @@
    "model-optimization",
    "inference-serving",
    "model-finetuning",
+   "model-compression",
    "research-brief",
    "market-research",
    "repro-audit",
+   "systematic-review",
    "jit-learn",
    "geospatial-analysis",
    "biomedical-evidence",
@@ -302,7 +304,10 @@
    "ask",
    "jev-ask",
    "jev-route",
-   "cancel"
+   "cancel",
+   "operating-rhythm",
+   "ops-review",
+   "reliability-review"
   ],
   "route_summary": "Show status, repair, schedule, or learning shape without claiming runtime actions happened.",
   "source_examples": [

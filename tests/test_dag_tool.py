@@ -37,6 +37,7 @@ from omh.plugin_bundle.omh import dag_run  # noqa: E402
 from omh.plugin_bundle.omh import host_process  # noqa: E402
 from omh.plugin_bundle.omh import runtime_paths  # noqa: E402
 from omh.plugin_bundle.omh.delegation_ledger import dag_binding, read_ledger  # noqa: E402
+from omh.plugin_bundle.omh.named_owner_choice import note_turn_owners  # noqa: E402
 from omh.plugin_bundle.omh.tools import dag_tool  # noqa: E402
 from omh.routing import owner_preference  # noqa: E402
 from omh.routing.coding_route_actions import OWNER_PREFERENCE_ROUTE_FAMILY  # noqa: E402
@@ -45,12 +46,14 @@ PROMPT = "TASK: do it\nDELIVERABLE: a change\nSCOPE: only its files\nVERIFY: run
 
 
 def node(node_id: str, *, category: str = "quick", depends_on: tuple[str, ...] = (), scope: tuple[str, ...] = (),
-         label: str = "", prompt: str = PROMPT, role: str = "") -> dict:
-    """A node as the parent sends it; ``role`` only when given, as a parent that names none sends none."""
+         label: str = "", prompt: str = PROMPT, role: str = "", owner: str = "") -> dict:
+    """A node as the parent sends it; ``role`` and ``owner`` only when given, as a parent that names none sends none."""
     raw = {"id": node_id, "label": label or f"Node {node_id}", "category": category, "prompt": prompt,
            "depends_on": list(depends_on), "write_scope": list(scope)}
     if role:
         raw["role"] = role
+    if owner:
+        raw["owner"] = owner
     return raw
 
 
@@ -261,7 +264,9 @@ class DefineTests(unittest.TestCase):
         self.assertEqual(result["topology"]["layers"], [["api", "ui"], ["docs"], ["verify"]])
         self.assertEqual(result["topology"]["critical_path"], ["api", "docs", "verify"])
         self.assertEqual(result["topology"]["bottlenecks"][0], {"node": "api", "blocks": 2})
-        self.assertEqual(result["lint"], [])
+        # api and ui write code and no node reviews them, and four nodes carry no judgement category: advice, never a
+        # refusal.
+        self.assertEqual(result["lint"], ["no_review_node", "no_judgement_node"])
         self.assertEqual([(c["category"], c["nodes"], c["route"]["action"]) for c in result["calls"]],
                          [("quick", ["api"], "set"), ("unspecified-low", ["ui"], "set")])
         task = result["calls"][0]["tasks"][0]
@@ -300,6 +305,30 @@ class DefineTests(unittest.TestCase):
                           nodes=[node("a", scope=("x.py",)), node("b", scope=("x.py",), depends_on=("a",))])
         self.assertEqual(result["status"], "ok", result)
 
+    def test_scopes_written_differently_still_overlap(self) -> None:
+        """Mutation: compare entries as written; a directory, `./` or a glob then lets two nodes write one file."""
+        for first, second in (("src/", "src/x.py"), ("src/x.py", "./src/x.py"), ("src/*.py", "src/x.py"),
+                              ("src/**/*.py", "src/x.py")):
+            with self.subTest(first=first, second=second), homes():
+                refused = call(action="define", run="feat", nodes=[node("a", scope=(first,)), node("b", scope=(second,))])
+                # Through a third node is still no edge: only a direct one orders the two writers.
+                chained = call(action="define", run="chain", nodes=[
+                    node("a", scope=(first,)), node("m", depends_on=("a",)), node("b", depends_on=("m",), scope=(second,))])
+                joined = call(action="define", run="joined", nodes=[
+                    node("a", scope=(first,)), node("b", depends_on=("a",), scope=(second,))])
+            self.assertEqual((refused["status"], refused["reason"]), ("refused", "write_scope_overlap"), refused)
+            self.assertEqual(refused["say"],
+                             f"These nodes write overlapping paths with no edge between them: a writes {first} and "
+                             f"b writes {second}. Make one of each pair depend on the other, or split the scope.")
+            self.assertEqual(chained["reason"], "write_scope_overlap", chained)
+            self.assertEqual(joined["status"], "ok", joined)
+
+    def test_neighbouring_names_do_not_overlap(self) -> None:
+        for first, second in (("src/a", "src/ab"), ("docs/x.md", "docs/xy.md")):
+            with self.subTest(first=first, second=second), homes():
+                result = call(action="define", run="feat", nodes=[node("a", scope=(first,)), node("b", scope=(second,))])
+            self.assertEqual(result["status"], "ok", result)
+
     def test_lint_is_advice_and_never_rejects(self) -> None:
         # A partial marker set is lint; a prompt with no marker at all is refused (see DefineTests.preflight).
         nodes = [node("a", category="deep", prompt="TASK: do the thing."), node("b", category="deep-work", scope=("b.py",)),
@@ -316,6 +345,33 @@ class DefineTests(unittest.TestCase):
         with homes():
             miss = call(action="define", run="miss", nodes=[node("a", scope=("a.py",)), node("verify", role="verify")])
         self.assertIn("verification_misses:a", miss["lint"])
+
+    def test_a_wide_graph_with_no_judgement_node_is_linted(self) -> None:
+        """Four nodes all on the ladder name the missing judgement node; three nodes, or one judgement node, do not.
+
+        Mutation: count `deep` or `unspecified-high` as a judgement node, drop the four-node floor, or let two
+        `ultrabrain` nodes raise `no_judgement_node` beside `ultrabrain_more_than_once`.
+        """
+        def ladder(*categories: str) -> list[dict]:
+            return [node(f"n{index}", category=category, scope=(f"n{index}.py",))
+                    for index, category in enumerate(categories)]
+
+        with homes():
+            wide = call(action="define", run="wide", nodes=ladder("quick", "unspecified-low", "unspecified-high", "quick"))
+        self.assertEqual(wide["status"], "ok", wide)
+        self.assertIn("no_judgement_node", wide["lint"])
+        for run, categories in (("three", ("quick", "unspecified-low", "unspecified-high")),
+                                ("architect", ("quick", "unspecified-low", "architect", "quick")),
+                                ("forensics", ("quick", "forensics", "unspecified-high", "quick")),
+                                ("ultrabrain", ("quick", "unspecified-low", "ultrabrain", "quick"))):
+            with self.subTest(run=run), homes():
+                result = call(action="define", run=run, nodes=ladder(*categories))
+            self.assertEqual(result["status"], "ok", result)
+            self.assertNotIn("no_judgement_node", result["lint"])
+        with homes():
+            twice = call(action="define", run="twice", nodes=ladder("quick", "ultrabrain", "ultrabrain", "quick"))
+        self.assertIn("ultrabrain_more_than_once", twice["lint"])
+        self.assertNotIn("no_judgement_node", twice["lint"])
 
     def test_the_same_definition_is_reused_and_a_different_one_refused(self) -> None:
         with homes():
@@ -430,6 +486,196 @@ class SettleTests(unittest.TestCase):
             self._run(home)
             result = call(action="settle", run="feat", node="docs", outcome="accepted")
         self.assertEqual(result["reason"], "node_not_out")
+
+
+def hermes_isolation(isolation: object, local: object = True) -> patch_modules:
+    """Hermes' `tools.delegate_tool._get_worktree_isolation` and `tools.subagent_worktree.local_backend_active`.
+
+    Each answers its value, or raises it when it is an exception.
+    """
+    def answer(value: object):
+        def read() -> object:
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return read
+
+    delegate = SimpleNamespace(_get_worktree_isolation=answer(isolation))
+    worktree = SimpleNamespace(local_backend_active=answer(local))
+    return patch_modules({"tools": SimpleNamespace(delegate_tool=delegate, subagent_worktree=worktree),
+                          "tools.delegate_tool": delegate, "tools.subagent_worktree": worktree})
+
+
+def no_hermes_isolation() -> patch_modules:
+    """Hermes' isolation getters cannot be imported: the config file is read."""
+    return patch_modules({"tools.delegate_tool": None, "tools.subagent_worktree": None})
+
+
+class WorktreeIsolationTests(unittest.TestCase):
+    """Hermes' `delegation.worktree_isolation` gives each child a worktree of its own from the parent's HEAD.
+
+    A dependent or the verify node would then start without the earlier nodes' edits, so a run is never defined
+    with it on, and a run defined before it was turned on hands out no call while it is on.
+    """
+
+    def _config(self, home, text: bytes | str) -> None:
+        path = home.hermes / "config.yaml"
+        if isinstance(text, bytes):
+            path.write_bytes(text)
+        else:
+            path.write_text(text, encoding="utf-8")
+
+    def test_the_config_is_read_as_hermes_reads_it_with_bool(self) -> None:
+        """Hermes does `bool(cfg.get("worktree_isolation", False))` over PyYAML: every value but a false one is on."""
+        on = {
+            "true": "  worktree_isolation: true\n", "True": "  worktree_isolation: True\n",
+            "yes": "  worktree_isolation: yes\n", "ON": "  worktree_isolation: ON\n",
+            "one": "  worktree_isolation: 1\n", "commented": "  worktree_isolation: true  # one tree each\n",
+            "quoted false": "  worktree_isolation: 'false'\n", "quoted no": '  worktree_isolation: "no"\n',
+            "quoted zero": "  worktree_isolation: '0'\n", "y": "  worktree_isolation: y\n",
+            "enabled": "  worktree_isolation: enabled\n", "float one": "  worktree_isolation: 1.0\n",
+            "quoted hash": "  worktree_isolation: 'tr#ue'\n", "env": "  worktree_isolation: ${DAG_ISOLATION}\n",
+            "list": "  worktree_isolation: [true]\n", "anchor": "  worktree_isolation: &on true\n",
+            "block scalar": "  worktree_isolation: |\n    false\n",
+            "quoted key": '  "worktree_isolation": true\n',
+        }
+        off = {
+            "false": "  worktree_isolation: false\n", "False": "  worktree_isolation: False\n",
+            "NO": "  worktree_isolation: NO\n", "Off": "  worktree_isolation: Off\n",
+            "zero": "  worktree_isolation: 0\n", "float zero": "  worktree_isolation: 0.0\n",
+            "minus zero": "  worktree_isolation: -0\n", "hex zero": "  worktree_isolation: 0x0\n",
+            "null": "  worktree_isolation: null\n", "tilde": "  worktree_isolation: ~\n",
+            "empty": "  worktree_isolation:\n", "quoted empty": "  worktree_isolation: ''\n",
+            "empty list": "  worktree_isolation: []\n", "absent": "  max_concurrent_children: 3\n",
+        }
+        with no_hermes_isolation():
+            for expected, cases in ((True, on), (False, off)):
+                for name, line in cases.items():
+                    with self.subTest(value=name), homes() as home:
+                        self._config(home, "delegation:\n" + line)
+                        self.assertIs(dag_tool.worktree_isolation_on(home.hermes), expected)
+            for name, text in (("inline mapping", "delegation: {worktree_isolation: true}\n"),
+                               ("other section", "terminal:\n  worktree_isolation: true\n"),
+                               ("no config", None)):
+                with self.subTest(value=name), homes() as home:
+                    if text is not None:
+                        self._config(home, text)
+                    self.assertIs(dag_tool.worktree_isolation_on(home.hermes), name == "inline mapping")
+
+    def test_define_is_refused_while_isolation_is_on_and_keeps_no_record(self) -> None:
+        with homes() as home, no_hermes_isolation():
+            slots_table(home)
+            self._config(home, "delegation:\n  max_concurrent_children: 3\n  worktree_isolation: 'false'\n")
+            result = call(action="define", run="feat", nodes=FEATURE)
+            self.assertIsNone(dag_run.read_run(dag_run.record_path(home.omh, PARENT, "feat")))
+        self.assertEqual((result["status"], result["reason"]), ("refused", "worktree_isolation_on"), result)
+        self.assertEqual(result["say"], dag_tool.WORKTREE_ISOLATION_REFUSED)
+        self.assertIn("`hermes config set delegation.worktree_isolation false`", result["say"])
+
+    def test_hermes_own_answer_is_preferred_over_the_config_file(self) -> None:
+        cases = (
+            ("hermes on, file off", True, True, "false", "refused"),
+            ("hermes off, file on", False, True, "true", "ok"),
+            ("hermes on, terminal not local", True, False, "true", "ok"),
+            ("hermes getter raised, file on", RuntimeError("moved"), True, "true", "refused"),
+            ("hermes getter raised, file off", RuntimeError("moved"), True, "false", "ok"),
+        )
+        for name, isolation, local, value, status in cases:
+            with self.subTest(case=name), homes() as home, hermes_isolation(isolation, local):
+                slots_table(home)
+                self._config(home, f"delegation:\n  worktree_isolation: {value}\n")
+                result = call(action="define", run="feat", nodes=FEATURE)
+                self.assertEqual(result["status"], status, result)
+
+    def test_isolation_off_or_absent_defines_as_before(self) -> None:
+        configs: dict[str, str | None] = {
+            "absent": None,
+            "false": "delegation:\n  worktree_isolation: false\n",
+            "off": "delegation:\n  worktree_isolation: off\n",
+            "zero": "delegation:\n  worktree_isolation: 0\n",
+            "other_section": "terminal:\n  worktree_isolation: true\n",
+        }
+        expected = None
+        for name, text in configs.items():
+            with self.subTest(config=name), homes() as home, no_hermes_isolation():
+                slots_table(home)
+                if text is not None:
+                    self._config(home, text)
+                result = call(action="define", run="feat", nodes=FEATURE)
+                self.assertEqual(result["status"], "ok", result)
+                self.assertNotIn("worktree_isolation", result.get("say", ""))
+                shape = ([c["nodes"] for c in result["calls"]], result.get("say", ""), result["state"])
+                expected = expected or shape
+                self.assertEqual(shape, expected)
+
+    def test_an_unreadable_config_counts_as_off_and_define_answers_as_before(self) -> None:
+        """Fail-open only on a read failure: the guard says off, and define answers as it did without the guard."""
+        for name in ("not_utf8", "directory"):
+            answers = []
+            for guarded in (True, False):
+                with self.subTest(config=name, guarded=guarded), homes() as home, no_hermes_isolation():
+                    slots_table(home)
+                    if name == "directory":
+                        (home.hermes / "config.yaml").mkdir()
+                    else:
+                        self._config(home, b"delegation:\n  worktree_isolation: true\n  note: \xff\xfe\n")
+                    self.assertFalse(dag_tool.worktree_isolation_on(home.hermes))
+                    with nullcontext() if guarded else patch.object(dag_tool, "worktree_isolation_on",
+                                                                    return_value=False):
+                        answers.append(call(action="define", run="feat", nodes=FEATURE))
+            self.assertEqual(answers[0], answers[1])
+            self.assertNotEqual(answers[0].get("reason"), "worktree_isolation_on")
+
+    @unittest.skipUnless(SANDBOX_SHELL, SANDBOX_SKIP)
+    def test_a_docker_or_ssh_terminal_skips_the_guard_and_says_only_the_terminal_step(self) -> None:
+        """Hermes skips isolation on a terminal that is not local, so the run is defined and only TERMINAL_FIRST shows."""
+        with homes() as home, Terminal("docker", None).modules():
+            slots_table(home)
+            self._config(home, "delegation:\n  worktree_isolation: true\n")
+            result = call(action="define", run="feat", nodes=FEATURE)
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["calls"], [])
+        self.assertIn(dag_tool.TERMINAL_FIRST.format(backend="docker"), result["say"])
+        self.assertNotIn("worktree_isolation", result["say"])
+
+    def test_a_run_defined_before_isolation_hands_out_nothing_while_it_is_on(self) -> None:
+        with homes() as home, no_hermes_isolation():
+            slots_table(home)
+            self._config(home, "delegation:\n  max_concurrent_children: 10\n")
+            call(action="define", run="feat", nodes=FEATURE)
+            child_started(home, "feat", "api")
+            handoff(home, "feat", "api")
+            stop(home, "child-api", now=time.time())
+            quiet = call(action="status", run="feat")
+            self._config(home, "delegation:\n  max_concurrent_children: 10\n  worktree_isolation: true\n")
+            settled = call(action="settle", run="feat", node="api", outcome="accepted")
+            ready = call(action="ready", run="feat")
+            status = call(action="status", run="feat")
+            self._config(home, "delegation:\n  max_concurrent_children: 10\n  worktree_isolation: false\n")
+            after = call(action="ready", run="feat")
+        # The outcome is still recorded; only the next node does not go out, and status names why.
+        self.assertEqual(settled["settled"], {"node": "api", "outcome": "accepted"})
+        self.assertEqual(settled["counts"]["done"], 1)
+        self.assertEqual(settled["calls"], [])
+        self.assertTrue(settled["say"].endswith(dag_tool.WORKTREE_ISOLATION_HELD), settled["say"])
+        self.assertNotIn("held_for_slots", settled)
+        self.assertEqual(ready["calls"], [])
+        self.assertIn(dag_tool.WORKTREE_ISOLATION_HELD, ready["say"])
+        self.assertEqual(status["say"], dag_tool.WORKTREE_ISOLATION_HELD)
+        self.assertNotIn("worktree_isolation", quiet.get("say", ""))
+        self.assertEqual([c["nodes"] for c in after["calls"]], [["docs"]])
+        self.assertNotIn("worktree_isolation", after.get("say", ""))
+
+    def test_the_setting_is_read_without_writing_the_config(self) -> None:
+        text = "delegation:\n  worktree_isolation: yes\n"
+        with homes() as home, no_hermes_isolation():
+            self._config(home, text)
+            before = (home.hermes / "config.yaml").stat()
+            self.assertTrue(dag_tool.worktree_isolation_on(home.hermes))
+            call(action="define", run="feat", nodes=FEATURE)
+            after = (home.hermes / "config.yaml").stat()
+            self.assertEqual((home.hermes / "config.yaml").read_text(encoding="utf-8"), text)
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
 
 
 FILE_ANSWER = {"output": "OMH_HANDOFF_FILE\n", "returncode": 0}
@@ -840,6 +1086,46 @@ class RepairTests(unittest.TestCase):
         superseded = {row["id"]: row["state"] for row in second["nodes"]}
         self.assertEqual(superseded["v2"], "superseded")
 
+    def test_a_repair_writing_a_runnable_nodes_file_under_another_spelling_is_refused(self) -> None:
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="feat", nodes=[
+                node("api", scope=("a.py",)), node("ui", scope=("src/ui.py",)),
+                node("verify", role="verify", depends_on=("api", "ui"), label="Verify")])
+            call(action="settle", run="feat", node="api", outcome="failed")
+            refused = call(action="repair", run="feat", node="api", nodes=[node("fix", scope=("a.py", "src/"))])
+            repaired = call(action="repair", run="feat", node="api", nodes=[node("fix", scope=("a.py", "lib/"))])
+        self.assertEqual((refused["status"], refused["reason"]), ("refused", "write_scope_overlap"), refused)
+        self.assertEqual(repaired["status"], "ok", repaired)
+
+    def test_a_repair_is_not_refused_over_two_earlier_nodes(self) -> None:
+        """Mutation: check every runnable pair at repair; the model cannot change a and b, and loops until cancel."""
+        with homes() as home:
+            slots_table(home)
+            # A run recorded before scopes were compared as paths: a and b overlap with no edge.
+            path = dag_run.record_path(home.omh, PARENT, "feat")
+            call(action="define", run="feat", nodes=[node("a", scope=("a.py",)), node("b", scope=("src/x.py",)),
+                                                     node("c", scope=("c.py",))])
+            record = dag_run.read_run(path)
+            record["nodes"][0]["write_scope"] = ["src/"]
+            path.write_text(json.dumps(record), encoding="utf-8")
+            call(action="settle", run="feat", node="c", outcome="failed")
+            repaired = call(action="repair", run="feat", node="c", nodes=[node("fix", scope=("z.py",))])
+        self.assertEqual(repaired["status"], "ok", repaired)
+
+    def test_a_second_repair_is_not_refused_over_the_first_repairs_overlap(self) -> None:
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="feat", nodes=[
+                node("r1", scope=("a.py",)), node("d1", depends_on=("r1",), scope=("src/",)), node("r2", scope=("b.py",)),
+                node("verify", role="verify", depends_on=("d1", "r2"), label="Verify")])
+            call(action="settle", run="feat", node="r1", outcome="failed")
+            first = call(action="repair", run="feat", node="r1", nodes=[node("fix1", scope=("src/x.py",))])
+            call(action="settle", run="feat", node="r2", outcome="failed")
+            second = call(action="repair", run="feat", node="r2", nodes=[node("fix2", scope=("z.py",))])
+        self.assertEqual(first["status"], "ok", first)
+        self.assertEqual(second["status"], "ok", second)
+
     def test_a_repair_node_may_not_wait_on_an_open_node(self) -> None:
         with homes() as home:
             slots_table(home)
@@ -1231,6 +1517,39 @@ class ExtendTests(unittest.TestCase):
             self.assertEqual(result.get("reason"), reason, result)
         self.assertEqual((unchanged["state"], len(unchanged["nodes"])), ("done", 2))
 
+    def test_an_earlier_nodes_file_under_another_spelling_is_refused(self) -> None:
+        with homes() as home:
+            self._done(home)
+            refused = {entry: call(action="extend", run="feat", nodes=[node("x", scope=(entry,))])
+                       for entry in ("./a.py", "*.py")}
+            extended = call(action="extend", run="feat", nodes=[node("x", scope=("ab.py",))])
+        for entry, result in refused.items():
+            self.assertEqual((entry, result.get("reason")), (entry, "write_scope_overlap"), result)
+        self.assertEqual(extended["status"], "ok", extended)
+
+    def test_one_refusal_names_every_overlapping_pair(self) -> None:
+        """Mutation: raise on the first pair; a directory entry then costs one refused round per node it covers."""
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="feat", nodes=[node(name, scope=(f"src/{name}.py",)) for name in "abc"])
+            for name in "abc":
+                handoff(home, "feat", name)
+                call(action="settle", run="feat", node=name, outcome="accepted")
+            refused = call(action="extend", run="feat", nodes=[node("x", scope=("src/",))])
+        self.assertEqual(refused.get("reason"), "write_scope_overlap", refused)
+        self.assertEqual(refused["say"], "These nodes write overlapping paths with no edge between them: "
+                                         "a writes src/a.py and x writes src/; b writes src/b.py and x writes src/; "
+                                         "c writes src/c.py and x writes src/. "
+                                         "Make one of each pair depend on the other, or split the scope.")
+
+    def test_the_refusal_names_a_bounded_number_of_pairs(self) -> None:
+        nodes = [node(f"n{index}", scope=(f"src/n{index}.py",)) for index in range(dag_run.OVERLAPS_NAMED + 3)]
+        with homes():
+            refused = call(action="define", run="feat", nodes=[*nodes, node("x", scope=("src/",))])
+        self.assertEqual(refused.get("reason"), "write_scope_overlap", refused)
+        self.assertEqual(refused["say"].count(" and x writes src/"), dag_run.OVERLAPS_NAMED)
+        self.assertIn("src/ and 3 more pairs. Make one of each pair", refused["say"])
+
     def test_the_new_nodes_are_linted(self) -> None:
         with homes() as home:
             self._done(home)
@@ -1287,6 +1606,100 @@ class ExtendTests(unittest.TestCase):
         self.assertEqual({row["id"]: row["state"] for row in done["nodes"]}["v2"], "superseded")
 
 
+class ClosingUsageTests(unittest.TestCase):
+    """#2684: a finished run carries what its children used, from Hermes' own rows; a running one carries nothing."""
+
+    @staticmethod
+    def _counted(home, session: str, uncached: int, read: int, write: int, output: int, *,
+                 actual: float | None = None, estimated: float | None = None) -> None:
+        home.session(session, "glm-5.3-flash", parent=PARENT, started=time.time())
+        home.tokens(session, output)
+        home.execute("UPDATE sessions SET input_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, "
+                     "actual_cost_usd = ?, estimated_cost_usd = ? WHERE id = ?",
+                     (uncached, read, write, actual, estimated, session))
+
+    def _run(self, home) -> None:
+        slots_table(home)
+        for column, kind in (("input_tokens", "INTEGER DEFAULT 0"), ("cache_read_tokens", "INTEGER DEFAULT 0"),
+                             ("cache_write_tokens", "INTEGER DEFAULT 0"), ("actual_cost_usd", "REAL"),
+                             ("estimated_cost_usd", "REAL")):
+            home.execute(f"ALTER TABLE sessions ADD COLUMN {column} {kind}")
+        call(action="define", run="feat", nodes=[node("api", scope=("a.py",)),
+                                                 node("verify", role="verify", depends_on=("api",))])
+
+    def _finish(self, home, node_id: str) -> dict:
+        child_started(home, "feat", node_id)
+        handoff(home, "feat", node_id)
+        stop(home, f"child-{node_id}", now=time.time())
+        return call(action="settle", run="feat", node=node_id, outcome="accepted")
+
+    def test_a_done_run_adds_up_its_childrens_recorded_usage(self) -> None:
+        """Mutation: leave out a child, count the output in the cache share, or price an unpriced child."""
+        with homes() as home:
+            self._run(home)
+            self._counted(home, "child-api", 1_000, 8_000, 1_000, 500, actual=0.04)
+            first = self._finish(home, "api")
+            self._counted(home, "child-verify", 500, 2_000, 0, 200, estimated=0.01)
+            done = self._finish(home, "verify")
+            status = call(action="status", run="feat")
+        self.assertEqual(first["state"], "running")
+        self.assertNotIn("usage", first)
+        self.assertNotIn("usage_line", first)
+        self.assertEqual(done["state"], "done", done)
+        self.assertEqual(done["usage"], {"input": 1_500, "cache_read": 10_000, "cache_write": 1_000, "output": 700,
+                                         "cost_usd": 0.05, "cost_estimated": True, "children": 2,
+                                         "children_unrecorded": 0, "priced": 2})
+        self.assertEqual(done["usage_line"], "DAG feat · 2 children · 13.2k tokens · cache 80.0% · ~$0.0500 (2/2 priced)")
+        self.assertEqual(status["usage"], done["usage"])
+
+    def test_an_unpriced_child_makes_the_cost_a_floor_and_an_uncounted_one_is_named(self) -> None:
+        with homes() as home:
+            self._run(home)
+            self._counted(home, "child-api", 1_000, 0, 0, 100, actual=0.02)
+            self._finish(home, "api")
+            self._counted(home, "child-verify", 400, 0, 0, 50)
+            partial = self._finish(home, "verify")
+        self.assertEqual(partial["usage"]["cost_usd"], 0.02)
+        self.assertTrue(partial["usage"]["cost_partial"])
+        self.assertEqual(partial["usage_line"], "DAG feat · 2 children · 1.6k tokens · cache 0.0% · ≥$0.0200 (1/2 priced)")
+        with homes() as home:
+            self._run(home)
+            self._counted(home, "child-api", 300, 0, 0, 20)
+            self._finish(home, "api")
+            home.session("child-verify", "glm-5.3-flash", parent=PARENT, started=time.time())  # no count at all
+            unpriced = self._finish(home, "verify")
+        self.assertEqual(unpriced["usage_line"], "DAG feat · 1 child · 320 tokens · cache 0.0% · cost not recorded · 1 with no record")
+        self.assertNotIn("cost_usd", unpriced["usage"])
+
+    def test_the_run_summary_closes_with_the_same_figures_before_the_goal_line(self) -> None:
+        """Mutation: drop the usage line from the summary, or put it after the goal line."""
+        from omh.plugin_bundle.omh.tools.run_summary_tool import omh_run_summary_handler
+
+        with homes() as home:
+            self._run(home)
+            for column in ("reasoning_tokens", "api_call_count"):  # the summary's own row read needs them
+                home.execute(f"ALTER TABLE sessions ADD COLUMN {column} INTEGER DEFAULT 0")
+            home.session(PARENT, "claude-opus-5-5", started=time.time() - 60)
+            self._counted(home, "child-api", 1_000, 8_000, 1_000, 500, actual=0.04)
+            self._finish(home, "api")
+            self._counted(home, "child-verify", 500, 2_000, 0, 200, actual=0.01)
+            self._finish(home, "verify")
+            summary = json.loads(omh_run_summary_handler({"language": "ko"}, session_id=PARENT))
+        lines = summary["summary_text"].splitlines()
+        self.assertEqual(lines[-2:], ["DAG 사용량 (feat): 2 children · 13.2k tokens · cache 80.0% · $0.0500 (2/2 priced)",
+                                      "목표 검증 (DAG feat): verified"])
+        self.assertEqual(summary["dag_goal"]["usage"]["children"], 2)
+
+    def test_a_run_whose_children_counted_nothing_carries_no_usage(self) -> None:
+        with homes() as home:
+            self._run(home)
+            self._finish(home, "api")
+            done = self._finish(home, "verify")
+        self.assertEqual(done["state"], "done")
+        self.assertNotIn("usage", done)
+        self.assertNotIn("usage_line", done)
+
+
 class LifecycleTests(unittest.TestCase):
     def test_status_finds_the_run_from_a_later_segment(self) -> None:
         with homes() as home:
@@ -1306,6 +1719,40 @@ class LifecycleTests(unittest.TestCase):
             settle = call(action="settle", run="feat", node="api", outcome="accepted")
         self.assertEqual(result["state"], "cancelled")
         self.assertEqual(settle["reason"], "run_cancelled")
+
+    def test_cancel_names_still_running_children(self) -> None:
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="feat", nodes=[node("api"), node("docs")])
+            call(action="ready", run="feat")
+            child_started(home, "feat", "api")
+            result = call(action="cancel", run="feat")
+        still = result.get("still_running", [])
+        self.assertEqual([row["id"] for row in still], ["api"])
+        self.assertEqual(still[0]["subagent_id"], "sa-api")
+        self.assertIn("open_for_s", still[0])
+        self.assertIn("api as subagent sa-api", result["say"])
+        self.assertIn("delegate_task action=stop", result["say"])
+        self.assertIn("never settles them", result["say"])
+
+    def test_a_repeated_cancel_still_names_the_running_child(self) -> None:
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="feat", nodes=[node("api"), node("docs")])
+            call(action="ready", run="feat")
+            child_started(home, "feat", "api")
+            call(action="cancel", run="feat")
+            again = call(action="cancel", run="feat")
+        self.assertEqual([row["subagent_id"] for row in again.get("still_running", [])], ["sa-api"])
+        self.assertNotIn("No child is still running", again["say"])
+
+    def test_cancel_without_running_children_says_so(self) -> None:
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="feat", nodes=FEATURE)
+            result = call(action="cancel", run="feat")
+        self.assertNotIn("still_running", result)
+        self.assertIn("No child is still running", result["say"])
 
     def test_the_record_holds_no_child_output(self) -> None:
         with homes() as home:
@@ -1574,33 +2021,44 @@ class RestartTests(unittest.TestCase):
 
 CODING = [
     node("plan", category="unspecified-low", label="Plan the change"),
-    node("api", depends_on=("plan",), scope=("src/api.py",)),
-    node("ui", depends_on=("plan",), scope=("src/ui.py",)),
+    node("api", depends_on=("plan",), scope=("src/api.py",), owner="codex"),
+    node("ui", depends_on=("plan",), scope=("src/ui.py",), owner="codex"),
     node("review", role="review", depends_on=("plan",), scope=("docs/review.md",), label="Review the plan"),
     node("verify", category="unspecified-high", depends_on=("api", "ui", "review"), label="Verify the feature"),
 ]
 
 
-def choose(home, owner: str, *, age: float = 0.0) -> dict:
-    """The record the router writes when the person names ``owner``, dated ``age`` seconds ago."""
-    from datetime import datetime, timedelta, timezone
+def choose(home, *owners: str) -> tuple[str, ...]:
+    """This turn's dag-ulw request names ``owners``, as `pre_llm_call` records it for the session."""
+    return note_turn_owners(PARENT, "/dag-ulw build it with " + " and ".join(owners))
 
-    moment = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
-    state = owner_preference.record_in_message_explicit_naming(
+
+def new_request(text: str = "/dag-ulw build it") -> None:
+    """The person's next turn, which names no owner unless ``text`` does."""
+    note_turn_owners(PARENT, text)
+
+
+def router_record(owner: str, *, accepted: bool = False) -> dict:
+    """A fresh, valid choice the router writes for `omh chat` or `omh coding`: another request's choice."""
+    from datetime import datetime, timezone
+
+    moment = datetime.now(timezone.utc).isoformat()
+    if accepted:
+        return owner_preference.record_accepted_explicit_choice(
+            None, route_family=OWNER_PREFERENCE_ROUTE_FAMILY, selected_owner=owner, occurred_at=moment)
+    return owner_preference.record_in_message_explicit_naming(
         None, route_family=OWNER_PREFERENCE_ROUTE_FAMILY, selected_owner=owner,
         naming_cue=f"named_executor:{owner}", occurred_at=moment)
-    put_record(home, state)
-    return state
 
 
 def put_record(home, state: object) -> None:
-    path = home.omh.joinpath(*dag_tool.OWNER_PREFERENCE_FILE)
+    path = home.omh.joinpath(*owner_preference.OWNER_PREFERENCE_PATH_SEGMENTS)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
 class ExportTests(unittest.TestCase):
-    """The coding owner the person already chose takes the coding nodes; everything else stays on delegate_task."""
+    """The coding owner the defining request named takes its coding nodes; everything else stays on delegate_task."""
 
     def _planned(self, home) -> dict:
         slots_table(home)  # ten free slots: the pool has room, and the coding nodes still go to the owner
@@ -1637,8 +2095,8 @@ class ExportTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_export_round_trips_into_a_fanout_contract(self) -> None:
-        nodes = [node("api", scope=("src/api.py",)), node("ui", scope=("src/ui.py",)),
-                 node("docs", depends_on=("api",), scope=("docs/api.md",)),
+        nodes = [node("api", scope=("src/api.py",), owner="codex"), node("ui", scope=("src/ui.py",), owner="codex"),
+                 node("docs", depends_on=("api",), scope=("docs/api.md",), owner="codex"),
                  node("verify", role="verify", depends_on=("api", "ui", "docs"))]
         with homes() as home:
             slots_table(home)
@@ -1665,8 +2123,10 @@ class ExportTests(unittest.TestCase):
     def test_a_second_export_in_one_run_keeps_the_first_exports_files(self) -> None:
         # api goes first; ui waits on a native node, so it goes in a second export once that node passed. The first
         # export's prepare or dispatch may not have run yet: its goal file must still be the one its id was made from.
-        nodes = [node("api", scope=("src/api.py",)), node("notes", depends_on=("api",), label="Write the notes"),
-                 node("ui", depends_on=("notes",), scope=("src/ui.py",)), node("verify", role="verify", depends_on=("ui",))]
+        nodes = [node("api", scope=("src/api.py",), owner="codex"),
+                 node("notes", depends_on=("api",), label="Write the notes"),
+                 node("ui", depends_on=("notes",), scope=("src/ui.py",), owner="codex"),
+                 node("verify", role="verify", depends_on=("ui",))]
         with homes() as home:
             slots_table(home)
             choose(home, "codex")
@@ -1702,55 +2162,63 @@ class ExportTests(unittest.TestCase):
         self.assertFalse(offered & {"api", "ui"}, later["calls"])
         self.assertNotIn("export", later)
 
-    def test_the_choice_counts_for_a_day_and_never_from_the_future(self) -> None:
-        for age, expected in ((23 * 3600 + 59 * 60, "codex"), (24 * 3600 + 60, ""), (-60, "")):
-            with self.subTest(age=age), homes() as home:
-                choose(home, "codex", age=age)
-                self.assertEqual(dag_tool.owner_choice(home.omh, now=time.time()), expected)
-
-    def test_export_reads_the_record_exactly_as_the_router_does(self) -> None:
-        from datetime import datetime, timezone
-
-        moment = datetime.now(timezone.utc).isoformat()
-        valid = owner_preference.record_in_message_explicit_naming(
-            None, route_family=OWNER_PREFERENCE_ROUTE_FAMILY, selected_owner="codex",
-            naming_cue="named_executor:codex", occurred_at=moment)
-        accepted = owner_preference.record_accepted_explicit_choice(
-            None, route_family=OWNER_PREFERENCE_ROUTE_FAMILY, selected_owner="claude-code", occurred_at=moment)
-
-        def changed(state: dict, path: tuple[str, ...], value: object) -> dict:
-            copy = json.loads(json.dumps(state))
-            target = copy
-            for key in path[:-1]:
-                target = target[key]
-            target[path[-1]] = value
-            return copy
-
-        route = ("routes", OWNER_PREFERENCE_ROUTE_FAMILY)
-        states = {
-            "valid in_message_naming": valid,
-            "valid accepted choice": accepted,
-            # The review's four (owner_seam_probe): records the router reads as no choice.
-            "raw minimal record": {"schema_version": "coding_owner_preference/v1", "routes": {
-                OWNER_PREFERENCE_ROUTE_FAMILY: {"provenance": "in_message_naming", "selected_owner": "codex",
-                                                "last_choice_at": moment}}},
-            "in_message_naming without a naming cue": changed(valid, (*route, "naming_cue"), ""),
-            "owner with a zero count": changed(valid, (*route, "consecutive_accepted_explicit_choices"), 0),
-            "privacy boundary broken": changed(valid, ("privacy", "mode"), "full"),
-            "no provenance": changed(changed(valid, (*route, "provenance"), ""), (*route, "naming_cue"), ""),
-            "secret-shaped owner": changed(valid, (*route, "selected_owner"), "token-codex"),
-            "not a mapping": ["codex"],
-        }
-        for label, state in states.items():
+    def test_a_choice_counts_only_for_the_request_that_defined_the_run(self) -> None:
+        # Mutation: read a router record again, or keep an earlier turn's naming; either case then exports.
+        records = {"omh chat naming": router_record("codex"), "accepted answer": router_record("codex", accepted=True)}
+        for label, state in records.items():
             with self.subTest(label), homes() as home:
                 put_record(home, state)
-                provenance = owner_preference.explicit_choice_provenance(
-                    state if isinstance(state, dict) else None, route_family=OWNER_PREFERENCE_ROUTE_FAMILY)
-                router_owner = (state["routes"][OWNER_PREFERENCE_ROUTE_FAMILY]["selected_owner"]
-                                if provenance else "")
-                self.assertEqual(dag_tool.owner_choice(home.omh, now=time.time()), router_owner)
-        self.assertEqual(sum(1 for state in states.values() if owner_preference.explicit_choice_provenance(
-            state if isinstance(state, dict) else None, route_family=OWNER_PREFERENCE_ROUTE_FAMILY)), 2)
+                ready = self._planned(home)
+                self.assertNotIn("export", ready)
+                self.assertEqual(ready["exports"], [])
+                self.assertIn("Node api names codex, which the request that defined this run did not name",
+                              ready["say"])
+                self.assertEqual(call(action="export", run="feat", owner="codex")["reason"], "owner_not_chosen")
+        with self.subTest("an earlier request's naming"), homes() as home:
+            choose(home, "codex")
+            new_request()
+            ready = self._planned(home)
+            self.assertEqual(ready["exports"], [])
+            self.assertEqual(call(action="export", run="feat", owner="codex")["reason"], "owner_not_chosen")
+
+    def test_the_defining_requests_choice_holds_for_the_runs_later_turns_only(self) -> None:
+        with homes() as home:
+            choose(home, "codex")
+            ready = self._planned(home)
+            new_request("/dag-ulw build the next feature")
+            self.assertEqual(call(action="status", run="feat")["export"]["nodes"], ["api", "ui"])
+            self.assertEqual(call(action="export", run="feat", owner="codex")["status"], "ok")
+            call(action="define", run="next", nodes=[node("db", scope=("src/db.py",), owner="codex")])
+            later = call(action="export", run="next", owner="codex")
+        self.assertEqual(ready["export"]["nodes"], ["api", "ui"])
+        self.assertEqual(later["reason"], "owner_not_chosen")
+
+    def test_a_cancelled_run_is_not_defined_again_and_a_new_id_takes_the_owner(self) -> None:
+        # Mutation: let `define` reuse a cancelled run with the same nodes; it then answers "already defined" with
+        # no owners, and every later call is refused as cancelled.
+        with homes() as home:
+            call(action="define", run="feat", nodes=CODING)
+            call(action="cancel", run="feat")
+            choose(home, "codex")
+            again = call(action="define", run="feat", nodes=CODING)
+            fresh = call(action="define", run="feat-codex", nodes=CODING)
+            stored = json.loads(dag_run.record_path(home.omh, PARENT, "feat-codex").read_text(encoding="utf-8"))
+        self.assertEqual((again["status"], again["reason"]), ("refused", "run_cancelled"), again)
+        self.assertIn("new run id", again["say"])
+        self.assertEqual(fresh["status"], "ok", fresh)
+        self.assertEqual(stored["owners"], ["codex"])
+
+    def test_a_run_record_keeps_only_known_owners(self) -> None:
+        with homes() as home:
+            choose(home, "codex")
+            call(action="define", run="feat", nodes=CODING)
+            path = dag_run.record_path(home.omh, PARENT, "feat")
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["owners"], ["codex"])
+            for owners in ("codex", ["gemini"], [1]):
+                with self.subTest(owners=owners):
+                    path.write_text(json.dumps({**stored, "owners": owners}), encoding="utf-8")
+                    self.assertIsNone(dag_run.read_run(path))
 
     def test_the_opaque_reference_check_is_the_routers(self) -> None:
         from omh.plugin_bundle.omh import owner_preference_record as bundle
@@ -1763,7 +2231,7 @@ class ExportTests(unittest.TestCase):
                                                          core._AWS_ACCESS_KEY, core._GOOGLE_API_KEY)])
 
     def test_more_than_four_units_need_a_spawn_plan(self) -> None:
-        nodes = [node(f"part{index}", scope=(f"src/part{index}.py",)) for index in range(5)]
+        nodes = [node(f"part{index}", scope=(f"src/part{index}.py",), owner="codex") for index in range(5)]
         plan = {field: "five disjoint files" for field in dag_tool.SPAWN_PLAN_FIELDS}
         with homes() as home:
             slots_table(home)
@@ -1775,10 +2243,6 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(exported["status"], "ok", exported)
 
     def test_constants_held_against_the_router_and_the_fanout_contract(self) -> None:
-        self.assertEqual(dag_tool.OWNER_PREFERENCE_FILE, owner_preference.OWNER_PREFERENCE_PATH_SEGMENTS)
-        self.assertEqual(dag_tool.OWNER_PREFERENCE_SCHEMA, owner_preference.OWNER_PREFERENCE_SCHEMA_VERSION)
-        self.assertEqual(dag_tool.OWNER_PROVENANCES, owner_preference.OWNER_PREFERENCE_EXPLICIT_CHOICE_PROVENANCES)
-        self.assertEqual(dag_tool.OWNER_ROUTE_FAMILY, OWNER_PREFERENCE_ROUTE_FAMILY)
         self.assertEqual(set(dag_tool.EXTERNAL_OWNERS), set(EXTERNAL_CLI_PROFILES))
         self.assertEqual(dag_tool.SPAWN_PLAN_THRESHOLD, FANOUT_SPAWN_PLAN_THRESHOLD)
         self.assertEqual(dag_tool.SPAWN_PLAN_FIELDS, FANOUT_SPAWN_PLAN_FIELDS)

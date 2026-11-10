@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 import hashlib
 import os
@@ -11,27 +11,46 @@ import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from typing import Any, Literal, Protocol, TypedDict
+import time
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 try:
     from ..core.errors import OmhError
-    from ..maintenance.hermes_gateway import recorded_gateway_starts
+    from ..maintenance.build_identity import read_archive_commit
+    from ..maintenance.hermes_gateway import recorded_gateway_starts, refresh_skill_dir_caches
     from ..system.local_store import FileLockTimeout, file_lock
     from ..system.paths import managed_command_venv_dir, resolve_paths
+    from .self_update_base_python import base_python_candidates
     from .self_update_platform import SelfUpdatePlatform
     from .self_update_state import CleanupResult, GenerationEntry, collect_garbage, commit_activation, generation_entry, interrupted_activation, load_state, mark_activation, mark_switched, migrate_legacy, pointer_target, record_pointer, recovery_target, restore_known_good, save_state, state_path, switch_current
     from .self_update_state_validation import require_generation_path, same_existing_path
 except ImportError:  # pragma: no cover - direct-source installer smoke.
     from core.errors import OmhError
-    from maintenance.hermes_gateway import recorded_gateway_starts
+    from maintenance.build_identity import read_archive_commit
+    from maintenance.hermes_gateway import recorded_gateway_starts, refresh_skill_dir_caches
     from system.local_store import FileLockTimeout, file_lock
     from system.paths import managed_command_venv_dir, resolve_paths
+    from install.self_update_base_python import base_python_candidates
     from install.self_update_platform import SelfUpdatePlatform
     from install.self_update_state import CleanupResult, GenerationEntry, collect_garbage, commit_activation, generation_entry, interrupted_activation, load_state, mark_activation, mark_switched, migrate_legacy, pointer_target, record_pointer, recovery_target, restore_known_good, save_state, state_path, switch_current
     from install.self_update_state_validation import require_generation_path, same_existing_path
 
 RESULT_SCHEMA_VERSION = "command_package_self_update/v1"
+IDENTITY_CHANGE_SCHEMA_VERSION = "update_identity_change/v1"
 REENTRY_TIMEOUT_SECONDS = 600.0
+# A healthy interpreter answers the probe in about 50 ms. The budget bounds
+# every probe together, since they run while the update lock is held.
+BASE_PYTHON_PROBE_TIMEOUT_SECONDS = 10.0
+BASE_PYTHON_PROBE_BUDGET_SECONDS = 20.0
+BASE_PYTHON_MARKER = "omh-base-python:"
+BASE_PYTHON_PROBE = f"import sys; print({BASE_PYTHON_MARKER!r} + '%d.%d' % sys.version_info[:2] + getattr(sys, 'abiflags', ''))"
+# `omh update` exits with this when its own home refreshed and only a bot
+# profile failed. The activated generation runs; rolling it back cannot repair
+# a profile (the previous generation fails on the same profile), so a staged
+# update keeps the generation and reports the profiles instead. On 2026-11-04
+# four bench profiles whose `plugins/omh` links pointed at deleted worktrees
+# rolled an update back, and the restore failed the same way on every later run.
+PROFILE_REPAIR_EXIT_CODE = 3
 class Runner(Protocol):
     """The complete subprocess contract used by a staged self-update."""
 
@@ -57,6 +76,7 @@ class PhaseResult(PhaseStatus, total=False):
     reason: str
     pointer: str
     launcher: str
+    profiles_need_repair: bool
 
 
 class RollbackFields(TypedDict, total=False):
@@ -89,6 +109,22 @@ class SelfUpdateResult(TypedDict):
     rollback: RollbackResult
     recovery: RecoveryResult
     cleanup: CleanupResult
+    hermes_skill_refresh: NotRequired[list[dict[str, str]]]
+    identity_change: NotRequired["IdentityChange"]
+
+
+class GenerationIdentity(TypedDict):
+    version: str
+    ref: str
+    commit_sha: str
+
+
+class IdentityChange(TypedDict):
+    schema_version: str
+    status: str
+    previous: GenerationIdentity
+    current: GenerationIdentity
+    version_changed: bool
 
 
 def _result(candidate: Path) -> SelfUpdateResult:
@@ -119,12 +155,55 @@ def _omh_cli(python: str, *arguments: str) -> list[str]:
     return [python, "-P", "-m", "omh.cli", *arguments]
 
 
+def current_omh_cli(root: Path, *arguments: str, platform: SelfUpdatePlatform | None = None) -> list[str]:
+    """`python -P -m omh.cli ...` on the generation `<root>/current` names now: how a process started on an older
+    generation hands over to the one an update installed (bare `omh` relaunching its TUI after one)."""
+    return _omh_cli(_python(root / "current", platform or SelfUpdatePlatform.host()), *arguments)
+
+
 def _run(runner: Runner, command: list[str], *, env: dict[str, str] | None = None, timeout: float | None = None, capture: bool = True) -> subprocess.CompletedProcess[str]:
     return runner(command, text=True, stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None, env=env, timeout=timeout)
 
 
 def _detail(value: subprocess.CompletedProcess[str], fallback: str) -> str:
     return str(value.stderr or value.stdout or fallback).strip()[:2000]
+
+
+def _probed_build(stdout: str) -> str:
+    """`3.15` / `3.14t` from the probe's marker line; other lines (a printing `sitecustomize`) are ignored."""
+    for line in stdout.splitlines():
+        if line.startswith(BASE_PYTHON_MARKER):
+            return line.removeprefix(BASE_PYTHON_MARKER).strip()
+    return ""
+
+
+def stable_base_python(seed: str, *, runner: Runner, platform: SelfUpdatePlatform, anchors: tuple[str, ...] = (), version: tuple[int, int] | None = None, abiflags: str | None = None, clock: Callable[[], float] = time.monotonic) -> str:
+    """The interpreter to create a generation venv from: the first stable base that runs this build, else `seed`.
+
+    `seed` run with `-m venv` from inside a venv links the generation to its
+    resolved base, a version-pinned path on Homebrew (#2683). The candidates
+    come from the `pyvenv.cfg` chains of `seed` and `anchors`
+    (`self_update_base_python`). Each runs once, isolated (`-I -S`), and is
+    kept only when it reports the running major.minor and ABI flags, so a
+    `python3` that moved to another minor release, or the default build beside
+    a free-threaded one, is never picked. CPU architecture is not compared:
+    a universal binary has none of its own, and the package is pure Python.
+    """
+    expected = version or (sys.version_info.major, sys.version_info.minor)
+    flags = getattr(sys, "abiflags", "") if abiflags is None else abiflags
+    wanted = f"{expected[0]}.{expected[1]}{flags}"
+    deadline = clock() + BASE_PYTHON_PROBE_BUDGET_SECONDS
+    for candidate in base_python_candidates(seed, version=expected, abiflags=flags, is_windows=platform.is_windows, anchors=anchors):
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        try:
+            probed = _run(runner, [candidate, "-I", "-S", "-c", BASE_PYTHON_PROBE], timeout=min(BASE_PYTHON_PROBE_TIMEOUT_SECONDS, remaining))
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probed.returncode == 0 and _probed_build(str(probed.stdout or "")) == wanted:
+            return candidate
+    return seed
 
 
 def _stage(candidate: Path, package_url: str, base_python: str, *, runner: Runner, json_mode: bool, platform: SelfUpdatePlatform) -> tuple[bool, str]:
@@ -165,12 +244,80 @@ def _smoke(candidate: Path, expected_version: str, *, runner: Runner, platform: 
 
 
 
+# The gateway restart after an update is the started process's alone (`commands/update_gateway.py`), and a restored,
+# older generation does not know those flags, so no re-entry carries them.
+OUTER_ONLY_FLAGS = frozenset({"--recover-known-good", "--restart-gateway", "--no-restart-gateway"})
+
+
+def names_flag(item: str, flags: frozenset[str]) -> bool:
+    """Whether a command-line word is one of `flags`, or the abbreviation of one that argparse accepted."""
+    return item.startswith("--") and len(item) > 2 and any(flag.startswith(item) for flag in flags)
+
+
 def _reentry_argv() -> list[str]:
-    argv = [item for item in sys.argv[1:] if item != "--recover-known-good"]
+    argv: list[str] = []
+    for item in sys.argv[1:]:
+        if names_flag(item, OUTER_ONLY_FLAGS):
+            continue
+        # `--channel main` is an alias a restored, older generation may not know.
+        if item == "--channel=main" or (item == "main" and argv[-1:] == ["--channel"]):
+            item = "--channel=preview" if item.startswith("--") else "preview"
+        argv.append(item)
     return argv if "--command-package-updated" in argv else [*argv, "--command-package-updated"]
 
 
-def _reenter(root: Path, generation: Path, args: Any, runner: Runner, platform: SelfUpdatePlatform, *, restoring: bool = False) -> tuple[bool, str]:
+def generation_identity(generation: Path) -> GenerationIdentity:
+    """The omh version, archive ref and archive commit a generation holds.
+
+    Read from files, not by running the generation: the dist-info directory
+    names the version, and the archive commit file plus pip's PEP 610 record
+    name the commit and ref (`maintenance.build_identity.read_archive_commit`).
+    Empty strings where a generation does not record one, such as a package
+    built from a checkout or the pre-generation legacy venv.
+    """
+    venv = generation / "venv"
+    for site in (*sorted(venv.glob("lib/python*/site-packages")), venv / "Lib" / "site-packages"):
+        package = site / "omh"
+        if not package.is_dir():
+            continue
+        dist_info = sorted(site.glob("oh_my_hermes-*.dist-info"))
+        version = dist_info[-1].name.removeprefix("oh_my_hermes-").removesuffix(".dist-info") if dist_info else ""
+        archive = read_archive_commit(package, version=version)
+        return {"version": version, "ref": archive["ref"] or "", "commit_sha": archive["commit_sha"] or ""}
+    return {"version": "", "ref": "", "commit_sha": ""}
+
+
+def identity_label(identity: GenerationIdentity) -> str:
+    """`4.0.5 main@1a2b3c4d`: the version and archive commit a generation records; "" when it records neither."""
+    short = identity["commit_sha"][:8]
+    commit = f"{identity['ref']}@{short}" if identity["ref"] and short else short
+    return " ".join(part for part in (identity["version"], commit) if part)
+
+
+def identity_change(previous: GenerationIdentity, current: GenerationIdentity) -> IdentityChange:
+    """Classify what an activated update moved between.
+
+    `changed` / `unchanged` need both commits. `previous_unrecorded` is the
+    first update onto a generation that records its commit. Without a current
+    commit only the version can be compared: `version_changed` or `unrecorded`.
+    """
+    if current["commit_sha"] and previous["commit_sha"]:
+        status = "unchanged" if current["commit_sha"] == previous["commit_sha"] else "changed"
+    elif current["commit_sha"]:
+        status = "previous_unrecorded"
+    else:
+        status = "version_changed" if current["version"] != previous["version"] else "unrecorded"
+    return {
+        "schema_version": IDENTITY_CHANGE_SCHEMA_VERSION,
+        "status": status,
+        "previous": previous,
+        "current": current,
+        "version_changed": current["version"] != previous["version"],
+    }
+
+
+def _reenter(root: Path, generation: Path, args: Any, runner: Runner, platform: SelfUpdatePlatform, *, restoring: bool = False) -> tuple[bool, str, bool]:
+    """Run the update through the pointer: (passed, reason, bot profiles need repair)."""
     trusted = require_generation_path(root, generation, None, "re-entry generation")
     pointed = pointer_target(root, platform=platform)
     if pointed is None:
@@ -192,11 +339,16 @@ def _reenter(root: Path, generation: Path, args: Any, runner: Runner, platform: 
     try:
         checked = runner(command, text=True, stdout=None, stderr=subprocess.PIPE, env=env, timeout=REENTRY_TIMEOUT_SECONDS)
     except (OSError, subprocess.TimeoutExpired):
-        return False, "post-activation re-entry timed out"
+        return False, "post-activation re-entry timed out", False
     if checked.stderr:
         sys.stderr.write(str(checked.stderr))
         sys.stderr.flush()
-    return (checked.returncode == 0, _detail(checked, "post-activation re-entry failed"))
+    if checked.returncode == PROFILE_REPAIR_EXIT_CODE:
+        return True, "bot profiles were not refreshed; see the warnings above", True
+    # The re-entry's stdout went to the terminal, so an exit without stderr
+    # still has to say which run failed and where its reasons are.
+    fallback = f"the re-entered `omh update` exited {checked.returncode}; its warnings are printed above"
+    return checked.returncode == 0, _detail(checked, fallback), False
 
 
 def _running_generation(root: Path) -> Path | None:
@@ -223,6 +375,18 @@ def _switch(root: Path, target: Path, platform: SelfUpdatePlatform) -> None:
         switch_current(root, target)
 
 
+def _refresh_hermes_skills(root: Path, hermes_home: Path | None, result: SelfUpdateResult) -> None:
+    """After a final pointer switch, make a running Hermes re-resolve `current/skills`.
+
+    The re-entered `cmd_update` refreshes after an ordinary switch, but a
+    rollback or a known-good revert may land on a generation older than that
+    refresh, or not re-enter at all. Best effort: the rows, a `failed` one
+    included, go into the result rather than raising.
+    """
+    if hermes_home is not None:
+        result["hermes_skill_refresh"] = refresh_skill_dir_caches(hermes_home, root / "current" / "skills")
+
+
 def run_installer_self_update(args: Any, plan: Mapping[str, object], *, runner: Runner = subprocess.run, platform: SelfUpdatePlatform | None = None) -> SelfUpdateResult:
     """Run stage, verification, pointer activation, rollback, and retention."""
     release = plan.get("release")
@@ -245,12 +409,20 @@ def run_installer_self_update(args: Any, plan: Mapping[str, object], *, runner: 
             if had_marker and interrupted is None:
                 result["recovery"] = {"status": "ok", "action": "discarded_unswitched_candidate"}
             if interrupted is not None:
-                return _recover_interrupted(root, state, interrupted, args, runner, selected, result)
+                recovered = _recover_interrupted(root, state, interrupted, args, runner, selected, result, hermes_home=paths.hermes_home)
+                if recovered["recovery"].get("action") != "completed_pending_restore" or not package_url:
+                    return recovered
+                # The restore an earlier run left pending is done, so this run
+                # goes on to the update it was asked for instead of stopping.
+                result = _result(candidate)
+                result["recovery"] = recovered["recovery"]
             if bool(getattr(args, "recover_known_good", False)):
-                return _recover_known_good(root, state, args, runner, selected, result)
+                return _recover_known_good(root, state, args, runner, selected, result, hermes_home=paths.hermes_home)
             if not package_url:
                 raise OmhError("cannot update command package because no package URL is available")
-            staged, reason = _stage(candidate, package_url, str(plan.get("python") or sys.executable), runner=runner, json_mode=bool(getattr(args, "json", False)), platform=selected)
+            bootstrap = str(selected.scripts_dir(legacy) / ("python.exe" if selected.is_windows else "python"))
+            base_python = stable_base_python(str(plan.get("python") or sys.executable), runner=runner, platform=selected, anchors=(bootstrap,))
+            staged, reason = _stage(candidate, package_url, base_python, runner=runner, json_mode=bool(getattr(args, "json", False)), platform=selected)
             result.update(phase="staging", staging={"status": "ok" if staged else "failed", "reason": reason})
             if not staged:
                 _cleanup_candidate(root, candidate)
@@ -285,19 +457,24 @@ def _activate(root: Path, state: dict[str, Any], candidate: Path, args: Any, run
     save_state(root, state)
     launcher = "present" if state["migration"].get("launcher_on_pointer") else "absent_manual_instruction"
     result["activation"] = {"status": "ok", "pointer": str(root / "current"), "launcher": launcher}
-    passed, reason = _reenter(root, candidate, args, runner, platform)
-    result.update(phase="post_activation", post_activation={"status": "ok" if passed else "failed", "reason": reason})
+    passed, reason, profiles = _reenter(root, candidate, args, runner, platform)
+    post_activation: PhaseResult = {"status": "ok" if passed else "failed", "reason": reason}
+    if profiles:
+        post_activation["profiles_need_repair"] = True
+    result.update(phase="post_activation", post_activation=post_activation)
     if not passed:
-        _rollback_activation(root, state, candidate, previous, args, runner, platform, result)
+        _rollback_activation(root, state, candidate, previous, args, runner, platform, result, hermes_home=hermes_home)
         return result
     commit_activation(root, state, candidate)
+    # Read before garbage collection, which may delete the previous generation.
+    result["identity_change"] = identity_change(generation_identity(previous), generation_identity(candidate))
     collect_garbage(root, state, result, running_generation=_running_generation(root), gateway_starts=recorded_gateway_starts(hermes_home) if hermes_home is not None else ())
     save_state(root, state)
     result.update(ok=True, phase="cleanup")
     return result
 
 
-def _rollback_activation(root: Path, state: dict[str, Any], candidate: Path, previous: Path, args: Any, runner: Runner, platform: SelfUpdatePlatform, result: SelfUpdateResult) -> None:
+def _rollback_activation(root: Path, state: dict[str, Any], candidate: Path, previous: Path, args: Any, runner: Runner, platform: SelfUpdatePlatform, result: SelfUpdateResult, *, hermes_home: Path | None = None) -> None:
     # Persist the recovery intent before moving the pointer. A crash or failed
     # reentry must not make the next update discard this transaction as unswitched.
     state["activation_in_progress"]["restore_required"] = True
@@ -307,7 +484,10 @@ def _rollback_activation(root: Path, state: dict[str, Any], candidate: Path, pre
     except OmhError as exc:
         restored, reason = False, str(exc)
     else:
-        restored, reason = _reenter(root, previous, args, runner, platform, restoring=True)
+        restored, reason, _profiles = _reenter(root, previous, args, runner, platform, restoring=True)
+        # The candidate's re-entry may have refreshed Hermes onto the candidate,
+        # which is about to be deleted; the restored generation may predate the refresh.
+        _refresh_hermes_skills(root, hermes_home, result)
     if not restored:
         result["rollback"] = {"performed": True, "restored": "", "status": "failed", "reason": reason}
         result["recovery"] = {"status": "required", "action": "restore_failed", "reason": reason}
@@ -319,34 +499,41 @@ def _rollback_activation(root: Path, state: dict[str, Any], candidate: Path, pre
     result["rollback"] = {"performed": True, "restored": previous.name}
 
 
-def _recover_interrupted(root: Path, state: dict[str, Any], interrupted: tuple[Path, Path], args: Any, runner: Runner, platform: SelfUpdatePlatform, result: SelfUpdateResult) -> SelfUpdateResult:
+def _recover_interrupted(root: Path, state: dict[str, Any], interrupted: tuple[Path, Path], args: Any, runner: Runner, platform: SelfUpdatePlatform, result: SelfUpdateResult, *, hermes_home: Path | None = None) -> SelfUpdateResult:
     candidate, previous = interrupted
     restoring = state["activation_in_progress"].get("restore_required") is True
-    passed, _reason = (False, "restore pending") if restoring else _reenter(root, candidate, args, runner, platform)
+    passed, reason, profiles = (False, "restore pending", False) if restoring else _reenter(root, candidate, args, runner, platform)
     if passed:
         commit_activation(root, state, candidate)
         save_state(root, state)
         result.update(ok=True, phase="recovery", recovery={"status": "ok", "action": "completed_interrupted_activation"})
+        if profiles:
+            result["post_activation"] = {"status": "ok", "reason": reason, "profiles_need_repair": True}
         return result
     result.update(phase="recovery", recovery={"status": "failed", "action": "rolled_back_interrupted_activation"})
-    _rollback_activation(root, state, candidate, previous, args, runner, platform, result)
+    _rollback_activation(root, state, candidate, previous, args, runner, platform, result, hermes_home=hermes_home)
+    if restoring and result["rollback"].get("restored"):
+        result["recovery"] = {"status": "ok", "action": "completed_pending_restore", "selected": previous.name}
     return result
 
 
-def _recover_known_good(root: Path, state: dict[str, Any], args: Any, runner: Runner, platform: SelfUpdatePlatform, result: SelfUpdateResult) -> SelfUpdateResult:
+def _recover_known_good(root: Path, state: dict[str, Any], args: Any, runner: Runner, platform: SelfUpdatePlatform, result: SelfUpdateResult, *, hermes_home: Path | None = None) -> SelfUpdateResult:
     target = recovery_target(root, state)
     previous = Path(str(state["active"]["path"]))
     mark_activation(state, target, previous)
     save_state(root, state)
     _switch(root, target, platform)
-    passed, reason = _reenter(root, target, args, runner, platform)
+    passed, reason, _profiles = _reenter(root, target, args, runner, platform)
     if not passed:
         _switch(root, previous, platform)
+        _refresh_hermes_skills(root, hermes_home, result)
         state["activation_in_progress"] = None
         save_state(root, state)
         result.update(phase="recovery", recovery={"status": "failed", "action": "restore_failed", "reason": reason})
         return result
     restore_known_good(root, state, target)
     save_state(root, state)
+    # The known-good target may predate the refresh its own re-entry would run.
+    _refresh_hermes_skills(root, hermes_home, result)
     result.update(ok=True, phase="recovery", recovery={"status": "ok", "action": "selected_known_good", "selected": target.name}, activation={"status": "skipped", "reason": "recovery"}, post_activation={"status": "ok", "reason": "known-good restored"})
     return result

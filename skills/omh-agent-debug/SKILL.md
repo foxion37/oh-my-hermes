@@ -10,6 +10,7 @@ metadata:
     phase: agent-debug
     role: operator
     quality_tier: workflow-surface-gated
+    related_skills: [omh-app-debugging, omh-doctor]
 ---
 
 # Agent Debug
@@ -18,13 +19,13 @@ This is a Hermes-native `agent-debug` workflow skill.
 
 ## Why This Exists
 
-`agent-debug` exists so Hermes users can ask for this workflow in chat and get a structured, checkable answer instead of an improvised one.
+`agent-debug` exists because an agent that loops, drifts, or burns tokens is explained by its session record (tool errors, identical retries, compaction boundaries, silent turn ends), not by the latest symptom or by memory of what happened.
 
 ## Do Not Use When
 
-- The request is already handled by a narrower explicit skill with stronger evidence.
-- The user asks OMH to secretly run external platforms, connectors, schedulers, file exports, or runtime agents.
-- The only safe answer is to ask for missing authority, credentials, target, or observed evidence first.
+- The misbehaving thing is application code the agent only called, not the agent's own run; use `omh-app-debugging`.
+- The request is install or gateway health rather than one agent run; use `omh-doctor`.
+- A diagnosis would need the user's session read, a rerun, or an export and they have not agreed; ask first.
 
 ## Examples
 
@@ -48,14 +49,14 @@ Bad example:
 
 ## Recovery Notes
 
-- If the request is install/setup health, route to doctor.
-- If the request is a manager status or throughput review, route to agent-ops-review.
-- If the request is a durable self-improvement record after diagnosis, route to workflow-learning.
+- If the request is install/setup health, route to `omh-doctor`.
+- If the request is a manager status or throughput review, route to `omh-agent-ops-review`.
+- If the request is a durable self-improvement record after diagnosis, route to `omh-workflow-learning`.
 
 ## Workflow Lane
 
-- Current lane: **Automation and status** (`achievements`, `workspace-audit`, `production-audit`, `live-incident-response`, `automation-blueprint`, `github-event-ops`, `github-issue-intake`, `buzz`, `+40 more`) - schedules, status, health, and ops review.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Automation and status** - schedules, status, health, and ops review.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -82,7 +83,7 @@ Quality bar:
 - Order probes cheapest-discriminating-first: run the cheapest check that splits the surviving hypotheses before any expensive capture, rerun, or restart.
 - When a run that used to work now fails, bisect from last-known-good to first-bad change (prompt, config, tool, model, or environment) instead of debugging the newest symptom.
 - Name a cause only after revert-verify: remove the suspect change and observe the failure disappear, or state that causation is unproven.
-- Reproduce the failure before preparing any recovery action; a fix without a reproduced failure first is a guess.
+- Reproduce the failure before preparing any recovery action; a fix without a reproduced failure first is a guess. An agent run is stochastic and a rerun costs money, so reproduced means the recorded failing step recurs when the same tool result is replayed, or the failure rate over N reruns (state N) is above the baseline; replay needs the user's go-ahead. When it is declined or too costly, report causes as supported by the record with causation unproven, keep the two competing hypotheses, and propose only the smallest reversible action.
 
 Handoff policy:
 
@@ -90,10 +91,9 @@ Keep this as Hermes-facing orchestration guidance first. Prepare executor, conne
 
 Required inputs:
 
-- user request
-- target context
-- delivery or status expectation
-- known missing evidence
+- session id or record path, and the turn range if known
+- what the user expected the run to do, and what they saw instead
+- the one thing to measure (the `--observable` kind: looping, repeated_work, goal_drift, context_loss, tool_stall, unexpected_cost)
 
 Expected outputs:
 
@@ -125,7 +125,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

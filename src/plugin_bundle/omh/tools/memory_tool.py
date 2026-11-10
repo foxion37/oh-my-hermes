@@ -116,12 +116,14 @@ from ..memory_session_lens import (
     SURFACE_OWNER_DIRECT,
     SURFACE_SHARED,
     lens_channel_scope,
+    lens_profile_home,
     lens_surface_class,
     note_session_records,
     read_session_lens,
     surface_flags,
 )
 from ..memory_recall_selector import resolve_scope_allowlist
+from ..memory_recall_settings import configured_recall_mode, per_turn_recall_enabled
 from ..memory_recall_support import (
     PROJECT_MEMORY_RECORD_SCHEMA_VERSION,
     _REVIEW_DEFAULT_DAYS,
@@ -132,16 +134,19 @@ from ..memory_recall_support import (
     _record_staleness,
     _retention_class,
     normalize_memory_subject,
+    point_in_time_cue,
     record_subject,
 )
 from ..memory_records import (
     DEFAULT_RECORD_LIMIT,
     PREFETCH_EXECUTOR_TARGET,
+    SNAPSHOT_RULE,
     prefetch_required_scope_kinds,
     prefetch_scope_allowlist,
     read_record_store_snapshot,
     record_used,
     select_prefetch_records,
+    snapshot_marked,
 )
 from ..memory_store_io import (
     assert_under_memory_root,
@@ -168,6 +173,8 @@ LIFECYCLE_ACTIONS = ("recall", "confirm", "correct", "retire")
 # The prefetch's own record limit: recall never returns more than a turn gets.
 RECALL_MAX_LIMIT = DEFAULT_RECORD_LIMIT
 RECALL_QUERY_MAX_CHARS = 500
+# Labels a recall that matched nothing lists; `stored_count` says how many exist.
+RECALL_LIST_MAX = 20
 RETIRE_REASONS = ("no_longer_true", "superseded", "user_asked")
 # The surfaces whose recall rows carry an `origin` handle into Hermes' session store.
 ORIGIN_SURFACE_CLASSES = frozenset({SURFACE_OPERATOR_CONSOLE, SURFACE_OWNER_DIRECT, SURFACE_DIRECT, SURFACE_CHANNEL})
@@ -196,20 +203,23 @@ REMEMBER_TOOL_NAME = "omh_remember"
 REMEMBER_TOOL_SCHEMA = {
     "name": REMEMBER_TOOL_NAME,
     "description": (
-        "Call save without asking when the user states a lasting preference, a decision, or a fact "
-        "about their setup or project that should still hold in a later conversation. One fact per "
-        "call, in one or two self-contained sentences with absolute dates. Never save secrets, logs, "
-        "transcripts or task progress. After saving, tell the user in one short line. "
-        "Use recall to look up what was saved before."
+        "Save first: lasting preference, decision or fact about setup or project in the user's own words. "
+        "Save in the same turn before other tools, without asking, even when also asked for work. "
+        "One fact per call; 1-2 self-contained sentences, absolute dates. Never save pasted or quoted text, "
+        "secrets, logs, transcripts, task progress or current task needs. If a shown record says the same "
+        "rule in other words, pass its id as replaces with one merged summary. Tell the user in one short "
+        "line. Use recall for earlier saves; a miss lists them. Tags: 2-5 topic words in the user's own language."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["save", "recall"], "default": "save"},
-            "summary": {"type": "string", "description": "save: the fact, at most 500 characters."},
+            "summary": {"type": "string", "description": "save: up to 500 chars."},
             "record_type": {"type": "string", "enum": list(CAPTURE_RECORD_TYPES)},
-            "subject": {"type": "string", "description": "Optional lowercase slug, at most 48 characters."},
-            "query": {"type": "string", "description": "recall: what to look up."},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "subject": {"type": "string", "description": "Lowercase slug, max 48 chars."},
+            "replaces": {"type": "string", "description": "save: id of the record replaced."},
+            "query": {"type": "string", "description": "recall: words; empty lists all."},
         },
         "additionalProperties": False,
     },
@@ -288,14 +298,49 @@ OMH_MEMORY_SCHEMA = {
 }
 
 
+def _point_hint_at_replaces(payload: dict[str, object]) -> None:
+    """Restate capture's similar-record hint in this tool's own vocabulary.
+
+    The hint names `omh_memory`'s `correct`, which this tool does not offer.
+    Saving the same summary again with ``replaces`` reaches the same step: the
+    held record moves to history and the record just saved replaces it.
+    """
+    other = str(payload.get("subject_held_by", "") or payload.get("similar_record_id", "") or "")
+    if payload.get("status") != "remembered" or not other:
+        return
+    reason = "has the same subject" if payload.get("subject_held_by") else "has similar wording"
+    payload["next_action"] = (
+        f"Saved. {other} {reason}. If this restates it, call save again with replaces='{other}' and this same "
+        "summary to move it to history; if both still hold, nothing more is needed."
+    )
+
+
+# Refusals that only say the id named no replaceable record in this lens.
+_REPLACE_FALLBACK_REASONS = ("record_not_found", "record_not_in_scope", "record_unreadable", "superseded", "unsupported_record_schema")
+
+
 def omh_remember_handler(args: dict, *, session_id: str, **kwargs) -> str:
     """Save or recall through the full tool's admission and published session lens."""
     kwargs = {**kwargs, "session_id": session_id}
     args = args or {}
     observation = observe_plugin_tool_call(REMEMBER_TOOL_NAME, args, kwargs)
     action = str(args.get("action", "") or "save").strip().lower()
-    if action == "save":
-        payload = _capture({key: args[key] for key in ("summary", "record_type", "subject") if key in args}, kwargs)
+    replaces = str(args.get("replaces", "") or "").strip()
+    if action == "save" and replaces:
+        # The same rule restated in other words: the correction path admits the
+        # merged summary and moves the replaced record to history, inside this
+        # session's lens, so a paraphrase does not become a second record.
+        payload = _lifecycle("correct", {"record_id": replaces, **{key: args[key] for key in ("summary", "subject", "tags") if key in args}}, kwargs)
+        if payload.get("status") == "refused" and payload.get("reason") in _REPLACE_FALLBACK_REASONS:
+            # A wrong or unreachable id must not cost the user's fact: save it
+            # as a new record and say which replacement was skipped.
+            skipped = str(payload.get("reason"))
+            payload = _capture({key: args[key] for key in ("summary", "record_type", "subject", "tags") if key in args}, kwargs)
+            payload["replace_skipped"] = skipped
+        payload["replaces"] = replaces
+    elif action == "save":
+        payload = _capture({key: args[key] for key in ("summary", "record_type", "subject", "tags") if key in args}, kwargs)
+        _point_hint_at_replaces(payload)
     elif action == "recall":
         payload = _lifecycle("recall", {key: args[key] for key in ("query", "limit") if key in args}, kwargs)
     else:
@@ -319,7 +364,7 @@ def omh_memory_handler(args: dict, **kwargs) -> str:
     elif action == "read":
         payload, backend = _read_block(str((args or {}).get("label", "") or ""), kwargs), "bundle_memory"
     elif action == "consolidation":
-        payload, backend = _consolidation()
+        payload, backend = _consolidation(kwargs)
     elif action == "capture":
         payload, backend = _capture(args or {}, kwargs), "bundle_memory"
     elif action == "demote":
@@ -465,18 +510,19 @@ def _public_replay(evaluation: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _consolidation() -> tuple[dict[str, object], str]:
+def _consolidation(kwargs: dict) -> tuple[dict[str, object], str]:
     """Read the latest reminder and counters without entering a provider session.
 
     Like `omh memory dream` without `--evaluate`, this is a status query, not
     a scheduler trigger. Keep a recorded due brief visible even when its
     reasons are suppressed for the next evaluation. No brief means unknown,
     not a fresh evaluation that found nothing due. Both are the calling
-    profile's: another profile on the same store keeps its own.
+    profile's (the session lens's profile home, else this process's Hermes
+    home): another profile on the same store keeps its own.
     """
     omh_home = _home("OMH_HOME", "~/.omh")
     try:
-        hermes_home = _home("HERMES_HOME", "~/.hermes")
+        hermes_home = _session_lens(kwargs).settings_home()
         payload = dict(read_latest_consolidation(omh_home, hermes_home) or {})
         payload["state"] = read_dreaming_state(omh_home, hermes_home)
         payload["evaluated"] = False
@@ -562,7 +608,22 @@ def _capture(args: dict, kwargs: dict) -> dict[str, object]:
             reason=_safe_error_type(type(exc).__name__),
             next_action="Nothing is confirmed saved. Tell the user the capture failed; call action='status' to see what is held.",
         )
-    return _map_capture_payload(payload, lens)
+    result = _map_capture_payload(payload, lens)
+    if result["status"] == "remembered" and result.get("record_id") and point_in_time_cue(summary, record_type):
+        result["point_in_time"] = _point_in_time_advice(str(result["record_id"]))
+    return result
+
+
+def _point_in_time_advice(record_id: str) -> dict[str, object]:
+    return {
+        "record_id": record_id,
+        "next_action": (
+            f"Saved as lasting. It states how one thing stands at one point in time: when that same thing changes, "
+            f"save its new state with replaces='{record_id}' so this one leaves recall instead of being served beside "
+            "it. Something newly added (another feature, a later release's change) is its own record: save it "
+            "without replaces."
+        ),
+    }
 
 
 def _bound_capture_scope(lens: "_SessionLens", requested: str) -> dict[str, object] | tuple[str, str] | None:
@@ -634,6 +695,15 @@ def _recallable_ids(lens: "_SessionLens") -> set[str]:
     return served
 
 
+def _per_turn_recall(lens: "_SessionLens") -> bool:
+    """Whether a turn under this lens is served records unasked: the provider's rule in `render_pack`.
+
+    `memory_mode` off or a disabled retain_knowledge family (the policy), or a
+    `recall_mode` other than `auto` in the provider's profile, serves none.
+    """
+    return per_turn_recall_enabled(read_project_memory_policy(lens.lens_home), lens.settings_home())
+
+
 def _recall_clause(record_id: str, recallable: set[str] | None) -> str:
     if recallable is None:
         return f"whether {record_id} recalls could not be read"
@@ -655,9 +725,13 @@ def _capture_hints(payload: dict, candidate: dict, new_id: str, lens: "_SessionL
     similar = str(payload.get("similar_record_id", "") or "")
     if not held_by and not similar:
         return {}, ""
+    per_turn = True
     try:
-        recallable: set[str] | None = _recallable_ids(lens) if lens is not None else None
-    except (OSError, ValueError):
+        # Under `recall_mode` on_demand/off or `memory_mode` off no turn is
+        # served records unasked, so nothing "recalls" in the hint's sense.
+        per_turn = lens is None or _per_turn_recall(lens)
+        recallable: set[str] | None = (_recallable_ids(lens) if per_turn else set()) if lens is not None else None
+    except (OSError, ValueError, RecursionError):
         recallable = None
     involved = sorted({record_id for record_id in (new_id, held_by, similar) if record_id})
     fields: dict[str, object] = {
@@ -671,7 +745,11 @@ def _capture_hints(payload: dict, candidate: dict, new_id: str, lens: "_SessionL
         fields["similar_wording_pct"] = int(payload.get("similar_wording_pct", 0) or 0)
     if not new_id:
         return fields, ""
-    status = f"{_recall_clause(new_id, recallable)}, {_recall_clause(held_by or similar, recallable)}."
+    status = (
+        f"{_recall_clause(new_id, recallable)}, {_recall_clause(held_by or similar, recallable)}."
+        if per_turn
+        else "per-turn recall is off for this profile, so neither recalls."
+    )
     if held_by:
         subject = str(candidate.get("subject", "") or "")
         return fields, (
@@ -696,6 +774,9 @@ def _map_capture_payload(payload: dict, lens: "_SessionLens | None" = None) -> d
         "record_id": str(record.get("record_id", "") or "") or None,
         "admission_state": _admission_state(record),
     }
+    if payload.get("retired_held_candidates"):
+        # Earlier held copies of this same summary, retired by this capture.
+        fields["retired_candidate_ids"] = [str(value) for value in payload["retired_held_candidates"]]
     new_id = str(record.get("record_id", "") or "") if payload.get("auto_approved") else ""
     hints, hint_action = _capture_hints(payload, candidate, new_id, lens)
     if not payload.get("captured"):
@@ -737,10 +818,33 @@ def _map_capture_payload(payload: dict, lens: "_SessionLens | None" = None) -> d
         **{**fields, "admission_state": "pending_review"},
         **hints,
         review_reason=str(payload.get("review_reason", "") or "unknown"),
-        next_action=(
-            "Saved as a candidate that waits for operator review (`omh memory review`). For "
-            "relative_time_phrase, capture the fact again with an absolute date instead."
-        ),
+        next_action=_held_next_action(str(payload.get("review_reason", "") or "")),
+    )
+
+
+def _held_next_action(reason: str, *, verb: str = "remembered") -> str:
+    """What a held capture or correction asks of the caller, by the reason it was held.
+
+    Only `policy_review_first` has a person behind it. A relative-time phrase is
+    restated by the caller; protected content is never releasable, so it must not
+    point at an approval that would refuse it.
+    """
+    if reason == "relative_time_phrase":
+        return (
+            f"Not {verb} yet: the summary holds a relative-time phrase that will read wrong later. Restate the "
+            "fact with an absolute date and send it again now; do not ask the user to review anything. If the "
+            "restated one is held again for the same reason (the word may be a name, such as a feature called "
+            "'today'), reword around the word once, and if it is still held tell the user it was not kept."
+        )
+    if reason == "unsafe_content":
+        return (
+            "Not kept: the safety check held it (a credential-like value, instruction-shaped text, or a word "
+            "such as 'temp' or 'hack' read as temporary progress). Restate it without those and send it again; "
+            "there is nothing to approve."
+        )
+    return (
+        f"Held back by memory policy and not {verb} yet; tell the user which review_reason held it. "
+        "`omh memory review` shows it and `omh memory approve` releases it."
     )
 
 
@@ -787,7 +891,7 @@ def _demote(args: dict, kwargs: dict) -> dict[str, object]:
             )
         if refusal:
             return _demote_result("refused", reason=refusal[0], next_action="Keep the Hermes entry; nothing was moved. " + refusal[1])
-        return _demote_entry(wanted, lens.lens_home, Path(_home("HERMES_HOME", "~/.hermes")))
+        return _demote_entry(wanted, lens.lens_home, lens.settings_home())
     except Exception as exc:
         # In-process inside Hermes' tool dispatch: a fault is an error result,
         # never `demoted`, so the model is never told to remove the original.
@@ -841,12 +945,16 @@ def _demote_entry(wanted: str, omh_home: Path, hermes_home: Path) -> dict[str, o
                 "refused", **fields, reason="previously_rejected", candidate_id=candidate_id,
                 next_action="A reviewer rejected this entry; keep it in Hermes.",
             )
-        if status in ("pending_review", "blocked_review_required"):
+        # A copy retired by a recapture lives on in its successor, so the entry
+        # is still held, not in an unknown state.
+        recaptured = status == "retired" and bool(candidate.get("recaptured_as"))
+        if status in ("pending_review", "blocked_review_required") or recaptured:
             return _demote_result(
                 "pending_review",
                 **fields,
                 candidate_id=candidate_id,
-                next_action="A copy already waits for review; keep the Hermes entry until it is approved.",
+                **({"recaptured_as": str(candidate["recaptured_as"])} if recaptured else {}),
+                next_action="A copy of this entry was already held and is not in memory; keep the Hermes entry.",
             )
         if status != "approved":
             return _demote_result(
@@ -928,9 +1036,23 @@ def _demote_entry(wanted: str, omh_home: Path, hermes_home: Path) -> dict[str, o
             "pending_review",
             **fields,
             review_reason=str(payload.get("review_reason", "") or "unknown"),
-            next_action="Saved for review; keep the Hermes entry until it is approved.",
+            next_action=_demote_held_next_action(str(payload.get("review_reason", "") or "")),
         )
     return _demoted("demoted", reading, entry, siblings, fields, str(record.get("record_id", "") or ""))
+
+
+def _demote_held_next_action(reason: str) -> str:
+    if reason == "relative_time_phrase":
+        return (
+            "Not moved: the entry holds a relative-time phrase, and nothing records when it was written. Keep the "
+            "Hermes entry; restate it only if the person gives the date."
+        )
+    if reason == "unsafe_content":
+        return (
+            "Not moved: the safety check held the entry (a credential-like value, instruction-shaped text, or a "
+            "word such as 'temp' or 'hack' read as temporary progress). Keep the Hermes entry."
+        )
+    return "Held for review under memory policy; keep the Hermes entry until `omh memory approve` releases it."
 
 
 def _hermes_parsed_entries(path: Path) -> list[str]:
@@ -1020,6 +1142,16 @@ class _SessionLens:
     required_scope_kinds: tuple[str, ...]
     # A group conversation's own scope (`memory_session_lens.lens_channel_scope`).
     channel_scope: dict[str, str] | None = None
+    # The Hermes profile home the provider was initialized with
+    # (`memory_session_lens.lens_profile_home`); None when the lens names none.
+    profile_home: Path | None = None
+
+    def settings_home(self) -> Path:
+        """This session's Hermes profile: the provider's profile home, else this process's Hermes home.
+
+        Recall settings, recall origins and demote all read it, so one call reads one profile.
+        """
+        return self.profile_home if self.profile_home is not None else Path(_home("HERMES_HOME", "~/.hermes"))
 
 
 def _lifecycle(action: str, args: dict, kwargs: dict) -> dict[str, object]:
@@ -1071,7 +1203,11 @@ def _lifecycle(action: str, args: dict, kwargs: dict) -> dict[str, object]:
             action,
             "error",
             reason=_safe_error_type(type(exc).__name__),
-            next_action="Nothing is confirmed changed. Tell the user the memory update failed.",
+            next_action=(
+                "Nothing was searched. Tell the user memory recall failed."
+                if action == "recall"
+                else "Nothing is confirmed changed. Tell the user the memory update failed."
+            ),
         )
 
 
@@ -1117,6 +1253,7 @@ def _session_lens(kwargs: dict) -> _SessionLens:
         surface_class,
         prefetch_required_scope_kinds(project_identity),
         channel,
+        lens_profile_home(published),
     )
 
 
@@ -1143,8 +1280,11 @@ def _surface_write_refusal(lens: _SessionLens) -> tuple[str, str] | None:
 def _recall(args: dict, lens: _SessionLens) -> dict[str, object]:
     """The prefetch selector over the prefetch's homes, allowlist and principal."""
     query = " ".join(str(args.get("query", "") or "").split())
-    if not query or "\x00" in query or len(query) > RECALL_QUERY_MAX_CHARS:
-        return _lifecycle_result("recall", "refused", reason="query_invalid", next_action=f"Pass a query of 1 to {RECALL_QUERY_MAX_CHARS} characters.")
+    if "\x00" in query or len(query) > RECALL_QUERY_MAX_CHARS:
+        return _lifecycle_result(
+            "recall", "refused", reason="query_invalid",
+            next_action=f"Pass a query of at most {RECALL_QUERY_MAX_CHARS} characters, or none to list what is stored.",
+        )
     limit = args.get("limit", RECALL_MAX_LIMIT)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= RECALL_MAX_LIMIT:
         return _lifecycle_result("recall", "refused", reason="limit_invalid", next_action=f"Pass limit between 1 and {RECALL_MAX_LIMIT}.")
@@ -1155,43 +1295,125 @@ def _recall(args: dict, lens: _SessionLens) -> dict[str, object]:
             "recall", "refused", reason="session_lens_unavailable", lens_state="unbound",
             next_action="OMH memory is not available to this session right now; nothing was searched.",
         )
+    # The same policy per-turn recall applies: `memory_mode` off, a disabled
+    # retain_knowledge family, or this profile's `recall_mode: off` refuses.
+    # `on_demand` only quiets per-turn recall; asking still works there.
+    try:
+        policy = read_project_memory_policy(lens.lens_home)
+    except (OSError, ValueError, RecursionError):
+        # A read fault, not a failed update: the profile that may have turned
+        # recall off cannot be read, so nothing is searched.
+        return _lifecycle_result(
+            "recall", "error", reason="memory_policy_unreadable",
+            next_action="OMH could not read this profile's memory settings (setup-profile.json); nothing was searched. Tell the user memory recall is unavailable.",
+        )
+    if not policy.get("recall_enabled", True) or configured_recall_mode(lens.settings_home()) == "off":
+        return _lifecycle_result(
+            "recall", "refused", reason="recall_disabled",
+            next_action="Recall is turned off for this profile; nothing was searched.",
+        )
     snapshot = read_record_store_snapshot(lens.homes)
-    selection = select_prefetch_records(
-        snapshot,
-        query,
-        allowed_scopes=lens.scopes,
-        session_id=lens.session_id,
-        executor_target=lens.executor_target,
-        limit=limit,
-        principal_context=lens.principal_context,
-        shared_surface=lens.shared_surface,
-        required_scope_kinds=lens.required_scope_kinds,
-    )
+    # A record label ("decision mem_...", "deploy-branch") must read a
+    # record, and the selector never matches a
+    # subject. A query made only of record ids looks those records up and
+    # nothing else. A query word that is a subject slug puts that record
+    # first, but the words still search as usual, since a subject can also be
+    # a plain topic word ("nanran"). Every lookup is unqueried through the
+    # same lens, then kept to the records named. The word search has no
+    # fallback, so a query that matches nothing is `nothing_found`, never the
+    # unrelated records in full. It names them instead: `stored_records` lists
+    # what this lens can recall by subject, or type and id, so a question
+    # about the past ("what did we decide last time?") whose words match no
+    # record can still reach one by its label. An empty query only lists.
+    # This is a result the model asked for, not the per-turn pack, which
+    # names nothing it withholds.
+    record_types = {str(record.get("record_type", "")) for record in snapshot.records}
+    named = {token for token in query.replace(",", " ").split() if token not in record_types}
+    record_ids = {str(record.get("record_id", "")) for record in snapshot.records}
+    subjects = {record_subject(record) for record in snapshot.records} - {""}
+    by_id = bool(named) and named <= record_ids
+    by_subject = named & subjects
+
+    scope_status = ""
+
+    def select(text: str, *, unqueried: bool) -> list[dict[str, object]]:
+        nonlocal scope_status
+        selection = select_prefetch_records(
+            snapshot,
+            text,
+            allowed_scopes=lens.scopes,
+            session_id=lens.session_id,
+            executor_target=lens.executor_target,
+            limit=max(len(snapshot.records), 1) if unqueried else limit,
+            policy=policy,
+            principal_context=lens.principal_context,
+            shared_surface=lens.shared_surface,
+            required_scope_kinds=lens.required_scope_kinds,
+            query_fallback=unqueried,
+        )
+        scope_status = selection.scope_status
+        return list(selection.pack.get("included_records", []))
+
+    if not query:
+        included = []
+    elif by_id:
+        included = [item for item in select("", unqueried=True) if str(item.get("record_id", "")) in named]
+    else:
+        included = select(query, unqueried=False)
+        if by_subject:
+            first = [item for item in select("", unqueried=True) if str(item.get("subject", "") or "") in by_subject]
+            first_ids = {str(item.get("record_id", "")) for item in first}
+            included = first + [item for item in included if str(item.get("record_id", "")) not in first_ids]
     rows = []
-    for item in selection.pack.get("included_records", [])[:limit]:
+    for item in included[:limit]:
         row = {key: item.get(key) for key in ("record_id", "record_type", "summary", "tags", "approved_at")}
         if item.get("resolution_marker"):
             row["resolution_marker"] = item["resolution_marker"]
         if item.get("subject"):
             row["subject"] = item["subject"]
+        # The same mark the live pack carries: a later session learns here
+        # that saving this thing's changed state should name it in `replaces`.
+        if snapshot_marked(item):
+            row["snapshot"] = "as-of"
         rows.append(row)
     has_origin = _attach_origins(rows, snapshot.records, lens)
     if rows:
         # What this session has seen is what it may retire while it is live.
         note_session_records(lens.lens_home, lens.session_id, "seen", [str(row["record_id"]) for row in rows])
-    next_action = (
-        "Use a record_id with confirm, correct, or retire when the conversation settles it."
-        if rows
-        else "No recallable OMH record matches; nothing was counted."
-    )
-    if has_origin:
-        next_action += " " + RECALL_ORIGIN_NEXT_ACTION
+        next_action = "Use a record_id with confirm, correct, or retire when the conversation settles it."
+        if has_origin:
+            next_action += " " + RECALL_ORIGIN_NEXT_ACTION
+        if any("snapshot" in row for row in rows):
+            next_action += " " + SNAPSHOT_RULE
+        return _lifecycle_result(
+            "recall", "found", records=rows, record_count=len(rows),
+            scope_status=scope_status, lens_state="provider", next_action=next_action,
+        )
+    searched_scope_status = scope_status
+    stored = select("", unqueried=True)
+    labels = []
+    for item in stored[:RECALL_LIST_MAX]:
+        label = {key: item.get(key) for key in ("record_id", "record_type")}
+        if item.get("subject"):
+            label["subject"] = item["subject"]
+        labels.append(label)
+    if not labels:
+        next_action = "This session can recall no OMH record; nothing was counted."
+    else:
+        next_action = (
+            ("No recallable OMH record matches; nothing was counted. Recall matches words, not meaning. "
+             if query else "")
+            + "stored_records names every record this session can recall, without its text: when one bears "
+            "on the request, recall it by its subject or record_id."
+        )
     return _lifecycle_result(
         "recall",
-        "found" if rows else "nothing_found",
-        records=rows,
-        record_count=len(rows),
-        scope_status=selection.scope_status,
+        "nothing_found",
+        records=[],
+        record_count=0,
+        stored_records=labels,
+        stored_count=len(stored),
+        scope_status=searched_scope_status if query else scope_status,
         lens_state="provider",
         next_action=next_action,
     )
@@ -1217,7 +1439,7 @@ def _attach_origins(rows: list[dict[str, object]], records: tuple[dict, ...], le
         if not session_id:
             continue
         if hermes_home is None:
-            hermes_home = Path(_home("HERMES_HOME", "~/.hermes"))
+            hermes_home = lens.settings_home()
         captured_at = str(record.get("created_at", "") or record.get("approved_at", "") or "")
         origin = resolve_origin(hermes_home, session_id, captured_at)
         if origin is not None:
@@ -1501,10 +1723,8 @@ def _correct(home: Path, record: dict, summary: str, tags: object, lens: _Sessio
             record_id=record_id,
             candidate_id=str(candidate.get("candidate_id", "") or "") or None,
             review_reason=str(payload.get("review_reason", "") or "unknown"),
-            next_action=(
-                "Saved for operator review; the old record stays active and is replaced when the correction is "
-                "approved. For relative_time_phrase, correct it again with an absolute date."
-            ),
+            next_action=_held_next_action(str(payload.get("review_reason", "") or ""), verb="applied")
+            + " The old record stays active meanwhile.",
         )
     successor = payload.get("record") if isinstance(payload.get("record"), dict) else {}
     new_id = str(successor.get("record_id", "")) or None
@@ -1530,6 +1750,12 @@ def _correct(home: Path, record: dict, summary: str, tags: object, lens: _Sessio
         receipt_state=str(payload.get("receipt_state", "") or "") or None,
         display_line=_display_line("✏️ OMH corrected: ", str(successor.get("summary", "") or summary), 80),
         next_action=f"The old revision is kept under history/ and no longer recalls; {new_id} replaces it.",
+        # A corrected snapshot is still a snapshot: the chain continues from the new id.
+        **(
+            {"point_in_time": _point_in_time_advice(new_id)}
+            if new_id and point_in_time_cue(summary, str(record.get("record_type", "") or "fact"))
+            else {}
+        ),
     )
 
 

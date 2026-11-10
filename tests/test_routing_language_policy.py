@@ -97,7 +97,10 @@ FROZEN_HANGUL_TRIGGERS_BY_SKILL: dict[str, int] = {
     # "watch continuously", "monitor continuously") and the ja/zh packs ship in
     # the same commit: new capability reach, not padding over a Korean-only
     # miss.
-    "automation-blueprint": 18,
+    # 18 -> 20 (2026-11-07, skill audit): bare `반복` dispatched "반복 학습이 중요해" and
+    # left. Its scheduling sense stays as `반복해줘`, `반복 실행` and `반복 일정`, each held
+    # back word by word: a narrowing that costs entries, not padding over a miss.
+    "automation-blueprint": 20,
     "browser-operator": 15,
     "build-failure-triage": 14,
     "code-review": 7,
@@ -170,6 +173,17 @@ FROZEN_HANGUL_TRIGGERS_BY_SKILL: dict[str, int] = {
     # English equivalents in the same commit ("switch provider account",
     # "provider quota exceeded") — new capability reach, not padding over a
     # routing miss.
+    # 0 -> 6 (2026-11-07, new skill): model-compression ships with its own
+    # Korean phrases for quantization, distillation and pruning of a model
+    # (모델 양자화, 모델 증류, 지식 증류, 모델 프루닝, 모델 가지치기, 양자화 인식
+    # 학습), with the English base corpus in the same commit. Frozen at what it
+    # carries so a later Korean miss is not papered over by padding it; 모델
+    # 압축 and 모델 경량화 are not pack phrases because a 3D asset is compressed
+    # and slimmed too, and they count only beside a word of model weights.
+    # 6 -> 5 (2026-11-08, #2664 review): 지식 증류 leaves the pack too; a team
+    # distills its know-how, so it counts only beside a weight word, a
+    # parameter count or 모델. A narrowing that costs an entry.
+    "model-compression": 5,
     "model-setup": 10,  # +3 (모델 세팅/모델 체인/카테고리별 모델): chain-interview vocabulary, owner request 2026-08-21
     "morning-brief": 4,
     "oh-my-hermes": 2,
@@ -201,6 +215,15 @@ FROZEN_HANGUL_TRIGGERS_BY_SKILL: dict[str, int] = {
     # admission rule admits.
     "spend-gate": 24,
     "strategy-brief": 6,
+    # 7 -> 9 (2026-11-02, architecture deepening): "코드베이스 아키텍처
+    # 개선해줘" and "코드 아키텍처 개선해줘" arrived WITH their English base
+    # corpus in the same commit ("improve the codebase architecture", "... of
+    # this repo"), new capability reach for an intent the audit had no trigger
+    # for in any language. Both name the code and are the request form, so a
+    # course, paper or job post about the topic does not count; a bare 아키텍처
+    # 개선 is ML, infra, org and building work, so it stays out. Frozen here
+    # from now on.
+    "tech-debt-audit": 9,
     "toolbelt-readiness": 5,
     "ultragoal": 4,
     "ultraprocess": 19,
@@ -221,7 +244,14 @@ FROZEN_HANGUL_TRIGGERS_BY_SKILL: dict[str, int] = {
     "research": 10,
     "web-research": 10,
     "websearch-setup": 4,
-    "wiki": 7,
+    # 7 -> 8 (2026-11-07, skill audit): a project handover had no signal in Korean;
+    # `인수인계 문서 써줘` carries the request, and its words are held back.
+    "wiki": 8,
+    # 0 -> 4 (2026-11-07, skill audit): the skill could not be reached in Korean at all.
+    # `시장 규모` and `경쟁사 분석` are terms of the job, with their common spacing
+    # (`시장규모`, `경쟁사분석`), held back word by word and read only right before a
+    # request verb of `_market_research_korean_request`.
+    "market-research": 4,
     "workflow-learning": 11,
     "workspace-audit": 4,
     "workspace-file-operator": 12,

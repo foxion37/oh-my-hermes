@@ -1,0 +1,313 @@
+/* Elsewhere: header places chip, read-only away line + peek, Details panel lists. Ported from the sketch. */
+
+/* header chip */
+.ew-places {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  border-radius: var(--r);
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: none;
+}
+.ew-places:hover,
+.ew-places.on {
+  background: var(--raise);
+  border-color: var(--line);
+}
+.ew-pd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* source label: square + name */
+.ew-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: none;
+}
+.ew-logo {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+/* elsewhere in the timeline: an ordinary bot bubble ending in a link to its thread */
+.ew-msg .b {
+  white-space: normal;
+}
+/* The thread link: the app's mark, then the underlined place ("[Slack] #og-dev"). Only the text is
+   underlined, so the mark reads as an icon, not as part of the word. */
+.ew-link,
+.ew-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: -2px;
+  color: var(--link);
+  white-space: nowrap;
+}
+.ew-link .ew-lt {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.ew-where {
+  color: var(--muted);
+}
+.ew-link:hover {
+  color: var(--ink);
+}
+.ew-link .src-ic,
+.ew-where .src-ic {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+/* room for the live ring around the mark, kept whether or not it runs so nothing moves when it stops */
+.ew-link .ui-ring-w,
+.ew-where .ui-ring-w {
+  margin-inline: 4px 3px;
+}
+/* an away session's ring is quieter than the bot's own: thinner and dimmed, so it never competes with the
+   sidebar's live signal */
+.ew-msg .ui-ring {
+  --ring-w: 1.5px;
+  opacity: 0.6;
+}
+.ew-link:hover .src-ic {
+  transform: scale(1.12);
+}
+.ew-working {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--quiet);
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+/* Details panel */
+.ew-panel {
+  min-height: 0;
+}
+.ew-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+.ew-sec {
+  padding: 12px 16px 4px;
+  font-size: 10.5px;
+  color: var(--quiet);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  display: flex;
+}
+.ew-sec span {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.ew-sess {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 8px;
+}
+.ew-ss {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 7px 8px;
+  border-radius: var(--r);
+}
+.ew-ss.here {
+  background: var(--raise2);
+}
+.ew-ss .t1 {
+  color: var(--ink);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ew-ss .t2 {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ew-ss .st {
+  font-size: 11px;
+  color: var(--quiet);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ew-ss .st.run {
+  color: var(--muted);
+}
+.ew-ss .st.bad {
+  color: var(--danger);
+}
+.ew-sess > li:not(.ew-ss) {
+  display: block;
+  min-width: 0;
+}
+a.ew-ss,
+div.ew-ss {
+  color: inherit;
+  text-decoration: none;
+  width: 100%;
+}
+.ew-ss > .t1 {
+  grid-column: 1;
+  min-width: 0;
+}
+.ew-ss > .st {
+  grid-column: 2;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+}
+.ew-ss.link {
+  cursor: pointer;
+}
+.ew-ss.link:hover {
+  background: var(--hover);
+}
+.ew-ss.link:hover .ew-go {
+  color: var(--body);
+}
+.ew-ss .t2 .ew-go {
+  margin-left: auto;
+  color: var(--quiet);
+  font-size: 11px;
+}
+.ew-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  background: var(--g-accent);
+}
+.ew-more {
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-radius: var(--r);
+}
+.ew-more:hover {
+  background: var(--hover);
+  color: var(--body);
+}
+.ew-ss.off .t1 {
+  color: var(--muted);
+}
+.ew-note {
+  margin: 6px 16px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--body);
+}
+.ew-nw {
+  white-space: nowrap;
+}
+.ew-empty {
+  padding: 4px 16px;
+  font-size: 11.5px;
+  color: var(--quiet);
+}
+
+/* "Reply there": hover actions beside an away bubble. They only fill the composer; nothing is sent. */
+.ew-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.ew-row > .b {
+  min-width: 0;
+}
+.ew-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.ew-msg:hover .ew-acts,
+.ew-acts:focus-within,
+.ew-acts.on {
+  opacity: 1;
+}
+.ew-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ew-act-ic {
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+}
+.ew-act:hover,
+.ew-act[aria-expanded="true"] {
+  background: var(--raise2);
+  color: var(--ink);
+}
+.ew-menu-w {
+  position: relative;
+  display: inline-flex;
+}
+.ew-menu {
+  padding: 4px;
+}
+.ew-mi {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--body);
+  text-align: left;
+  white-space: nowrap;
+}
+.ew-mi:hover {
+  background: var(--raise2);
+  color: var(--ink);
+}
+.ew-mi svg {
+  flex: none;
+  color: var(--muted);
+}

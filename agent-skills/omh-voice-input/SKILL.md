@@ -24,6 +24,7 @@ This is an OMH `voice-operator` workflow skill, projected for Agent Skills hosts
 - The request is already handled by a narrower explicit skill with stronger evidence.
 - The user asks OMH to secretly run external platforms, connectors, schedulers, file exports, or runtime agents.
 - The only safe answer is to ask for missing authority, credentials, target, or observed evidence first.
+- The speech is material to transcribe or summarize; use `omh-media-input`.
 
 ## Examples
 
@@ -42,13 +43,14 @@ Bad example:
 ## Completion Checklist
 
 - The short-input or voice-like request is clarified enough to avoid accidental action.
+- Before a delete, send, deploy or spend, state the transcript's names, numbers, paths and negations and wait for a yes.
 - The next action is readable, reversible when possible, and confirmation-gated when risky.
 - Delivery, notification, or platform behavior is not claimed without wrapper evidence.
 
 ## Recovery Notes
 
-- If transcript confidence or intent is weak, ask one short clarification before action.
-- If platform delivery is unavailable, keep the response in chat and mark delivery not_observed.
+- If a dictated request names no target context, nothing is actionable yet; mark the next action unresolved and hand back one target question before preparing voice-operator/v1.
+- If a clarified voice request still lacks confirmation for a risky action, retain the voice-operator/v1 guidance, mark execution not_observed, and hand back the proposed next action for explicit approval.
 
 
 
@@ -56,7 +58,7 @@ Bad example:
 
 Use when Hermes receives terse voice/mobile-style requests and should produce concise clarification, plan, or status UX.
 
-    Strong routing signals: `voice-operator`, `voice operator`, `voice-first`, `voice command`, `mobile command`, `short command`, `dictated command`, `dictated request`, `spoken request`, `speech command`, `accessibility`, `hands free`, `hands-free`, `phone command`, `phone request`, `push command`, `음성`, `음성으로`, `음성 명령`, `모바일 명령`, `모바일 음성`, `핸드폰`, `폰으로`, `말로`, `말로 한 요청`, `접근성`, `짧은 명령`, `짧게 말한 요청`
+    Strong routing signals: `voice-operator`, `voice operator`, `voice-first`, `voice command`, `mobile command`, `short command`, `dictated command`, `dictated request`, `spoken request`, `speech command`, `hands free`, `hands-free`, `phone command`, `phone request`, `push command`, `음성`, `음성으로`, `음성 명령`, `모바일 명령`, `모바일 음성`, `핸드폰`, `폰으로`, `말로`, `말로 한 요청`, `짧은 명령`, `짧게 말한 요청`
 
 ## Catalog Metadata
 
@@ -92,7 +94,7 @@ Safety rules:
 
 - A voice operator card is not speech recognition, mobile notification delivery, platform action, or accepted execution evidence.
 - Do not claim connector, gateway, runtime, file generation, memory mutation, or host automation evidence from prepared guidance.
-- This card is not realtime voice connector readiness. It may read the tool-safety verdict of a supplied realtime_voice_trial_receipt/v1 when one exists, and it never creates, infers, or upgrades one; route realtime voice adoption to external-connector-readiness.
+- This card is not realtime voice connector readiness. It may read the tool-safety verdict of a supplied realtime_voice_trial_receipt/v1 when one exists, and it never creates, infers, or upgrades one; route realtime voice adoption to `omh-external-connector-readiness`.
 
 ## Runtime Evidence
 

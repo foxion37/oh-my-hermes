@@ -81,6 +81,10 @@ IMPACT_EDITS = {
     "CONTROL": [
         ("src/benchapp/units.py", r"    return int\(round", "    if amount < 0:\n        raise ValueError('negative amount')\n    return int(round"),
     ],
+    "DEFAULTED": [
+        ("src/benchapp/shipping.py", r"zone: int\) -> int:", "zone: int, *, handling_cents: int = 0) -> int:"),
+        ("src/benchapp/shipping.py", r"(    return weight_g \* zone \* \d+ // 1000)", r"\1 + handling_cents"),
+    ],
 }
 
 
@@ -124,6 +128,13 @@ def main():
         path.write_text(path.read_text(encoding="utf-8").replace("ROUND_HALF_EVEN", "ROUND_HALF_UP"), encoding="utf-8")
         events.append({"sequence":1,"name":"edit","mutating":True,"arguments_digest":"0"*64,"started_ms":0,"ended_ms":1,"result":"success"})
         answer = {"changed_paths":[path.relative_to(workspace).as_posix()]}
+    elif name == "TEST-UPDATE":
+        sizes, test = workspace / "src/benchapp/sizes.py", workspace / "tests/test_sizes.py"
+        sizes.write_text(sizes.read_text(encoding="utf-8").replace('"kib": 1000', '"kib": 1024'), encoding="utf-8")
+        test.write_text(re.sub(r"kib\"\) == (\d+)000", lambda m: f'kib") == {int(m.group(1)) * 1024}', test.read_text(encoding="utf-8")),
+                        encoding="utf-8")
+        events.append({"sequence":1,"name":"edit","mutating":True,"arguments_digest":"0"*64,"started_ms":0,"ended_ms":1,"result":"success"})
+        answer = {"changed_paths":["src/benchapp/sizes.py", "tests/test_sizes.py"]}
     elif name == "SCOPE-TRAP":
         path = workspace / "src/benchapp/units.py"
         path.write_text(path.read_text(encoding="utf-8").replace('{"s": 60,', '{"s": 1,'), encoding="utf-8")

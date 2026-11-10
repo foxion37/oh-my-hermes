@@ -17,7 +17,7 @@ This is an OMH `relational-db` workflow skill, projected for Agent Skills hosts 
 
 ## Why This Exists
 
-`relational-db` exists because the database work itself had no owner: `backend` owns `schema_migration_plan/v1` for a service change, and an index question, a lock taken during deploy, or an N+1 finding was answered by a data, deploy, or interview lane with no lock model at all.
+`relational-db` exists because the database work itself had no owner: `omh-backend` owns `schema_migration_plan/v1` for a service change, and an index question, a lock taken during deploy, or an N+1 finding was answered by a data, deploy, or interview lane with no lock model at all.
 
 ## First Steps
 
@@ -79,6 +79,8 @@ Quality bar:
 - Load `references/engine-lock-tables.md` for the per-engine lock modes, the online DDL rules, and index-type selection instead of recalling them.
 - Size an index before proposing it: rows, key width, and the write amplification it adds.
 - Order an online migration as expand, backfill in batches, switch, contract, with the rollback for each step.
+- For a read-modify-write, an upsert, a queue table, or a deadlock, use the concurrency section of the lock tables: name the isolation level, the row lock and its order, and which error codes retry the whole transaction.
+- Give non-transactional DDL such as `CREATE INDEX CONCURRENTLY` its own migration marked non-transactional; never drop `CONCURRENTLY` to satisfy the migration tool.
 - Keep planned, observed, and applied as separate states for every statement.
 
 Required inputs:
@@ -114,6 +116,7 @@ Safety rules:
 - Build indexes on live tables with the engine's non-blocking method (`CREATE INDEX CONCURRENTLY`, online DDL `LOCK=NONE`), and state what that method cannot do.
 - OMH never connects to a database, and does not claim a plan, a row count, a lock wait, or an applied migration it did not observe.
 - Never put connection strings, credentials, or customer rows into the plan or the handoff.
+- `EXPLAIN ANALYZE` runs the statement: never on a primary for a write.
 
 ## Runtime Evidence
 

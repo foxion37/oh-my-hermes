@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+import json
+import logging
 from pathlib import PurePosixPath
 from threading import Lock
 import time
 from typing import Final, TypeGuard
 
 from .. import runtime_paths
+from ..caller_check import round_end_note as caller_note
 from ..catch_log import PLAN_CONTINUED, record_catch
-from ..consistency_trigger import discard_snapshots, round_end_trigger, turn_root
+from ..consistency_trigger import (discard_snapshots, note_tool_batch, round_end_trigger, shell_changed_files,
+                                   shell_spent_kinds, spend_shell_round_end, turn_root)
 from ..export_check import round_end_note as export_note
 from ..host_observation import observe_plugin_hook_call
 from ..impact_check import round_end_note
+from ..test_expectation_check import round_end_note as test_note
 from ..todo_reconciliation import plan_continuation_parts
 from .nudge_budget import plan_nudge_allowed
 
@@ -125,6 +130,9 @@ def pre_verify(
     )
     _ = observe_plugin_hook_call("pre_verify", observation)
     if attempt_value is None or not paths:
+        if attempt_value == 0:
+            # A stop with no edited path still ends the turn: its snapshots are not kept to the next one.
+            discard_snapshots(session_id)
         return None
     # The opt-in cross-file impact check (`impact_check`) answers once per
     # turn, at the first stop, and does not depend on the coding posture: it
@@ -138,6 +146,16 @@ def pre_verify(
     # A line the impact note already names is not named again; its paths are relative to the same
     # workspace root, the one this turn's tools resolved against.
     export_message = (export_note(session_id, changed_paths, impact_message, turn_root(session_id))
+                      if attempt_value == 0 else "")
+    # The test check names an existing test whose expected values this turn changed, when the request
+    # asked for behaviour to stay the same and did not ask for that test to change. Like the export
+    # note it continues the turn on its own: putting the expectation back is the work.
+    test_message = test_note(session_id, turn_root(session_id)) if attempt_value == 0 else ""
+    # The caller check names a call this turn's signature change broke: one that bound to the
+    # function's turn-start parameters and no longer binds, found with `ast` through the importer scan
+    # (package re-exports included). It also continues the turn on its own, and a line the impact or
+    # export note already names is not named again.
+    caller_message = (caller_note(session_id, turn_root(session_id), f"{impact_message}\n{export_message}")
                       if attempt_value == 0 else "")
     surface_message = checklist_message = plan_message = ""
     open_items = 0
@@ -170,31 +188,36 @@ def pre_verify(
             # out (`consistency_trigger`). Beside another nudge it rides along,
             # the export note included: that note continues the turn on its own
             # whatever the trigger says, because fixing the line it names is the work.
-            alone = not (surface_message or impact_message or export_message or plan_message)
+            alone = not (surface_message or impact_message or export_message or test_message or caller_message
+                          or plan_message)
             if not alone or round_end_trigger(session_id, code_paths).fire:
                 # Beside a request to run or re-check something, the check must
                 # not say "do not re-run": that request stands.
-                checklist_message = (ROUND_END_CHECKLIST_BESIDE_A_RECHECK if surface_message or impact_message
-                                     else ROUND_END_CHECKLIST)
+                checklist_message = (ROUND_END_CHECKLIST_BESIDE_A_RECHECK
+                                     if surface_message or impact_message or test_message else ROUND_END_CHECKLIST)
     if attempt_value == 0:
         # The turn's snapshots are spent at its first stop, read or not.
         discard_snapshots(session_id)
     # One directive, in a fixed order: the served-surface gate, the impact
-    # note, the export note, the round-end check, the plan directive. Each can
+    # note, the export note, the test note, the caller note, the round-end check, the plan directive. Each can
     # be true of the same turn, and dropping one because another fired would
     # lose exactly the case it was written for. One closing final-answer
     # sentence goes last, for the notes and the check together, and only
     # without a plan directive: an open plan means the turn goes on, so there
     # is no final answer to ask for yet.
     closing = ""
-    if (impact_message or export_message or checklist_message) and not plan_message:
+    if (impact_message or export_message or test_message or caller_message or checklist_message) and not plan_message:
         # A delegated child's reply is its parent's tool result: it returns
         # its full answer, never a sentinel, so nothing is stashed for it.
-        if str(platform) in _NO_CHECKLIST_PLATFORMS or not _stash_answer(session_id, final_response):
+        # A broken call is a change the turn still has to make, so no
+        # "nothing more changed" line is offered beside the caller note.
+        if str(platform) in _NO_CHECKLIST_PLATFORMS or caller_message \
+                or not _stash_answer(session_id, final_response):
             closing = ROUND_END_CLOSING_UNSTASHED
         else:
             closing = ROUND_END_CLOSING
-    messages = [text for text in (surface_message, impact_message, export_message, checklist_message, plan_message, closing) if text]
+    messages = [text for text in (surface_message, impact_message, export_message, test_message, caller_message,
+                                  checklist_message, plan_message, closing) if text]
     if not messages:
         return None
     # Recorded for the person once per turn. `attempt` is the only turn
@@ -264,6 +287,66 @@ def reset_stashed_answers() -> None:
     """Forget every stashed answer (tests)."""
     with _STASH_LOCK:
         _STASHED_ANSWERS.clear()
+
+
+# Hermes calls `pre_verify` only after a `patch` / `write_file` landed this turn, so a turn that edits
+# only through a command (`sed -i`, a heredoc script) never reaches it. The round end's structural notes
+# (export, test, caller: each names a line that is broken now, and is empty otherwise) ride the result of
+# the command that changed a Python file instead, each check once per turn, under their own key. The model reads a
+# message's results together, so of a message's commands only its last one is looked at; and a turn whose
+# round end `pre_verify` already ran gets none, since its turn-start text is gone. The consistency
+# checklist does not: it needs the coding posture, which this seam is not given, and alone it names no
+# line. The impact note does not either: its baseline is taken only before a `patch` / `write_file`.
+SHELL_ROUND_END_TOOLS: Final = frozenset({"terminal", "execute_code"})
+SHELL_ROUND_END_KEY: Final = "omh_round_end"
+_LOG = logging.getLogger("omh.verify_hooks")
+
+
+def annotate_shell_round_end(*, tool_name: object, result: object, session_id: object,
+                             turn_id: object, tool_call_id: object = "") -> str | None:
+    """`transform_tool_result`: the command's result with the round-end notes for the Python files this
+    turn changed, when the command just changed one and a note names something; None otherwise."""
+    if tool_name not in SHELL_ROUND_END_TOOLS or not isinstance(result, str) or not result:
+        return None
+    try:
+        parsed: object = json.loads(result)
+    except (ValueError, TypeError):
+        parsed = None
+    if parsed is not None and (not isinstance(parsed, dict) or SHELL_ROUND_END_KEY in parsed):
+        return None
+    note = shell_round_end_note(session_id, turn_id, tool_call_id)
+    if not note:
+        return None
+    if not isinstance(parsed, dict):
+        return f"{result}\n\n{note}"
+    parsed[SHELL_ROUND_END_KEY] = note
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+def post_api_request(session_id: object = "", response: object = None, **_kwargs: object) -> None:
+    """Keep the model message's tool-call ids, so the shell round end looks at a message's commands only
+    after its last one (`consistency_trigger.note_tool_batch`). An observer: returns nothing."""
+    message = response.get("assistant_message") if isinstance(response, dict) else None
+    note_tool_batch(session_id, message.get("tool_calls") if isinstance(message, dict) else None)
+
+
+def shell_round_end_note(session_id: object, turn_id: object, tool_call_id: object = "") -> str:
+    """The export, test and caller notes `pre_verify` would give at attempt 0, for a turn that changed
+    Python files only through commands; ``""`` when the last command changed none or no note names a line."""
+    paths = shell_changed_files(session_id, turn_id, tool_call_id)
+    if not paths or not isinstance(session_id, str):
+        return ""
+    root = turn_root(session_id)
+    spent = shell_spent_kinds(session_id)
+    export_message = export_note(session_id, list(paths), "", root) if "export" not in spent else ""
+    test_message = test_note(session_id, root) if "test" not in spent else ""
+    caller_message = caller_note(session_id, root, export_message) if "caller" not in spent else ""
+    _LOG.info("shell_round_end session=%s files=%d export=%d test=%d caller=%d", session_id, len(paths),
+              bool(export_message), bool(test_message), bool(caller_message))
+    spoke = {kind for kind, text in (("export", export_message), ("test", test_message), ("caller", caller_message))
+             if text}
+    spend_shell_round_end(session_id, spoke)
+    return "\n".join(text for text in (export_message, test_message, caller_message) if text)
 
 
 def _session_plan_reading(kwargs: dict[str, object], session_id: str) -> tuple[str, str, int]:

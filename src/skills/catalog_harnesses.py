@@ -955,9 +955,9 @@ _HARNESSES = [
             "check visual_hotspot_review/v1 for objective diff or TUI overflow findings",
             "check motion_interaction_capture/v1 when transitions, hover, focus, active, load, or scroll states are in scope",
             "check dual_oracle_visual_review/v1 when high confidence is claimed",
-            "treat recorded CJK, accessibility-visibility, overlap, unusable-control, and missing-critical-state findings as operator-supplied blocking criteria that `_validate_pass` enforces once recorded",
+            "treat recorded CJK, accessibility-visibility, overlap, unusable-control, and missing-critical-state findings as operator-supplied blocking criteria that `omh web-qa` validation enforces once recorded",
         ),
-        "If capture lineage is missing or mismatches the target repository/revision, return BLOCKED_BY_MISSING_RENDER_EVIDENCE and request the smallest matching recapture set.",
+        "If capture lineage is missing or mismatches the target repository/revision, return BLOCK with blocker `lineage_mismatch` and request the smallest matching recapture set.",
         (
             "visual_qa_scope_recorded",
             "web_visual_qa_package_prepared",
@@ -2507,7 +2507,7 @@ _FEATURE_SURFACE_HARNESSES = (
     ),
     _feature_surface_harness(
         "memory-sync",
-        "English-canonical Hermes memory-review guidance: inspect USER.md and MEMORY.md claims and prepare a native write diff; no OMH surface invokes, applies, or observes a native write — a user-approved diff is applied by Hermes's own native memory tool. For a new fact use memory-new.",
+        "English-canonical Hermes memory-review guidance: inspect USER.md and MEMORY.md claims and prepare a native write diff; no OMH surface invokes, applies, or observes a native write — a user-approved diff is applied by Hermes's own native memory tool. For a new fact use `memory-new`.",
         "Use when existing Hermes USER.md, MEMORY.md, or accumulated skill memories need an English-canonical, claim-by-claim review; it prepares native write guidance only, and no OMH surface invokes, applies, or observes a native write.",
         ("native memory source", "claims to review", "staleness/conflict signal", "review owner"),
         ("memory_curation_review/v1", "native write diff guidance", "not_omh_reviewed disclosure", "write boundary"),
@@ -2653,7 +2653,7 @@ _FEATURE_SURFACE_HARNESSES = (
         "connector-operator",
         "Scope external app and SaaS connector actions as safe task cards with provider, auth, payload, confirmation, and result boundaries.",
         "Use when Hermes should prepare or supervise email, Slack, Discord, Notion, Linear, Jira, calendar, CRM, or similar provider actions without claiming connector execution.",
-        ("provider", "target object or recipient", "allowed connector action", "payload summary", "auth boundary and stop condition"),
+        ("provider", "target object or recipient", "allowed connector action", "exact payload", "auth boundary and stop condition"),
         (
             "connector_task_card/v1",
             "connector_scope/v1",
@@ -3408,6 +3408,7 @@ _PRIMARY_HARNESSES = {
     "iac-change": "app-delivery-loop",
     "data-pipelines": "coding-handling",
     "model-finetuning": "research",
+    "model-compression": "research",
     "mobile-release": "app-delivery-loop",
     "internal-audit": "critic",
     "data-share-review": "critic",

@@ -17,8 +17,8 @@ Expert clarification questions:
   - English: Which consent basis, suppression lists, user preferences, legal or tenant constraints, quiet hours, locale rules, and frequency budgets apply?
   - Korean: 어떤 동의 근거, 억제 목록, 사용자 선호, 법적 또는 테넌트 제약, 방해 금지 시간, 로케일 규칙, 발송 빈도 예산이 적용되나요?
 - `experiment budget`
-  - English: How much traffic, runtime, holdout share, and risk can the experiment spend, and which guardrail breach must pause or roll it back?
-  - Korean: 실험에 쓸 수 있는 트래픽, 실행 기간, 홀드아웃 비율, 위험 한도는 얼마이며 어떤 가드레일 위반 시 중단하거나 롤백해야 하나요?
+  - English: How much traffic, runtime, holdout share, and risk can the experiment spend, what is the smallest effect worth detecting, and which guardrail breach must pause or roll it back?
+  - Korean: 실험에 쓸 수 있는 트래픽, 실행 기간, 홀드아웃 비율, 위험 한도는 얼마이고, 감지할 가치가 있는 최소 효과는 얼마이며 어떤 가드레일 위반 시 중단하거나 롤백해야 하나요?
 - `decision owner`
   - English: Who owns the decision, who approves launch, and who may call ship, rollback, review, or insufficient_data on the readout?
   - Korean: 의사결정 책임자와 출시 승인자는 누구이며 리드아웃에서 ship, rollback, review, insufficient_data를 결정할 수 있는 사람은 누구인가요?
@@ -36,8 +36,8 @@ Declared checks:
   - Required result fields: `consent_basis`, `suppression_precedence`, `legal_tenant_constraints`, `user_preferences`, `channel_eligibility`, `quiet_hours`, `locale`, `global_frequency_budget`, `campaign_frequency_budget`, `throttle_grouping`, `workflow_content_state`, `promotion_decision`, `disposition`
   - Criterion: Consent and suppression must come from supplied records, never from product usage or a missing opt-out; HOLD when consent, suppression precedence, channel eligibility, or either frequency budget is unknown. The throttle grouping record keeps the configured key or expression apart from its resolved value and names the recipient or tenant scope, the fallback for a missing or empty value, and any window-reset consequence; production or published workflow content is read-only, and every edit routes through a development or draft copy plus an explicit promotion decision.
 - `lifecycle_experiment_validity_check`
-  - Required result fields: `treatment_control`, `assignment_unit`, `assignment_stickiness`, `exposure_unit`, `exposure_definition`, `primary_metric`, `guardrail_metrics`, `holdout_rationale`, `minimum_runtime`, `data_health_checks`, `pause_rollback_conditions`, `approval_state`
-  - Criterion: Require sticky assignment, exposure defined as actual treatment display or receipt rather than send or eligibility, exactly one primary metric, at least one guardrail, a holdout rationale, a minimum runtime, data-health checks, and pause/rollback conditions; approval_state stays unapproved until a named human approves.
+  - Required result fields: `treatment_control`, `assignment_unit`, `assignment_stickiness`, `exposure_unit`, `exposure_definition`, `primary_metric`, `guardrail_metrics`, `holdout_rationale`, `minimum_runtime`, `baseline_rate`, `minimum_detectable_effect`, `required_sample_per_arm`, `expected_eligible_in_window`, `data_health_checks`, `pause_rollback_conditions`, `approval_state`
+  - Criterion: Require sticky assignment, exposure defined as actual treatment display or receipt rather than send or eligibility, exactly one primary metric, at least one guardrail, a holdout rationale, a minimum runtime, data-health checks, and pause/rollback conditions; when expected eligible users in the minimum runtime fall below the required sample per arm for the minimum detectable effect, return HOLD with the smallest feasible change (longer runtime, larger segment, larger effect, or a pre/post comparison labelled non-causal) instead of approving a test that cannot reach a readable result; approval_state stays unapproved until a named human approves.
 - `lifecycle_readout_evidence_check`
   - Required result fields: `eligible_count`, `assigned_count`, `attempted_count`, `delivered_count`, `displayed_count`, `acted_count`, `outcome_count`, `exposure_evidence`, `contact_pressure_state`, `repeated_contact_count`, `channels`, `denominator_status`, `freshness_status`, `sample_ratio_status`, `cross_exposure_status`, `instrumentation_status`, `overlap_status`, `step_outcomes`, `step_trace_status`, `analysis_run_state`, `analysis_observed_at`, `analysis_delay_status`, `evidence_refs`, `causal_claim_status`, `disposition`
   - Criterion: Require a separate `lifecycle_growth_exposure_evidence/v1` companion with the bound audience/safety policies, eligibility/exclusion checks, assignment identity/count, reconciled populations, observed repeated-contact pressure and experiment-overlap checks, and per-channel reach/failure accounting. Missing evidence means HOLD, not zero or ship; configuration alone cannot supply it. Fill eligible, assigned, attempted, reached, and converted populations only from supplied observations, keeping delivery and action separate. Partial delivery requires review and channel failures retain their reasons; an independently justified rollback outranks missing launch evidence. Pause interpretation on sample-ratio mismatch, cross-exposure, stale data, broken instrumentation, or overlapping interventions; disposition must be exactly one of `ship`, `rollback`, `review`, or `insufficient_data`. Record every conditional step as `matched` or `skipped` with its own reason and status, never its evaluated values; a missing or failed best-effort step trace is not delivery evidence and must not turn a send into a failure. Name the analysis run as exactly one of `not_started`, `queued`, `running`, `completed`, `failed`, `canceled`, or `unknown` with the time that state was observed; elapsed time never rewrites the state.
@@ -68,6 +68,7 @@ Order suppression precedence above legal and tenant constraints, user preference
 - Input refs: `target segment`, `channels or product surfaces`, `consent and policy constraints`
 - Output refs: `lifecycle_safety_policy/v1`
 - Check IDs: `lifecycle_safety_eligibility_check`
+- If this step fails: unresolved; still stands: `lifecycle_growth_brief/v1`, `audience_trigger_policy/v1`; hand back: Return the unresolved lifecycle_safety_policy/v1 with missing consent, suppression, channel eligibility, frequency budgets, or throttle scope named; keep launch on HOLD.
 
 ### `lifecycle_design_experiment` (production)
 
@@ -76,6 +77,7 @@ Specify treatment and control, sticky assignment and exposure units, the actual-
 - Input refs: `lifecycle objective and stage`, `event schema and baseline`, `channels or product surfaces`, `experiment budget`, `decision owner`
 - Output refs: `growth_experiment_plan/v1`
 - Check IDs: `lifecycle_target_behavior_check`, `lifecycle_experiment_validity_check`
+- If this step fails: tentative; still stands: `lifecycle_growth_brief/v1`, `audience_trigger_policy/v1`, `lifecycle_safety_policy/v1`; hand back: Return the tentative growth_experiment_plan/v1 with missing assignment, actual-exposure definition, metric, guardrail, runtime, or rollback checks flagged; keep approval unapproved.
 
 ### `lifecycle_prepare_measurement_readout` (validation)
 
@@ -84,11 +86,13 @@ Lay out eligible, assigned, attempted, delivered, displayed, acted, and outcome 
 - Input refs: `event schema and baseline`, `experiment budget`, `decision owner`
 - Output refs: `growth_measurement_readout/v1`
 - Check IDs: `lifecycle_readout_evidence_check`
+- If this step fails: unresolved; still stands: `lifecycle_growth_brief/v1`, `audience_trigger_policy/v1`, `lifecycle_safety_policy/v1`, `growth_experiment_plan/v1`; hand back: Return the unresolved growth_measurement_readout/v1 with missing exposure evidence, denominator, freshness, overlap, channel, or analysis-run checks named; keep counts unknown, not zero.
 
 ### `lifecycle_validate_handoff` (validation)
 
-Propose connector, content, analytics, product, or implementation actions with owner, approver, evidence refs, timing, and stop conditions; prepare any cancellation or status-reconciliation request against the exact named run and leave it `prepared_not_observed` until a provider result is observed; return HOLD readiness while any check holds, approval is missing, or the latest analysis run is still in flight, route validated product changes to `product-brief`, and never report a send, display, action, outcome, cancellation, or causal effect that was not observed.
+Propose connector, content, analytics, product, or implementation actions with owner, approver, evidence refs, timing, and stop conditions; prepare any cancellation or status-reconciliation request against the exact named run and leave it `prepared_not_observed` until a provider result is observed; return HOLD readiness while any check holds, approval is missing, or the latest analysis run is still in flight, route validated product changes to `omh-product-brief`, and never report a send, display, action, outcome, cancellation, or causal effect that was not observed.
 
 - Input refs: `lifecycle objective and stage`, `target segment`, `event schema and baseline`, `channels or product surfaces`, `consent and policy constraints`, `experiment budget`, `decision owner`
 - Output refs: `growth_handoff_disposition/v1`
 - Check IDs: `lifecycle_target_behavior_check`, `lifecycle_audience_eligibility_check`, `lifecycle_safety_eligibility_check`, `lifecycle_experiment_validity_check`, `lifecycle_readout_evidence_check`, `lifecycle_handoff_boundary_check`
+- If this step fails: unresolved; still stands: `lifecycle_growth_brief/v1`, `audience_trigger_policy/v1`, `lifecycle_safety_policy/v1`, `growth_experiment_plan/v1`, `growth_measurement_readout/v1`; hand back: Return the unresolved growth_handoff_disposition/v1 with blocked actions, missing owners or approvals, and the exact analysis run needing status reconciliation; leave requests prepared_not_observed.

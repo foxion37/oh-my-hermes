@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import marshal
+import os
 import sys
 import tempfile
 from types import CodeType
@@ -203,6 +204,22 @@ def host_managed_plugin(
     }
 
 
+def _dangling_link_target(target: Path) -> str | None:
+    """Where a link at `target` points, when that place no longer exists; else None."""
+    if not is_directory_link(target) or target.exists():
+        return None
+    try:
+        pointed = os.readlink(target)
+    except OSError:
+        # A junction Windows will not read back still dangles; name the link.
+        return str(target)
+    # Windows reads a link back in extended-length form (`\\?\C:\...`); the
+    # person reads the path they would type.
+    if pointed.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + pointed[len("\\\\?\\UNC\\"):]
+    return pointed.removeprefix("\\\\?\\")
+
+
 def install_plugin_bundle(paths: OmhPaths, *, force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     target = paths.hermes_plugin_dir
     source_records = bundled_plugin_records()
@@ -230,7 +247,12 @@ def install_plugin_bundle(paths: OmhPaths, *, force: bool = False, dry_run: bool
     # past the ownership guard into the replacement path without --force. The
     # guard asks whether anything occupies the path OMH cannot prove it wrote.
     unmanaged = (target.exists() or is_directory_link(target)) and existing_manifest is None
-    if unmanaged and not force:
+    # A link whose target is gone holds no plugin anyone owns: nothing behind
+    # it can be lost, so it is repaired without --force and the result names
+    # where it pointed. On 2026-11-04 four bench profiles' `plugins/omh`
+    # links to deleted worktrees refused every update, which rolled back.
+    dangling_link = _dangling_link_target(target) if unmanaged else None
+    if unmanaged and not force and dangling_link is None:
         raise PluginPackError(f"{target} exists without an OMH plugin manifest; use --force to replace it")
     if dirty and not force:
         raise PluginContentProtectedError(f"managed plugin files changed: {', '.join(dirty)}; use --force to replace them")
@@ -242,30 +264,46 @@ def install_plugin_bundle(paths: OmhPaths, *, force: bool = False, dry_run: bool
                 "move these entries outside the plugin directory, or use --force to replace them"
             )
 
-    # A package that moved (an upgrade's new generation, a reinstall through
-    # another channel) changes no bundle file, but the recorded `package_site`
-    # the bundle imports from has to follow it, so it is a change too (#2166).
-    changed = (
+    # A bundle reached through a directory link (an older layout) is
+    # replaced by a real directory even when its files already match.
+    files_changed = (
         force
         or unmanaged
         or existing_manifest is None
+        or is_directory_link(target)
         or _manifest_file_map(existing_manifest) != _record_file_map(source_records)
-        or existing_manifest.get(PACKAGE_SITE_KEY) != package_site_record()
     )
+    # A package that moved (an upgrade's new generation, a reinstall through
+    # another channel) changes no bundle file, but the recorded `package_site`
+    # the bundle imports from has to follow it (#2166). Only the manifest is
+    # rewritten for that, and it keeps its `installed_at`: a running gateway
+    # already runs these exact bundle bytes, and the restart hint reads that
+    # stamp, so a move alone must not ask anyone to restart.
+    site = package_site_record()
+    site_moved = existing_manifest is not None and not files_changed and existing_manifest.get(PACKAGE_SITE_KEY) != site
     result = _plugin_distribution_payload(
         paths,
         dry_run=dry_run,
         observed=False if dry_run else True,
-        changed=changed,
+        changed=files_changed or site_moved,
         file_records=source_records,
         dirty_files=dirty,
     )
+    result["bundle_files_changed"] = files_changed
+    if dangling_link is not None:
+        result["replaced_dangling_link"] = dangling_link
     if dry_run:
         result["observed_scope"] = "dry run only; no plugin files were written"
         return result
-    _copy_plugin_bundle(
-        target, source_records, existing_manifest=existing_manifest, initially_occupied=bool(unmanaged), force=force
-    )
+    if files_changed:
+        _copy_plugin_bundle(
+            target, source_records, existing_manifest=existing_manifest, initially_occupied=bool(unmanaged), force=force
+        )
+    elif site_moved and existing_manifest is not None:
+        moved = {key: value for key, value in existing_manifest.items() if key != PACKAGE_SITE_KEY}
+        if site is not None:
+            moved[PACKAGE_SITE_KEY] = site
+        atomic_write_json(target / PLUGIN_MANAGED_MANIFEST, moved)
     smoke = inspect_plugin_bundle(paths)
     result.update(
         {
@@ -458,7 +496,7 @@ def bundled_plugin_records() -> list[dict[str, str]]:
 def read_plugin_manifest(plugin_dir: Path) -> dict[str, Any] | None:
     try:
         return read_json_object(plugin_dir / PLUGIN_MANAGED_MANIFEST)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
 
 
@@ -504,6 +542,10 @@ def _plugin_unmanaged_entries(manifest: dict[str, Any], plugin_dir: Path) -> lis
     """
     managed = set(_manifest_file_map(manifest)) | {PLUGIN_MANAGED_MANIFEST}
     managed_dirs = {parent.as_posix() for rel in managed for parent in Path(rel).parents}
+    # `atomic_write_json` stages a manifest rewrite as
+    # `.<manifest>.<pid>-<hex>.tmp` beside it; one a crash left behind is
+    # OMH's own, not the person's, and must not block the next update.
+    manifest_temp_prefix = f".{PLUGIN_MANAGED_MANIFEST}."
     unknown: list[str] = []
 
     def visit(directory: Path) -> None:
@@ -517,6 +559,8 @@ def _plugin_unmanaged_entries(manifest: dict[str, Any], plugin_dir: Path) -> lis
                 unknown.append(rel)
             elif entry.is_dir():
                 visit(entry)
+            elif rel.startswith(manifest_temp_prefix) and rel.endswith(".tmp") and "/" not in rel:
+                continue
             elif rel not in managed and not _generated_plugin_bytecode(entry, plugin_dir, managed):
                 unknown.append(rel)
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 from importlib import resources
 import json
@@ -128,7 +129,7 @@ def _theme_store_record(omh_home: Path) -> dict[str, object]:
     """The saved record under the OMH home, or {} when there is none this module wrote (unreadable, another schema)."""
     try:
         record = json.loads(theme_store_path(omh_home).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return {}
     if not isinstance(record, dict) or record.get("schema_version") != THEME_STORE_SCHEMA:
         return {}
@@ -166,18 +167,6 @@ def write_launch_choice(omh_home: Path, name: str) -> Path:
     return _write_theme_store(omh_home, "launch", name)
 
 
-def read_glow_choice(omh_home: Path) -> bool | None:
-    """Whether the OMH TUI's working glow is on, as saved for this OMH home (`glow`, beside the theme); None when
-    nothing this module wrote says."""
-    value = _theme_store_record(omh_home).get("glow")
-    return {"on": True, "off": False}.get(value) if isinstance(value, str) else None
-
-
-def write_glow_choice(omh_home: Path, on: bool) -> Path:
-    """Save whether the OMH TUI's working glow is on; the path it was written to. The theme and look stay."""
-    return _write_theme_store(omh_home, "glow", "on" if on else "off")
-
-
 def read_wallpaper_choice(omh_home: Path) -> bool | None:
     """Whether the OMH TUI's living wallpaper (a look's background colour and its moving scene) is on, as saved for
     this OMH home (`wallpaper`, beside the theme); None when nothing this module wrote says."""
@@ -186,12 +175,53 @@ def read_wallpaper_choice(omh_home: Path) -> bool | None:
 
 
 def write_wallpaper_choice(omh_home: Path, on: bool) -> Path:
-    """Save whether the OMH TUI's living wallpaper is on; the path it was written to. The theme, look and glow stay."""
+    """Save whether the OMH TUI's living wallpaper is on; the path it was written to. The theme and look stay."""
     return _write_theme_store(omh_home, "wallpaper", "on" if on else "off")
 
 
+def read_update_check_choice(omh_home: Path) -> bool | None:
+    """Whether the OMH TUI asks npm once a day for a newer release (`update_check`, beside the theme); None when
+    nothing this module wrote says."""
+    value = _theme_store_record(omh_home).get("update_check")
+    return {"on": True, "off": False}.get(value) if isinstance(value, str) else None
+
+
+def write_update_check_choice(omh_home: Path, on: bool) -> Path:
+    """Save whether the OMH TUI asks npm for a newer release; the path it was written to. The other choices stay."""
+    return _write_theme_store(omh_home, "update_check", "on" if on else "off")
+
+
+# Where the OMH TUI opens its sessions (`runtime`, beside the theme): `own` (the default), a TUI-only Hermes profile
+# with a gateway of its own (`tui/own_runtime.py`, `TUI_PROFILE`), or `shared`, the Hermes gateway that also serves
+# the bots.
+RUNTIME_SHARED, RUNTIME_OWN = "shared", "own"
+RUNTIME_CHOICES = (RUNTIME_SHARED, RUNTIME_OWN)
+RUNTIME_DEFAULT = RUNTIME_OWN
+# The Hermes profile the TUI's own runtime is: `<root>/profiles/omh-tui`. Every OMH surface that lists the person's
+# Hermes profiles (bots) leaves it out.
+TUI_PROFILE = "omh-tui"
+
+
+def read_runtime_choice(omh_home: Path) -> str | None:
+    """`own` or `shared` as saved for this OMH home; None when nothing this module wrote says (`RUNTIME_DEFAULT`, then)."""
+    value = _theme_store_record(omh_home).get("runtime")
+    return value if value in RUNTIME_CHOICES else None
+
+
+def effective_runtime(omh_home: Path) -> str:
+    """The runtime bare `omh` opens on: the saved choice, else `RUNTIME_DEFAULT`."""
+    return read_runtime_choice(omh_home) or RUNTIME_DEFAULT
+
+
+def write_runtime_choice(omh_home: Path, runtime: str) -> Path:
+    """Save where the OMH TUI opens its sessions; the path it was written to. The other choices stay."""
+    if runtime not in RUNTIME_CHOICES:
+        raise ValueError(f"runtime is one of {', '.join(RUNTIME_CHOICES)}, not {runtime!r}")
+    return _write_theme_store(omh_home, "runtime", runtime)
+
+
 # The keys the one writer (`_write_theme_store`) keeps: every write carries the others over.
-THEME_STORE_KEYS = ("theme", "launch", "glow", "wallpaper")
+THEME_STORE_KEYS = ("theme", "launch", "wallpaper", "update_check", "runtime")
 
 
 def _write_theme_store(omh_home: Path, key: str, value: str) -> Path:
@@ -293,6 +323,7 @@ def skin_logo(name: str = SKIN_NAME) -> list[tuple[str, str, bool]]:
     return logo_from_text(skin_payload(name).decode("utf-8"))
 
 
+@lru_cache(maxsize=4096)
 def hex_to_rgb(value: str) -> tuple[int, int, int] | None:
     """`#RRGGBB` -> channel triple, or None when the token is not a plain hex."""
     text = value.strip().lstrip("#")

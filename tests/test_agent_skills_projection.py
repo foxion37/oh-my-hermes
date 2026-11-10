@@ -84,7 +84,6 @@ _OVERRIDES_AROUND_UNSHIPPED_SKILLS = {
     "ulw-work::quality_bar": ("maestro",),
     "ulw-qa::quality_bar": ("todo-checklist",),
     "omh-source-finder::use_when": ("research-department",),
-    "omh-research-brief::description": ("research-department",),
     "omh-model-finetuning::why_this_exists": ("model-optimization", "workflow-learning"),
     "omh-spend-gate::why_this_exists": ("browser-operator",),
     "omh-memory-new::description": ("memory-sync",),
@@ -424,7 +423,7 @@ class AgentSkillsProjectionTests(unittest.TestCase):
         from dataclasses import fields
         from omh.skills.catalog import installable_skill_definitions, omh_skill_display_name
         from omh.skills.catalog_types import SkillDefinition
-        from omh.skills.render import agent_skill_template, loadable_skill_mentions
+        from omh.skills.render import agent_skill_template, translate_sibling_mentions
         from omh.skills.catalog_portable import portable_skill_names
 
         sections = {field.name for field in fields(SkillDefinition)} - {"portable_overrides"}
@@ -442,13 +441,13 @@ class AgentSkillsProjectionTests(unittest.TestCase):
                 problems.append(f"{name} (overrides a skill with no Agent Skills projection)")
                 continue
             body = agent_skill_template(definition).content
-            # A Do Not Use When line renders its siblings under their loadable
-            # labels (`loadable_skill_mentions`), so that is the line to find.
+            # Every rendered line names its siblings under loadable labels
+            # (`translate_sibling_mentions`), so that is the line to find.
             problems.extend(
                 f"{name}::{section} (replacement line absent from the portable body)"
                 for section, lines in definition.portable_overrides.items()
                 if any(
-                    (loadable_skill_mentions(line) if section == "do_not_use_when" else line) not in body
+                    translate_sibling_mentions(line, owner=definition.name) not in body
                     for line in lines
                 )
             )
@@ -647,7 +646,7 @@ class AgentSkillsProjectionTests(unittest.TestCase):
                 self.assertEqual(json.loads(output)["projection"], "fresh")
                 self.assertEqual(json.loads(output)["drift"], "clean")
                 (mirror / MANIFEST_NAME).unlink()
-                self.assertEqual(json.loads(run_cli(command + ["--status"])[1])["projection"], "missing")
+                self.assertEqual(json.loads(run_cli(command + ["--status"])[1])["projection"], "fresh")
                 self.assertEqual(run_cli(command)[0], 0)
             # Neither generated copy may contaminate an implicit Hermes import.
             self.assertEqual(discover_skill_files(repo), [])
@@ -718,7 +717,46 @@ class AgentSkillsProjectionTests(unittest.TestCase):
             self.assertEqual(status["projection"], "stale")
             self.assertEqual(status["drift"], "clean")
             (mirror / MANIFEST_NAME).unlink()
-            self.assertEqual(agent_skills_status(target, mirror=mirror)["projection"], "missing")
+            self.assertEqual(agent_skills_status(target, mirror=mirror)["projection"], "stale")
+
+    def test_status_reports_primary_when_mirror_manifest_absent(self):
+        from unittest.mock import patch
+        from omh.install.agent_skills_projection import install_agent_skills, agent_skills_status, MANIFEST_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            target, mirror = home / ".agents/skills", home / ".claude/skills"
+            with patch.object(Path, "home", return_value=home):
+                empty = agent_skills_status(target, mirror=mirror)
+                self.assertEqual((empty["primary"], empty["mirror"], empty["projection"]),
+                                 ("missing", "missing", "missing"))
+                install_agent_skills(target)
+                status = agent_skills_status(target, mirror=mirror)
+                self.assertEqual((status["primary"], status["mirror"], status["projection"]),
+                                 ("fresh", "missing", "fresh"))
+                self.assertIn("mirror copy", status["warnings"][0])
+                self.assertIn("omh install --target agents --scope user", status["warnings"][0])
+                self.assertFalse(mirror.exists())
+                self.assertEqual(agent_skills_status(target)["mirror"], "none")
+                path = target / MANIFEST_NAME
+                manifest = json.loads(path.read_text())
+                manifest["catalog_revision"] = "old-revision"
+                path.write_text(json.dumps(manifest))
+                status = agent_skills_status(target, mirror=mirror)
+                self.assertEqual((status["primary"], status["mirror"], status["projection"]),
+                                 ("stale", "missing", "stale"))
+
+    def test_status_stale_mirror_still_stale(self):
+        from omh.install.agent_skills_projection import install_agent_skills, agent_skills_status, MANIFEST_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            target, mirror = Path(tmp) / ".agents/skills", Path(tmp) / ".claude/skills"
+            install_agent_skills(target, mirror=mirror)
+            path = mirror / MANIFEST_NAME
+            manifest = json.loads(path.read_text())
+            manifest["catalog_revision"] = "old-revision"
+            path.write_text(json.dumps(manifest))
+            status = agent_skills_status(target, mirror=mirror)
+            self.assertEqual((status["primary"], status["mirror"], status["projection"]),
+                             ("fresh", "stale", "stale"))
 
     def test_manifest_traversal_and_symlink_destinations_fail_before_writes(self):
         from omh.install.agent_skills_projection import install_agent_skills, MANIFEST_NAME

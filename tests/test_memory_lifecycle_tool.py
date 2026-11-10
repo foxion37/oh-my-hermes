@@ -308,7 +308,7 @@ class RecallTests(_Home):
 
     def test_bad_query_or_limit_is_refused(self) -> None:
         for args, reason in (
-            ({}, "query_invalid"),
+            ({"query": "nul\x00byte"}, "query_invalid"),
             ({"query": "x" * 501}, "query_invalid"),
             ({"query": "deploy", "limit": 7}, "limit_invalid"),
             ({"query": "deploy", "limit": 0}, "limit_invalid"),
@@ -422,6 +422,9 @@ class CorrectTests(_Home):
         old = self.capture("The deploy freeze ends on 2026-11-30.")
         result = self.call("correct", record_id=old, summary="The deploy freeze ends in 3 weeks.")
         self.assertEqual((result["status"], result["review_reason"]), ("pending_review", "relative_time_phrase"))
+        self.assertIn("absolute date", result["next_action"])
+        self.assertIn("old record stays active", result["next_action"])
+        self.assertNotIn("omh memory review", result["next_action"])
         self.assertTrue(self.record_path(old).exists())
         self.assertFalse((self.memory / "history").exists())
         self.assertEqual(self.recalled("deploy freeze ends"), [old])
@@ -639,7 +642,12 @@ class ServedCounterTests(_Home):
         self.assertEqual(rendered_ids(pack), [record_id])
         live.prefetch("omh recall memory packs")  # a second API call in the same turn
         self.assertEqual(read_served_counts(self.store)[record_id]["times_served"], 1)
-        hermes_turn(live, 2, "omh recall memory packs")
+        # The record is still in this conversation: a later turn does not serve it again.
+        self.assertEqual(rendered_ids(hermes_turn(live, 2, "omh recall memory packs")), [])
+        self.assertEqual(read_served_counts(self.store)[record_id]["times_served"], 1)
+        # After a compaction drops it from context, the next turn serves it once more.
+        live.on_session_switch(SESSION, reset=False)
+        hermes_turn(live, 3, "omh recall memory packs")
         self.assertEqual(read_served_counts(self.store)[record_id]["times_served"], 2)
         self.assertFalse((self.memory / "usage.json").exists(), "serving never feeds the ranking's usage counter")
         status = build_project_memory_status(self.paths)["recall_usage"]

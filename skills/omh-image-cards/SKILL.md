@@ -26,6 +26,7 @@ This is a Hermes-native `img-summary` workflow skill.
 - The user needs a deck, PDF, spreadsheet, HWP, Markdown package, or binary file export plan; use `omh-materials-package`.
 - The user wants a text-only report, leadership brief, or PPT-ready outline; use `omh-report-package`.
 - The user asks OMH to directly generate, inspect, upload, or post an image without a wrapper-supplied observed evidence path.
+- A standalone picture with no source material to summarize; call the host image tool with the user's own prompt, no card format.
 
 ## Examples
 
@@ -43,19 +44,19 @@ Bad example:
 
 ## Completion Checklist
 
-- The material source, target format, audience, structure, and QA expectation are named.
-- Binary export, rendering, formula recalculation, attachment, and delivery stay observed-only.
-- The next action identifies whether the package is planned, generated, QA-ready, or blocked.
+- The source kind, format, ratio and language mode are named.
+- Prompt prepared, image generated, text read back, visual QA and delivery are separate states.
 
 ## Recovery Notes
 
-- If a renderer or file tool is missing, keep the package prepared and expose the generation handoff.
-- If render QA is unavailable, mark the artifact unverified and request the smallest visual/file check.
+- If image_generation_capability/v1 is unknown or prompt_only, retain visual_prompt_card/v1, mark generation not_observed, and hand back image_generation_setup/v1 with the question of which image tool to use.
+- If an edit lacks the supplied image reference or preserve/remove constraints, retain only the supplied edit intent, mark transformation unresolved, and hand back the missing inputs for the image transformation brief.
+- If visual_generation_receipt/v1 reports a failed or partial attempt, retain visual_prompt_card/v1 and the receipt's failure stage, mark generation not_observed, and hand back the failed attempt without claiming an image.
 
 ## Workflow Lane
 
-- Current lane: **Materials and visual summaries** (`show-reel`, `sprite-forge`, `design-orchestration`, `apple-design`, `design-quality-gate`, `award-bar-score`, `frontend`, `accessibility-audit`, `+8 more`) - web, accessibility, visual QA, files, and packages.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Materials and visual summaries** - web, accessibility, visual QA, files, and packages.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -80,13 +81,14 @@ Quality bar:
 - Adapt scene, texture, depth, lighting, camera, motifs, palette, and composition to domains such as security, commerce, sports, fashion, finance, developer work, or research.
 - Resolve a poster archetype such as Swiss grid, cinematic key-art, editorial magazine, constructivist photomontage, data infographic, product ad, technical brutalist, museum exhibition, sports event, or luxury lookbook.
 - Ask image tools to render the domain-specific environment first, then place readable card modules on top; reject flat vector clipart, plain gradients, generic glass cards, color-swapped templates, and low-detail wallpaper.
-- Preserve a stable OMH img-summary format contract: source badge, headline, source-kind subtitle, content modules, evidence footer, and small `OMH generated` mark.
+- Preserve a stable OMH img-summary format contract: source badge, headline, source-kind subtitle, content modules, evidence footer, and small `OMH generated` mark (on request, delete its clause from the prompt).
 - Use long_scroll or extended rows when the card needs a document-style vertical canvas with more sections or denser text.
 - Keep visible card text readable and faithful to supplied source or structured sections; do not shrink paragraphs into tiny poster copy.
+- Read every visible string back from an observed card and compare it with the card copy; a misspelled name, number or date, or garbled CJK, fails the attempt: regenerate with shorter copy or add the text outside the model.
 - Separate prompt prepared, image generated, visual QA passed, and delivered states.
 - Bind an image result to the card digest, action, attempt, and content digest, then warn on route mismatch, unknown route, stale card, digest drift, and response reuse rather than resolving any of them.
 - For transformations, preserve requested identity, composition, text, and protected regions; verify the observed result against the edit brief before a PASS claim.
-- Prefer `img-summary` over `materials-package` only when the request asks for an image, visual card, or summary card.
+- Prefer `img-summary` over `omh-materials-package` only when the request asks for an image, visual card, or summary card.
 - Use materials/report workflows only after an observed generated file needs packaging.
 
 Handoff policy:
@@ -157,7 +159,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

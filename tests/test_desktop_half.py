@@ -30,9 +30,12 @@ from _standalone_bundle import bundle_dir
 from omh.install.plugin_pack import install_plugin_bundle
 from omh.maintenance.doctor import DESKTOP_HALF_FILES, doctor_ok, run_doctor
 from omh.paths import resolve_paths
-from omh.plugin_bundle.omh import runtime_reader, subagent_graph
+from omh.plugin_bundle.omh import runtime_paths, runtime_reader, subagent_graph
 from omh.plugin_bundle.omh.dashboard import plugin_api
 from _module_patch import patch_modules
+from _delegation_graphs import nested, owner_mock, parallel
+from _delegation_state import PARENT, homes
+from omh.tui import dag_block
 
 NODE = shutil.which("node")
 
@@ -82,13 +85,19 @@ export const host = {
     busy: { get: () => globalThis.__omh.busy },
     focusedStoredSessionId: { get: () => globalThis.__omh.stored },
     model: { get: () => globalThis.__omh.model },
+    focusedSessionId: { get: () => globalThis.__omh.focused },
     focusedUsage: { get: () => globalThis.__omh.usage }
   },
+  request: (method, params) => { globalThis.__omh.requests.push([method, params]); return Promise.resolve(globalThis.__omh.breakdown) },
   revealPane: paneId => { globalThis.__omh.revealed.push(paneId) },
   notify: input => { globalThis.__omh.notified.push(input) }
 }
 export const useValue = atom => atom.get()
 export function useQuery(options) {
+  if (options.queryKey[1] === 'context') {
+    globalThis.__omh.contextQuery = options
+    return globalThis.__omh.context
+  }
   globalThis.__omh.lastQuery = options
   return globalThis.__omh.query
 }
@@ -119,8 +128,9 @@ import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 const [pluginPath, scenariosPath, formatterCasesPath] = process.argv.slice(2)
 globalThis.__omh = {
-  gateway: 'open', stored: null, model: '', usage: null,
-  query: { data: undefined, error: null }, lastQuery: null, revealed: [], notified: [], tips: [], dots: [], badges: []
+  gateway: 'open', stored: null, model: '', usage: null, focused: '', breakdown: undefined, requests: [],
+  query: { data: undefined, error: null }, lastQuery: null, context: { data: undefined, error: null }, contextQuery: null,
+  revealed: [], notified: [], tips: [], dots: [], badges: []
 }
 const styleEvents = []
 let styleCss = ''
@@ -134,13 +144,14 @@ const plugin = mod.default
 const contributions = []
 const restCalls = []
 const disposers = []
+const eventHandlers = []
 const ctx = {
   source: 'plugin:omh',
   rest: path => { restCalls.push(path); return Promise.resolve({}) },
   register: c => { contributions.push(c); return () => {} },
   registerMany: cs => { cs.forEach(c => contributions.push(c)); return () => {} },
   onDispose: fn => { disposers.push(fn) },
-  onEvent: () => () => {},
+  onEvent: (type, fn) => { eventHandlers.push([type, fn]); return () => {} },
   socket: () => () => {}
 }
 plugin.register(ctx)
@@ -180,7 +191,7 @@ const structures = (node, out = []) => {
   if (!node || typeof node !== 'object') return out
   if (Array.isArray(node)) { node.forEach(child => structures(child, out)); return out }
   const props = node.props || {}
-  if (props.className) out.push({ className: props.className, text: text(node).join(''), state: props['data-state'], done: props['data-done'], style: props.style,
+  if (props.className) out.push({ className: props.className, text: text(node).join(''), state: props['data-state'], done: props['data-done'], live: props['data-live'], style: props.style,
     cells: (Array.isArray(props.children) ? props.children : [props.children]).filter(child => child && child.props).map(child => ({ className: child.props.className, text: text(child).join('') })) })
   return structures(props.children, out)
 }
@@ -191,7 +202,19 @@ const findClick = node => {
   return findClick(node.props && node.props.children)
 }
 const scenarios = JSON.parse(readFileSync(scenariosPath, 'utf8'))
-const koreanScenarios = ['catches_and_lanes', 'settled_lanes', 'maestro_and_board', 'gateway_closed', 'open_with_payload']
+// The gateway events a scenario's chat saw, each read at the clock the scenario names.
+const replay = scenario => {
+  const realNow = Date.now
+  try {
+    for (const [type, session, text, at, turnId] of scenario.events || []) {
+      Date.now = () => at
+      for (const [kind, fn] of eventHandlers) if (kind === type) fn({ type, session_id: session, payload: { text, turn_id: turnId } })
+    }
+  } finally {
+    Date.now = realNow
+  }
+}
+const koreanScenarios = ['catches_and_lanes', 'settled_lanes', 'maestro_and_board', 'gateway_closed', 'open_with_payload', 'failed_lane', 'dag_cards', 'fanout_cards', 'usage_board']
 const renders = {}
 for (const [name, scenario] of Object.entries(scenarios)) {
   globalThis.__omh.gateway = scenario.gateway
@@ -199,11 +222,17 @@ for (const [name, scenario] of Object.entries(scenarios)) {
   globalThis.__omh.stored = scenario.stored
   globalThis.__omh.model = scenario.model || ''
   globalThis.__omh.usage = scenario.usage || null
+  globalThis.__omh.focused = scenario.focused || ''
+  globalThis.__omh.breakdown = scenario.breakdown
   globalThis.__omh.query = {
     data: scenario.data,
     error: scenario.errorMessage ? new Error(scenario.errorMessage) : null
   }
+  globalThis.__omh.context = { data: scenario.breakdown, error: null }
   globalThis.__omh.lastQuery = null
+  globalThis.__omh.contextQuery = null
+  globalThis.__omh.requests = []
+  replay(scenario)
   globalThis.__omh.revealed = []
   globalThis.__omh.tips = []
   globalThis.__omh.dots = []
@@ -230,6 +259,8 @@ for (const [name, scenario] of Object.entries(scenarios)) {
   }
   const query = globalThis.__omh.lastQuery
   await query.queryFn()
+  const asked = globalThis.__omh.contextQuery
+  if (asked) await asked.queryFn()
   const sentinel = { previous: true }
   renders[name] = {
     byId,
@@ -237,6 +268,15 @@ for (const [name, scenario] of Object.entries(scenarios)) {
     enabled: query.enabled,
     queryKey: query.queryKey,
     keepsPreviousData: typeof query.placeholderData === 'function' && query.placeholderData(sentinel) === sentinel,
+    context: asked
+      ? {
+          enabled: asked.enabled,
+          queryKey: asked.queryKey,
+          requests: [...globalThis.__omh.requests],
+          keepsOwnChat: asked.placeholderData(sentinel, { queryKey: asked.queryKey }) === sentinel,
+          dropsOtherChat: asked.placeholderData(sentinel, { queryKey: [...asked.queryKey.slice(0, 2), 'other-chat'] }) === undefined
+        }
+      : null,
     restCalls: [...restCalls],
     revealed: clicked,
     tips: [...globalThis.__omh.tips],
@@ -254,7 +294,37 @@ for (const [name, scenario] of Object.entries(scenarios)) {
 }
 const formatterCases = JSON.parse(readFileSync(formatterCasesPath, 'utf8'))
 const formatters = {}
-const local = { koreanStates: states => states.map(state => [state, mod.stateWord(state, 'en'), mod.stateWord(state, 'ko')]) }
+const local = {
+  // The events of one window, in order, folded into a fresh clock: which of them ended a wait, and the waits kept.
+  ttftWaits: events => {
+    const clock = mod.newTurnClock()
+    const ended = events.map(([type, session, text, now, turnId]) => mod.noteTurnEvent(clock, type, session, text, now, turnId))
+    return [ended, { ...clock.turns }]
+  },
+  // The same fold: the chats a start is still pending for once the events are in.
+  ttftPending: events => {
+    const clock = mod.newTurnClock()
+    events.forEach(([type, session, text, now, turnId]) => mod.noteTurnEvent(clock, type, session, text, now, turnId))
+    return Object.keys(clock.started).sort()
+  },
+  // A lane record as the backend sends it, read into the detail's prompt legend.
+  laneLegend: record => mod.usageLegend(mod.laneUsage(record)),
+  koreanStates: states => states.map(state => [state, mod.stateWord(state, 'en'), mod.stateWord(state, 'ko')]),
+  // The pane body as the browser measures it: `clientWidth` px wide, one cell of the drawing's font `cell` px.
+  measureCellsAt: (clientWidth, cell) => {
+    const made = globalThis.document.createElement
+    const probes = []
+    globalThis.document.createElement = tag => {
+      const probe = { tagName: tag, className: '', textContent: '', getBoundingClientRect() { return { width: cell * this.textContent.length } }, remove() { probes.push(this.className) } }
+      return probe
+    }
+    try {
+      return [mod.measureCells({ clientWidth, append() {} }), probes]
+    } finally {
+      globalThis.document.createElement = made
+    }
+  }
+}
 for (const [name, cases] of Object.entries(formatterCases)) {
   formatters[name] = cases.map(args => {
     const answer = (local[name] || mod[name])(...args)
@@ -301,7 +371,11 @@ for (const name of koreanScenarios) {
   globalThis.__omh.busy = false
   globalThis.__omh.stored = scenario.stored
   globalThis.__omh.query = { data: scenario.data, error: null }
+  globalThis.__omh.usage = scenario.usage || null
+  globalThis.__omh.focused = scenario.focused || ''
+  globalThis.__omh.context = { data: scenario.breakdown, error: null }
   globalThis.__omh.tips = []
+  replay(scenario)
   const byId = {}
   for (const c of koContributions) byId[c.id] = text(c.render())
   report.korean[name] = { byId, tips: [...globalThis.__omh.tips] }
@@ -583,7 +657,180 @@ for _name, _data in {
     "two_edges": {**MAESTRO_PAYLOAD, "graph": {**MAESTRO_PAYLOAD["graph"], "edges": [["a", "b"], ["b", "c"]], "edge_count": 2}},
 }.items():
     SCENARIOS[_name] = {**SCENARIOS["open_with_payload"], "data": _data}
+# A live graph with a failed lane: failed is its own word, apart from blocked.
+FAILED_GRAPH = {
+    **NATIVE_GRAPH,
+    "nodes": [
+        *NATIVE_GRAPH["nodes"],
+        {"id": "broke", "kind": "lane", "title": "Failed child", "state": "failed", "model": "openai/gpt-5.6", "session_tail": "broke01"},
+    ],
+    "edges": [*NATIVE_GRAPH["edges"], {"from": "drawn", "to": "broke"}],
+}
+STUCK_AND_FAILED_GRAPH = {
+    **NATIVE_GRAPH,
+    "nodes": [
+        NATIVE_GRAPH["nodes"][0],
+        {"id": "held", "kind": "lane", "title": "Stuck child", "state": "stuck", "session_tail": "held01"},
+        {"id": "broke", "kind": "lane", "title": "Failed child", "state": "failed", "session_tail": "broke01"},
+    ],
+}
+for _name, _data in {
+    "failed_lane": {**ESTABLISHED_PAYLOAD, "delegation_graph": FAILED_GRAPH, "subagents": {"rows": [RUNNING_ROW]}},
+    "failed_without_running": {**ESTABLISHED_PAYLOAD, "todo": {"status": "absent"}, "delegation_graph": STUCK_AND_FAILED_GRAPH, "subagents": {"rows": []}},
+    "failed_row": {**ESTABLISHED_PAYLOAD, "todo": {"status": "absent"}, "subagents": {"rows": [{**RUNNING_ROW, "state": "failed"}, {**RUNNING_ROW, "task_id": "b2", "state": "blocked"}]}},
+}.items():
+    SCENARIOS[_name] = {**SCENARIOS["open_with_payload"], "data": _data}
+# The same live graph with the drawing the backend sends for it (`plugin_api.delegation_drawing`), an error
+# record in its place, and a settled graph that still carries one.
+DRAWN_GRAPH = {**NATIVE_GRAPH, "nodes": [*NATIVE_GRAPH["nodes"], {"id": "held", "kind": "lane", "title": "Stuck child",
+                                                                  "state": "stuck", "model": "openai/gpt-5.6"}],
+               "edges": [*NATIVE_GRAPH["edges"], {"from": "root", "to": "held"}]}
+DRAWING = plugin_api.delegation_drawing(DRAWN_GRAPH, 43)
+WIDE_GRAPH = {**DRAWN_GRAPH, "nodes": [*DRAWN_GRAPH["nodes"][:2], {**DRAWN_GRAPH["nodes"][2], "title": "인증 모듈"}]}
+WIDE_DRAWING = plugin_api.delegation_drawing(WIDE_GRAPH, 43)
+for _name, _data in {
+    "drawn_graph": {**ESTABLISHED_PAYLOAD, "delegation_graph": DRAWN_GRAPH, "delegation_drawing": DRAWING},
+    "wide_drawn": {**ESTABLISHED_PAYLOAD, "delegation_graph": WIDE_GRAPH, "delegation_drawing": WIDE_DRAWING},
+    "drawing_error": {**ESTABLISHED_PAYLOAD, "delegation_graph": DRAWN_GRAPH,
+                      "delegation_drawing": {"error": "ValueError: no", "schema_version": "omh_desktop_dag/v1"}},
+    "settled_drawn": {**ESTABLISHED_PAYLOAD, "delegation_graph": SETTLED_GRAPH, "delegation_drawing": DRAWING},
+}.items():
+    SCENARIOS[_name] = {**SCENARIOS["open_with_payload"], "data": _data}
+# A dag-ulw run (`dag_topology` present) is drawn as cards with the figures the backend read from each lane's session.
+def _dag_lane(node: str, title: str, **fields: object) -> dict:
+    return {"id": f"d:r:{node}", "kind": "lane", "title": title, "category": "quick", "model": "?", "effort": "", "state": "waiting",
+            "status": "waiting", "dag_node": node, "dag_origin": "define", "role": "build", **fields}
+
+
+def _dag_graph(lanes: list[dict], edges: list[tuple[str, str]], path: list[str], bottlenecks: list[list], **extra: object) -> dict:
+    heads = {f"d:r:{head}" for _, head in edges}
+    return {
+        "status": "active", "source": "dag", "name": "Write and sum", "dag_open": True,
+        "nodes": [{"id": "root", "kind": "root", "title": "main", "state": "running"}, *lanes],
+        "edges": [{"from": "root", "to": lane["id"]} for lane in lanes if lane["id"] not in heads]
+        + [{"from": f"d:r:{tail}", "to": f"d:r:{head}"} for tail, head in edges],
+        "dag_topology": {"critical_path": path, "bottlenecks": bottlenecks},
+        **extra,
+    }
+
+
+DAG_GRAPH = _dag_graph(
+    [
+        _dag_lane("a", "Write a.txt", state="done", status="accepted", model="anthropic/claude-haiku-5-5", effort="high",
+                  elapsed_seconds=47, output_tokens=410, usage={"input": 900, "cache_read": 6200, "cache_write": 600, "cost_usd": 0.0123}),
+        _dag_lane("b", "Write b.txt", state="running", status="running", model="anthropic/claude-haiku-5-5", effort="high",
+                  elapsed_seconds=31, output_tokens=220,
+                  usage={"input": 700, "cache_read": 3100, "cache_write": 500, "cost_usd": 0.0061, "cost_estimated": True}),
+        _dag_lane("sum", "Sum", waits_on=1),
+        _dag_lane("chk", "Check", category="review", role="verify", waits_on=1),
+    ],
+    [("a", "sum"), ("b", "sum"), ("sum", "chk")],
+    ["Write a.txt", "Sum", "Check"],
+    [["Sum", 1]],
+)
+FANOUT_GRAPH = {
+    **DAG_GRAPH,
+    "source": "fanout",
+    "name": "fanout fanout-0123456789ab",
+    "nodes": [
+        {**node, "id": node["id"].replace("d:r:", "f:")}
+        for node in DAG_GRAPH["nodes"]
+    ],
+    "edges": [
+        {**edge, "from": edge["from"].replace("d:r:", "f:"), "to": edge["to"].replace("d:r:", "f:")}
+        for edge in DAG_GRAPH["edges"]
+    ],
+}
+FANOUT_GRAPH.pop("dag_topology")
+BEYOND_DAG_GRAPH = _dag_graph(
+    [_dag_lane(f"n{at}", f"Step {at}") for at in range(17)],
+    [(f"n{at}", f"n{at + 1}") for at in range(16)],
+    ["Step 0"],
+    [["Step 0", 16]],
+    hidden_nodes=3,
+)
+SETTLED_DAG_GRAPH = _dag_graph(
+    [
+        _dag_lane("a", "Write a.txt", state="done", status="accepted", elapsed_seconds=47,
+                  usage={"input": 900, "cache_read": 6200, "cache_write": 600, "cost_usd": 0.0123}),
+        _dag_lane("sum", "Sum", state="done", status="accepted", elapsed_seconds=12),
+    ],
+    [("a", "sum")],
+    ["Write a.txt", "Sum"],
+    [],
+    dag_open=False,
+)
+PARTIAL_COST_GRAPH = _dag_graph(
+    [
+        _dag_lane("a", "Write a.txt", state="done", status="accepted", model="anthropic/claude-haiku-5-5",
+                  output_tokens=410, usage={"input": 900, "cache_read": 6200, "cache_write": 600, "cost_usd": 0.0123}),
+        _dag_lane("b", "Write b.txt", state="running", status="running", model="anthropic/claude-haiku-5-5",
+                  output_tokens=220, usage={"input": 700, "cache_read": 3100, "cache_write": 500}),
+    ],
+    [],
+    ["Write a.txt"],
+    [],
+)
+for _name, _data in {
+    "dag_settled": {**ESTABLISHED_PAYLOAD, "delegation_graph": SETTLED_DAG_GRAPH},
+    # A settled run whose lanes counted nothing: no figure to keep, so the one line alone.
+    "dag_settled_uncounted": {**ESTABLISHED_PAYLOAD, "delegation_graph": {
+        **SETTLED_DAG_GRAPH, "nodes": [{key: value for key, value in item.items() if key != "usage"}
+                                       for item in SETTLED_DAG_GRAPH["nodes"]]}},
+    "dag_partial_cost": {**ESTABLISHED_PAYLOAD, "delegation_graph": PARTIAL_COST_GRAPH},
+    "dag_cards": {**ESTABLISHED_PAYLOAD, "delegation_graph": DAG_GRAPH},
+    "fanout_cards": {**ESTABLISHED_PAYLOAD, "delegation_graph": FANOUT_GRAPH},
+    "dag_beyond_cards": {**ESTABLISHED_PAYLOAD, "delegation_graph": BEYOND_DAG_GRAPH, "delegation_drawing": DRAWING},
+}.items():
+    SCENARIOS[_name] = {**SCENARIOS["open_with_payload"], "data": _data}
 SCENARIOS["busy"] = {**SCENARIOS["open_with_payload"], "busy": True}
+# The usage board: a chat whose row Hermes recorded, whose stream is live, whose context breakdown the host
+# answers, and which this window timed through two turns (1850 ms and 410 ms to the first token).
+SCENARIOS["usage_board"] = {
+    **SCENARIOS["open_with_payload"],
+    "focused": "rt-1",
+    "usage": {
+        "model": "gpt-6-luna", "calls": 4, "input": 1200, "output": 630, "prompt": 12000, "total": 12630,
+        "avg_tps": 41.6, "avg_latency_s": 3.2, "cache_hit_pct": 77,
+        "context_used": 15700, "context_max": 100000, "context_percent": 16, "compressions": 1,
+    },
+    "breakdown": {
+        "categories": [
+            {"id": "system_prompt", "label": "System prompt", "tokens": 3000, "color": "x"},
+            {"id": "tool_definitions", "label": "Tools", "tokens": 6000, "color": "x"},
+            {"id": "memory", "label": "Memory", "tokens": 0, "color": "x"},
+            {"id": "conversation", "label": "Conversation", "tokens": 6700, "color": "x"},
+        ],
+        "context_max": 100000, "context_used": 15700, "context_percent": 16,
+    },
+    "events": [
+        ["message.start", "rt-1", None, 1000], ["message.delta", "rt-1", None, 1200], ["message.delta", "rt-1", "Hi", 2850],
+        ["message.delta", "rt-1", "again", 2900],
+        ["message.start", "rt-1", None, 5000], ["reasoning.delta", "rt-1", "hm", 5410],
+    ],
+    "data": {
+        **ESTABLISHED_PAYLOAD,
+        "session_usage": {"session_id": "20260924_101010_abc123", "model": "gpt-6-luna", "output": 630, "input": 1600,
+                          "cache_read": 9300, "cache_write": 1100, "cost_usd": 0.5},
+    },
+}
+# The chat switched and the last poll's answer, for the chat before, is still on screen.
+SCENARIOS["usage_board_switched"] = {**SCENARIOS["usage_board"], "stored": "20260925_090000_def456", "events": []}
+# The recorded row could not be read: the board keeps the stream.
+SCENARIOS["usage_board_read_failed"] = {
+    **SCENARIOS["usage_board"],
+    "events": [],
+    "data": {**ESTABLISHED_PAYLOAD,
+             "session_usage": {"session_id": "20260924_101010_abc123", "error": "OperationalError: database is locked"}},
+}
+SCENARIOS["usage_board_busy"] = {**SCENARIOS["usage_board"], "busy": True, "events": []}
+# No recorded row and no breakdown yet: only what the stream carries.
+SCENARIOS["usage_board_stream_only"] = {
+    **SCENARIOS["open_with_payload"],
+    "focused": "rt-2",
+    "usage": {"model": "gpt-6-luna", "calls": 2, "input": 500, "prompt": 4000, "output": 300, "cache_hit_pct": 50},
+}
+SCENARIOS["usage_board_unknown"] = {**SCENARIOS["open_with_payload"], "usage": None}
 # A fresh run with nothing counted yet: live, so not grey.
 SCENARIOS["runtime_only"] = {
     "gateway": "open",
@@ -604,6 +851,11 @@ FANOUT_AND_STUCK_STATES = {
 # carries the answers in this order.
 FORMATTER_CASES = {
     "pollInterval": [[True], [False]],
+    "hudPath": [[None, 44], ["s 1", 0], [None, None], ["s", 61]],
+    "segmentTone": [["node:running"], ["node:done"], ["node-title:done"], ["node-word:waiting"], ["glyph:failed"],
+                    ["status:stuck"], ["node:interrupted"], ["edge"], ["connector"], ["connector:running"], ["header"],
+                    ["frontier"], ["model"], ["something"], [""]],
+    "measureCellsAt": [[320, 6.6], [420, 6.6], [320, 0]],
     "rowFigures": [[{"state": "running", "tool_count": count}, 0] for count in (0, 1, 2)],
     "stateWord": [["running"], ["blocked_by_dependency"], ["review"], ["some_new_state"], [""], ["failed", "ko"], ["review", "ko"]],
     # Every fanout status the reader accepts and every stuck unit state, read in Korean.
@@ -619,10 +871,95 @@ FORMATTER_CASES = {
     "catchSentence": [[entry] for entry in CATCHES] + [[{"kind": "repeat_loop", "laps": True, "period": 1}], [{"kind": "unknown"}]],
     "catchRows": [[{"catches": [*CATCHES, {"seq": -1, "kind": "unarmed_wait"}, {"seq": 9, "kind": "unknown"}]}]],
     "delegationView": [[{}], [{"delegation_graph": {**NATIVE_GRAPH, "status": "inactive"}}], [{"delegation_graph": SETTLED_GRAPH}]],
+    "dagModel": [
+        [DAG_GRAPH],
+        [FANOUT_GRAPH],
+        # An edge to a lane that is not there and a repeated one; then two lanes that wait on each other.
+        [{**DAG_GRAPH, "edges": [*DAG_GRAPH["edges"], {"from": "d:r:a", "to": "ghost"}, {"from": "d:r:a", "to": "d:r:sum"}]}],
+        [{**DAG_GRAPH, "edges": [{"from": "d:r:a", "to": "d:r:b"}, {"from": "d:r:b", "to": "d:r:a"}]}],
+        [{**DAG_GRAPH, "dag_topology": None}],
+        [{**DAG_GRAPH, "status": "inactive"}],
+        [BEYOND_DAG_GRAPH],
+        # A lane whose own cost is a floor (an unpriced auxiliary call) makes the run's a floor.
+        [{**DAG_GRAPH, "nodes": [{**item, "usage": {**item["usage"], "cost_partial": True}} if item["id"] == "d:r:a" else item
+                                 for item in DAG_GRAPH["nodes"]]}],
+    ],
     "t": [["graphTitle", {"ready": 1, "edges": 1}], ["graphTitle", {"ready": 1, "edges": 2}], ["stateIdle", {}, "ko"]],
     "foldLabels": [[[{"state": "done"}] * 4, {"start": 3, "earlier": 3, "later": 1}]],
     "agentTally": [[{**SCENARIOS["graph_and_other"]["data"], "subagents": {"rows": [RUNNING_ROW], "hidden_rows": 1, "hidden_in_graph": 9}}]],
     "tokenCountText": [[77000], [184800], [999950], [999], [0], [-1]],
+    "latencyText": [[None], [0], [12], [999], [1000], [1130], [2500], [-5]],
+    "speedText": [[41.6], [9.44], [0], [None], [120.4]],
+    "ttftWaits": [
+        [[["message.start", "s", None, 100], ["message.delta", "s", "Hi", 350], ["message.delta", "s", "more", 400]]],
+        # An empty chunk is no token; reasoning is.
+        [[["message.start", "s", None, 0], ["message.delta", "s", None, 50], ["message.delta", "s", "", 60], ["reasoning.delta", "s", "think", 90]]],
+        [[["message.delta", "s", "x", 10]]],
+        [[["message.start", "a", None, 0], ["message.start", "b", None, 5], ["message.delta", "b", "x", 25],
+          ["thinking.delta", "a", "y", 40], ["tool.start", "a", "z", 50]]],
+        # A start re-sent for the same turn_id keeps the original anchor; a different turn_id starts a new wait.
+        [[["message.start", "s", None, 100, "t1"], ["message.start", "s", None, 900, "t1"],
+          ["message.delta", "s", "x", 1200, "t1"], ["message.start", "s", None, 2000, "t2"], ["message.delta", "s", "y", 2300, "t2"]]],
+        [[["message.start", "", None, 0], ["message.delta", "", "x", 5], ["message.start", "s", None, None], ["message.delta", "s", "x", 5]]],
+        [[event for turn in range(12) for event in (["message.start", "s", None, turn * 100], ["message.delta", "s", "x", turn * 100 + turn])]],
+        # A turn interrupted before its first token (Hermes sends `message.complete`), then a turn that streams:
+        # only the second is timed, from its own start.
+        [[["message.start", "s", None, 0], ["message.complete", "s", None, 500], ["message.start", "s", None, 1000],
+          ["message.delta", "s", "x", 1300]]],
+        # The same with turn ids, ended by an error: a late chunk of the dead turn times nothing.
+        [[["message.start", "s", None, 0, "t1"], ["error", "s", None, 100], ["message.delta", "s", "late", 200, "t1"],
+          ["message.start", "s", None, 1000, "t2"], ["message.delta", "s", "y", 1250, "t2"]]],
+        # A start without a turn id replaces the last one (an older Hermes, or a follow-up turn's bare start), and
+        # a chunk of another turn than the pending one times nothing.
+        [[["message.start", "s", None, 0], ["message.start", "s", None, 1000], ["message.delta", "s", "x", 1200]]],
+        [[["message.start", "s", None, 0, "t1"], ["message.delta", "s", "x", 50, "t0"], ["message.delta", "s", "x", 80, "t1"]]],
+    ],
+    "ttftPending": [
+        # Dead turns with no end event in view, and new chats: one pending start per chat, never one per turn.
+        [[["message.start", "s", None, turn * 10, f"t{turn}"] for turn in range(40)]
+         + [["message.start", "s", None, 500 + turn] for turn in range(40)]
+         + [["message.start", "u", None, 900], ["message.complete", "s", None, 950]]],
+    ],
+    "laneLegend": [
+        [{"usage": {"input": 0, "cache_read": 4000, "cache_write": 0, "output": 10}}],
+        [{"output_tokens": 300}],
+        [{"usage": {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "cost_usd": 0}}],
+    ],
+    "sumCostText": [
+        [{"lanes": 2, "priced": 2, "cost": 0.0184, "estimated": True, "partial": False}],
+        [{"lanes": 2, "priced": 1, "cost": 0.0123, "estimated": False, "partial": False}],
+        [{"lanes": 2, "priced": 0, "cost": None, "estimated": False, "partial": False}],
+        [{"lanes": 1, "priced": 1, "cost": 0, "estimated": False, "partial": False}],
+        # Every lane priced, one of them a floor itself; and an estimated floor, which reads as a floor alone.
+        [{"lanes": 2, "priced": 2, "cost": 0.03, "estimated": False, "partial": True}],
+        [{"lanes": 2, "priced": 1, "cost": 0.01, "estimated": True, "partial": False}],
+    ],
+    "costText": [[0.0123, False], [0, False], [None, False], [0.0061, True], [0.0061, True, True]],
+    "usageBoard": [
+        # The stream alone, with a cost it does not vouch for.
+        [{"live": {"prompt": 4000, "input": 500, "output": 300, "cache_hit_pct": 50, "cost_usd": 0.01}}],
+        # Recorded counts win over the stream, and carry their own estimate mark.
+        [{"live": {"prompt": 1, "output": 1, "cache_hit_pct": 1}, "stored": "c1", "saved": {"session_id": "c1", "input": 1600, "cache_read": 9300, "cache_write": 1100, "output": 630, "cost_usd": 0.0184, "cost_estimated": True}}],
+        # A recorded zero read is a 0.0% hit, not a dash.
+        [{"stored": "c1", "saved": {"session_id": "c1", "input": 12000, "output": 100}}],
+        [{}],
+        [{"live": {"calls": 3}}],
+        [{"live": {"context_used": 5000, "context_estimated": True}}],
+        [{"breakdown": {"context_used": 8000, "context_max": 32000, "categories": [
+            {"id": "system_prompt", "label": "System prompt", "tokens": 3000}, {"id": "conversation", "label": "Conversation", "tokens": 5000}]}}],
+        # Entries without a count are left out of the composition.
+        [{"breakdown": {"context_max": 100, "categories": [
+            {"id": "a", "label": "A", "tokens": 600}, {"id": "b", "label": "B", "tokens": 0}, {"label": "C", "tokens": "x"}, None]}}],
+        # Another chat's row (the last poll's, across a switch), a row with no chat named, and a failed read.
+        [{"live": {"prompt": 4000, "output": 300}, "stored": "c2", "saved": {"session_id": "c1", "input": 1600, "output": 630, "cost_usd": 0.5}}],
+        [{"live": {"prompt": 4000, "output": 300}, "stored": "c1", "saved": {"input": 1600, "output": 630, "cost_usd": 0.5}}],
+        [{"live": {"prompt": 4000, "output": 300}, "stored": "c1", "saved": {"session_id": "c1", "error": "OperationalError: locked"}}],
+        # A provider-reported zero is a zero cost.
+        [{"stored": "c1", "saved": {"session_id": "c1", "input": 100, "output": 10, "cost_usd": 0}}],
+        # Some counted part unpriced: the priced sum, as a floor.
+        [{"stored": "c1", "saved": {"session_id": "c1", "input": 100, "output": 10, "cost_usd": 0.521, "cost_estimated": True,
+                                    "cost_partial": True}}],
+    ],
     "elapsedText": [[12], [242], [7260], [None]],
     "costSegmentText": [
         [{"cost_usd": 0.0123}],
@@ -715,6 +1052,113 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertIn("omh_desktop_bundle.runtime_paths", sys.modules)
         self.assertIs(plugin_api.load_reader(BUNDLE), reader)
 
+    def test_a_running_dag_ulw_run_is_drawn_as_the_boxes_the_tui_prints(self) -> None:
+        """The real store-to-REST path: a defined dag-ulw run, read for its session at 60 cells.
+
+        Mutation: draw with Dependencies (`sections=1`), or through `render_delegation_view`'s own choice.
+        """
+        from test_dag_tool import call, node as dag_node, slots_table
+        from test_tui_panels import THEME
+
+        nodes = [dag_node("api", scope=("src/api.py",), label="Export API"),
+                 dag_node("ui", scope=("src/ui.py",), label="Export button"),
+                 dag_node("verify", depends_on=("api", "ui"), label="Verify export", role="verify")]
+        with homes() as home:
+            slots_table(home)
+            call(action="define", run="export", name="export feature", nodes=nodes)
+            payload = plugin_api.hud_payload(home.hermes, PARENT, cols=60)
+            bare = plugin_api.hud_payload(home.hermes, PARENT)
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["delegation_graph"]["status"], "active")
+        drawing = payload["delegation_drawing"]
+        self.assertEqual((drawing["schema_version"], drawing["layout"], drawing["cols"]), ("omh_desktop_dag/v1", "box", 60))
+        printed = dag_block.rows(dag_block.DagBlock("plan", payload["delegation_graph"]), 60 + len(dag_block.INDENT), THEME)
+        self.assertEqual(
+            ["".join(segment["text"] for segment in line) for line in drawing["lines"]],
+            ["".join(span.text for span in line)[len(dag_block.INDENT):] for line in printed[1:]],
+            "the pane's drawing is the TUI's transcript print, line for line",
+        )
+        roles = {segment["role"] for line in drawing["lines"] for segment in line}
+        self.assertTrue({"header", "node:dispatched", "node-title:dispatched"} & roles, roles)
+        self.assertNotIn("dependency", roles, "no Dependencies section, as the TUI prints it")
+        # Without `cols` the payload is the reader's alone.
+        self.assertNotIn("delegation_drawing", bare)
+
+    def test_the_hud_carries_the_named_chats_recorded_figures_and_only_that_chat_s(self) -> None:
+        """Mutation: read `session_usage` for no session, or leave it out of the payload."""
+        from test_delegation_graph import UsageTests
+
+        with homes() as home:
+            home.session(PARENT, "gpt-6-luna", started=1.0)
+            UsageTests.with_columns(home)
+            home.tokens(PARENT, 630)
+            UsageTests.count(home, PARENT, 120, 4_000, 300, actual=0.5)
+            named = plugin_api.hud_payload(home.hermes, PARENT)
+            bare = plugin_api.hud_payload(home.hermes, "")
+        self.assertEqual(named["session_usage"], {"session_id": PARENT, "model": "gpt-6-luna", "output": 630,
+                                                  "input": 120, "cache_read": 4_000, "cache_write": 300,
+                                                  "cost_usd": 0.5})
+        self.assertNotIn("session_usage", bare, "no session is named, so no chat's figures are read")
+
+    def test_a_failed_usage_read_is_a_record_beside_a_hud_that_still_reads(self) -> None:
+        """Mutation: let the failure escape, drop it silently, or let it replace the reader's payload."""
+        from test_delegation_graph import UsageTests
+
+        with homes() as home:
+            home.session(PARENT, "gpt-6-luna", started=1.0)
+            UsageTests.with_columns(home)
+            UsageTests.count(home, PARENT, 120, 4_000, 300, actual=0.5)
+            read = plugin_api.hud_payload(home.hermes, PARENT)
+            graph = sys.modules["omh_desktop_bundle.delegation_graph"]
+            with mock.patch.object(graph, "session_usage", side_effect=RuntimeError("state.db is locked")):
+                failed = plugin_api.hud_payload(home.hermes, PARENT)
+        self.assertEqual(failed["session_usage"], {"session_id": PARENT, "error": "RuntimeError: state.db is locked"})
+        self.assertNotIn("error", failed, "the reader's payload is not an error record")
+        def reader_part(payload: dict) -> dict:
+            # The open activity's age is the payload's one clock-dependent figure (null here, nothing is open).
+            rest = {key: value for key, value in payload.items() if key != "session_usage"}
+            rest["activity"] = {key: value for key, value in (rest.get("activity") or {}).items()
+                                if key != "oldest_open_elapsed_seconds"}
+            return rest
+
+        self.assertEqual(reader_part(failed), reader_part(read))
+
+    def test_a_big_run_or_a_narrow_pane_is_drawn_as_the_tree(self) -> None:
+        self.assertEqual(plugin_api.SMALL_GRAPH_LANES, dag_block.SMALL_GRAPH_LANES)
+        small = plugin_api.delegation_drawing(parallel(plugin_api.SMALL_GRAPH_LANES), 60)
+        big = plugin_api.delegation_drawing(parallel(plugin_api.SMALL_GRAPH_LANES + 1), 60)
+        narrow = plugin_api.delegation_drawing(owner_mock(), 20)
+        self.assertEqual((small["layout"], big["layout"], narrow["layout"]), ("box", "tree", "tree"))
+        self.assertTrue(all(len("".join(seg["text"] for seg in line)) <= 20 for line in narrow["lines"]))
+        self.assertLessEqual(len(big["lines"]), plugin_api.TREE_MAX_LINES)
+        # The width asked for is kept inside the renderer's floor and a ceiling no pane reaches.
+        self.assertEqual(plugin_api.delegation_drawing(owner_mock(), 2)["cols"], plugin_api.MIN_COLS)
+        self.assertEqual(plugin_api.delegation_drawing(owner_mock(), 10_000)["cols"], plugin_api.MAX_COLS)
+
+    def test_a_wide_character_segment_carries_the_cells_the_renderer_gave_it(self) -> None:
+        """Mutation: drop `cells`, or send it for every segment."""
+        drawing = plugin_api.delegation_drawing(nested(), 43)
+        segments = [segment for line in drawing["lines"] for segment in line]
+        wide = [segment for segment in segments if "cells" in segment]
+        self.assertEqual([(segment["text"], segment["cells"]) for segment in wide], [("인증 모듈 문서 정리", 19)])
+        self.assertTrue(all("cells" not in segment for segment in segments if segment["text"].isascii()))
+
+    def test_a_drawing_that_fails_is_a_record_beside_a_hud_that_still_reads(self) -> None:
+        graph = {**owner_mock(), "status": "active"}
+        reader = plugin_api.load_reader()
+        # A fresh payload per read, as the reader answers: the route adds the drawing to the one it is handed.
+        with mock.patch.object(reader, "read_omh_hud", side_effect=lambda *_a, **_k: {"active": True, "delegation_graph": graph}):
+            drawn = plugin_api.hud_payload(self.hermes_home, "s", cols=44)
+            with mock.patch.object(plugin_api, "delegation_drawing", side_effect=ValueError("bad graph")):
+                failed = plugin_api.hud_payload(self.hermes_home, "s", cols=44)
+            inactive = {"active": True, "delegation_graph": {**graph, "status": "inactive"}}
+            with mock.patch.object(reader, "read_omh_hud", side_effect=lambda *_a, **_k: dict(inactive)):
+                quiet = plugin_api.hud_payload(self.hermes_home, "s", cols=44)
+        self.assertEqual(drawn["delegation_drawing"].get("layout"), "box", drawn["delegation_drawing"])
+        self.assertEqual(failed["delegation_drawing"], {"error": "ValueError: bad graph", "schema_version": "omh_desktop_dag/v1"})
+        self.assertTrue(failed["active"])
+        self.assertNotIn("delegation_drawing", quiet)
+
     def test_hud_payload_reads_an_empty_hermes_home_without_raising_or_writing(self) -> None:
         before = sorted(str(path) for path in self.root.rglob("*"))
         payload = plugin_api.hud_payload(self.hermes_home, "")
@@ -791,8 +1235,49 @@ class DesktopBackendTests(unittest.TestCase):
         with patch_modules({"hermes_constants": None}):
             with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.hermes_home)}):
                 self.assertEqual(plugin_api.resolve_hermes_home(), self.hermes_home)
-            with mock.patch.dict(os.environ, {"HERMES_HOME": ""}):
-                self.assertEqual(plugin_api.resolve_hermes_home(), Path.home() / ".hermes")
+            with mock.patch.dict(os.environ, {"HERMES_HOME": "", "HERMES_DATA_DIR_SUFFIX": ""}):
+                expected = (
+                    Path(os.environ["LOCALAPPDATA"]) / "hermes"
+                    if os.name == "nt"
+                    else Path.home() / ".hermes"
+                )
+                self.assertEqual(plugin_api.resolve_hermes_home(), expected)
+
+    def test_resolve_hermes_home_uses_windows_default_without_host_or_env(self) -> None:
+        local_appdata = self.root / "local-appdata"
+        with patch_modules({"hermes_constants": None}):
+            with mock.patch.dict(
+                os.environ,
+                {"HERMES_HOME": "", "LOCALAPPDATA": str(local_appdata), "HERMES_DATA_DIR_SUFFIX": "-test"},
+            ):
+                with mock.patch.object(plugin_api.sys, "platform", "win32"):
+                    self.assertEqual(
+                        plugin_api.resolve_hermes_home(),
+                        local_appdata / "hermes-test",
+                    )
+
+    def test_resolve_hermes_home_fallback_matches_the_bundle_platform_default(self) -> None:
+        # plugin_api.py is imported standalone, so its platform default is a
+        # copy of runtime_paths.platform_default_hermes_home. Pin the copy to
+        # the original on every branch so the two cannot drift apart.
+        local_appdata = self.root / "local-appdata"
+        cases = (
+            ("win32", {"LOCALAPPDATA": str(local_appdata), "HERMES_DATA_DIR_SUFFIX": ""}),
+            ("win32", {"LOCALAPPDATA": str(local_appdata), "HERMES_DATA_DIR_SUFFIX": "-dev"}),
+            ("win32", {"LOCALAPPDATA": "", "HERMES_DATA_DIR_SUFFIX": ""}),
+            ("linux", {"HERMES_DATA_DIR_SUFFIX": ""}),
+            ("darwin", {"HERMES_DATA_DIR_SUFFIX": "-dev"}),
+        )
+        with patch_modules({"hermes_constants": None}):
+            for platform, env in cases:
+                with self.subTest(platform=platform, env=env), \
+                        mock.patch.dict(os.environ, {"HERMES_HOME": "", **env}), \
+                        mock.patch.object(plugin_api.sys, "platform", platform), \
+                        mock.patch.object(runtime_paths.sys, "platform", platform):
+                    self.assertEqual(
+                        plugin_api.resolve_hermes_home(),
+                        runtime_paths.platform_default_hermes_home(),
+                    )
 
     def test_router_exists_exactly_when_fastapi_does(self) -> None:
         # OMH declares no dependency on FastAPI; the route is the host's
@@ -810,8 +1295,6 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(manifest, {"name": "omh", "api": "plugin_api.py", "tab": {"hidden": True}})
         self.assertEqual(manifest["name"], _plugin_yaml_name())
         self.assertTrue((MANIFEST.parent / manifest["api"]).is_file())
-
-
 
 
 class DesktopPluginFileTests(unittest.TestCase):
@@ -863,6 +1346,13 @@ class DesktopPluginFileTests(unittest.TestCase):
         # decoration set any higher would reach the notes beside it.
         struck = [rule.strip() for rule in re.findall(r"([^\n{]+)\{[^}]*line-through", css)]
         self.assertEqual(struck, [".omh-pane-item[data-state=done] .omh-pane-item-label"])
+
+
+def _split_at_dag(render: dict) -> tuple[list[dict], list[dict]]:
+    """The pane's nodes above the DAG block (the usage board among them) and from its `DAG` header on."""
+    nodes = render["structure"]
+    head = next((at for at, node in enumerate(nodes) if node["className"] == "omh-pane-section-label" and node["text"] == "DAG"), len(nodes))
+    return nodes[:head], nodes[head:]
 
 
 @unittest.skipUnless(NODE, "node is not installed; the widget harness needs it")
@@ -956,13 +1446,16 @@ class DesktopPluginNodeTests(unittest.TestCase):
         self.assertEqual(render["refetchInterval"], 5000)
         self.assertTrue(render["enabled"])
         self.assertTrue(render["keepsPreviousData"])
-        self.assertEqual(render["queryKey"], ["omh", "hud", "20260924_101010_abc123"])
-        self.assertEqual(render["restCalls"], ["/hud?session=20260924_101010_abc123"])
+        self.assertEqual(render["queryKey"], ["omh", "hud", "20260924_101010_abc123", 41])
+        self.assertEqual(render["restCalls"], ["/hud?session=20260924_101010_abc123&cols=41"])
 
     def test_the_pane_draws_the_plan_and_the_agent_rows_structurally(self) -> None:
         pane = self._pane("open_with_payload")
         self.assertEqual(pane, [
             "OMH", "1 running", "this session", "2 tools · 4m 2s",
+            # The usage board leads: the stream's counts (no recorded row here), its cost marked as unvouched.
+            "USAGE", "9 calls", "Tokens", "45.2k", "↓5.2k out · 40.0k in", "Cache hit", "—", "Cost", "~$0.0120",
+            "Context", "—", "TPS", "—", "TTFT", "—", "send → first token",
             "PLAN", "Desktop check", "1/3", "Research", "1/1", "✓", "Read the pane spec",
             "Build", "0/2", "●", "Draw the structured pane", "○", "Screenshot the result",
             "waiting: needs the app", "2 subagents · 1 running",
@@ -988,7 +1481,7 @@ class DesktopPluginNodeTests(unittest.TestCase):
     def test_the_pane_draws_maestro_board_dag_and_a_finished_plan(self) -> None:
         pane = self._pane("maestro_and_board")
         self.assertEqual(pane, [
-            "OMH", "1 running", "this session", "repeat x3 blocked", "board 2 queued, 1 running",
+            "OMH", "1 running", "1 blocked", "this session", "repeat x3 blocked", "board 2 queued, 1 running",
             "board dispatcher not seen", "yolo on", "PLAN", "Ship the pane", "✓ 1/2 (1 skipped)",
             "✓", "Build it", "–", "Benchmark it", "skipped: no bench harness", "ROUTES", "2",
             "⠋", "Refactor the router", "run-42", "(codex/maestro gpt-5.6)", "running", "30s",
@@ -1054,7 +1547,7 @@ class DesktopPluginNodeTests(unittest.TestCase):
         self.assertEqual(render["byId"]["hud"], [
             "OMH", "reader error", "all sessions", "OMH backend: RuntimeBindingError: OMH home is not configured",
         ])
-        self.assertEqual(render["restCalls"], ["/hud"])
+        self.assertEqual(render["restCalls"], ["/hud?cols=41"])
 
     def test_a_transport_error_degrades_to_backend_unavailable(self) -> None:
         render = self._drive()["renders"]["transport_error"]
@@ -1089,7 +1582,7 @@ class DesktopPluginNodeTests(unittest.TestCase):
         )
         self.assertEqual(
             formatters["hudStateLabel"],
-            ["idle", "2 running", "2 done", "3 running"],
+            ["idle", "2 running · 1 blocked", "2 done", "3 running · 1 blocked"],
         )
 
 
@@ -1158,8 +1651,8 @@ class DesktopPluginNodeTests(unittest.TestCase):
         bars = [node for node in structure if node["className"] == "omh-pane-bar-fill"]
         self.assertEqual([(node["style"], node["done"]) for node in bars], [({"width": "50%"}, "true")])
         css = report["style"]["css"]
-        self.assertIn(".omh-pane-bar-fill[data-done=true]{background:var(--ui-text-quaternary)}", css)
-        self.assertIn(".omh-pane-item[data-state=skipped] .omh-pane-item-label{color:var(--ui-text-quaternary)}", css)
+        self.assertIn(".omh-pane-bar-fill[data-done=true]{background:var(--omh-mark)}", css)
+        self.assertIn(".omh-pane-item[data-state=skipped] .omh-pane-item-label{color:var(--omh-text-readable)}", css)
         self.assertEqual(report["formatters"]["foldLabels"], [{"earlier": "✓ 3 done", "later": "… 1 later task"}])
 
     def test_neutral_telemetry_is_muted_and_only_yolo_on_is_destructive(self) -> None:
@@ -1211,6 +1704,66 @@ class DesktopPluginNodeTests(unittest.TestCase):
         self.assertIn("Pane refresh · 1 running", self._pane("catches_and_lanes"))
         self.assertIn("Graph-drawn child", self._pane("catches_and_lanes"))
 
+    def test_a_running_graph_is_the_backend_drawing_coloured_by_its_roles(self) -> None:
+        """Mutation: draw the lane rows beside the drawing, wrap it, or drop a segment's tone."""
+        render = self._drive()["renders"]["drawn_graph"]
+        pane = self._pane("drawn_graph")
+        drawn = [node for node in render["structure"] if node["className"] == "omh-pane-dag"]
+        self.assertEqual(len(drawn), 1)
+        self.assertEqual(drawn[0]["text"], "".join("".join(seg["text"] for seg in line) or " " for line in DRAWING["lines"]))
+        self.assertNotIn("omh-pane-lane", {node["className"] for node in render["structure"]})
+        self.assertIn("DELEGATION", pane)
+        titles = {node["text"]: node["className"] for node in render["structure"] if "omh-pane-dag-title" in node["className"]}
+        self.assertEqual(titles["Graph-drawn child"], "omh-pane-accent omh-pane-dag-title")
+        self.assertEqual(titles["Stuck child"], "omh-pane-warn omh-pane-dag-title")
+        self.assertIn("omh-pane-dag-card", {node["className"] for node in render["structure"]}, "the drawing sits in a card")
+        css = self._drive()["style"]["css"]
+        self.assertIn("white-space:pre;overflow-x:auto", css[css.index(".omh-pane-dag{"):])
+
+    def test_a_wide_segment_is_held_to_the_renderers_cells(self) -> None:
+        structure = self._drive()["renders"]["wide_drawn"]["structure"]
+        wide = [node for node in structure if "omh-pane-dag-wide" in node["className"]]
+        self.assertEqual([(node["text"], node["style"]) for node in wide], [("인증 모듈", {"width": "9ch"})])
+        css = self._drive()["style"]["css"]
+        self.assertIn(".omh-pane-dag-wide{display:inline-block;overflow:hidden;vertical-align:top}", css)
+
+    def test_without_a_usable_drawing_the_lanes_are_rows_and_a_settled_run_is_one_line(self) -> None:
+        failed = self._drive()["renders"]["drawing_error"]["structure"]
+        self.assertNotIn("omh-pane-dag", {node["className"] for node in failed})
+        self.assertIn("Stuck child", {node["text"] for node in failed if node["className"] == "omh-pane-lane-title"})
+        settled = self._drive()["renders"]["settled_drawn"]["structure"]
+        self.assertNotIn("omh-pane-dag", {node["className"] for node in settled})
+        self.assertIn("DAG · Pane refresh · done 1/2 · 1 failed", self._pane("settled_drawn"))
+
+    def test_the_drawing_width_is_measured_and_sent_as_cols(self) -> None:
+        formatters = self._drive()["formatters"]
+        self.assertEqual(formatters["hudPath"], ["/hud?cols=44", "/hud?session=s%201", "/hud", "/hud?session=s&cols=61"])
+        # (320 - 46) / 6.6 and (420 - 46) / 6.6 cells; nothing measured is no width; the probe is removed each time.
+        self.assertEqual(formatters["measureCellsAt"], [[41, ["omh-pane-dag-probe"]], [56, ["omh-pane-dag-probe"]],
+                                                        [0, ["omh-pane-dag-probe"]]])
+        self.assertIn("export const DEFAULT_DRAWING_CELLS = 41", PLUGIN_JS.read_text(encoding="utf-8"))
+
+    def test_drawing_roles_take_the_tui_meaning_of_each_state(self) -> None:
+        self.assertEqual(self._drive()["formatters"]["segmentTone"], [
+            "accent", "mark", "tertiary", "muted", "error", "warn", "error", "mark", "mark", "accent", "secondary",
+            "mark", "tertiary", "", "",
+        ])
+
+    def test_the_pane_keeps_desktops_sans_and_takes_the_tui_mood_from_tokens(self) -> None:
+        """Mutation: set the pane in monospace, drop a mood token, or let a word take the faintest text token."""
+        css = self._drive()["style"]["css"]
+        pane = css[css.index(".omh-pane{") : css.index("}", css.index(".omh-pane{"))]
+        self.assertIn("font-family:var(--font-sans", pane)
+        for token in ("--omh-warn:color-mix(in srgb,var(--ui-yellow) 72%,var(--ui-text-primary))",
+                      "--omh-edge:color-mix(in srgb,var(--ui-purple) 55%,var(--background))",
+                      "--omh-label:color-mix(in srgb,var(--ui-orange) 65%,var(--ui-text-primary))"):
+            self.assertIn(token, css)
+        self.assertIn(".omh-pane-warn{color:var(--omh-warn)}", css)
+        self.assertIn(".omh-pane-muted{color:var(--omh-text-readable)}", css)
+        pane_rules = css[: css.index(".omh-bar{")]
+        self.assertNotIn("color:var(--ui-text-quaternary)", pane_rules, "no pane word takes the faintest token")
+        self.assertNotRegex(css, r"gradient|box-shadow|text-shadow|filter:")
+
     def test_route_and_state_are_separate_fixed_grid_cells(self) -> None:
         report = self._drive()
         subrows = [node for node in report["renders"]["maestro_and_board"]["structure"] if node["className"] == "omh-agent-sub"]
@@ -1245,13 +1798,78 @@ class DesktopPluginNodeTests(unittest.TestCase):
         live = report["renders"]["runtime_only"]
         self.assertEqual(live["byId"]["hud"][:2], ["OMH", "active"])
         self.assertEqual(live["byId"]["status"], ["OMH", "active"])
-        state = next(node for node in live["structure"] if "omh-pane-state-text" in node["className"])
+        state = next(node for node in live["structure"] if "omh-pane-state-seg" in node["className"])
         self.assertIn("omh-pane-accent", state["className"])
         self.assertEqual([dot["tone"] for dot in live["dots"]], ["good"])
         idle = report["renders"]["global_idle"]
-        state = next(node for node in idle["structure"] if "omh-pane-state-text" in node["className"])
+        state = next(node for node in idle["structure"] if "omh-pane-state-seg" in node["className"])
         self.assertIn("omh-pane-tertiary", state["className"])
         self.assertEqual(idle["dots"], [])
+
+    def test_a_failed_lane_is_its_own_word_in_the_header_and_the_status_bar(self) -> None:
+        renders = self._drive()["renders"]
+        failed = renders["failed_lane"]
+        self.assertEqual(failed["tally"]["failed"], 1)
+        self.assertEqual(failed["tally"]["blocked"], 0)
+        self.assertEqual(failed["byId"]["hud"][:3], ["OMH", "1 running", "1 failed"])
+        self.assertEqual(failed["byId"]["status"], ["OMH", "1 running", "1 failed"])
+        segments = [node for node in failed["structure"] if "omh-pane-state-seg" in node["className"]]
+        self.assertEqual([node["text"] for node in segments], ["1 running", "1 failed"])
+        self.assertIn("omh-pane-accent", segments[0]["className"])
+        self.assertIn("omh-pane-error", segments[1]["className"])
+        self.assertEqual([dot["tone"] for dot in failed["dots"]], ["good"])
+        # With nothing running, failed leads, blocked follows, and the dot is red.
+        held = renders["failed_without_running"]
+        self.assertEqual(held["byId"]["hud"][:3], ["OMH", "1 failed", "1 blocked"])
+        self.assertEqual(held["byId"]["status"], ["OMH", "1 failed", "1 blocked"])
+        self.assertEqual([dot["tone"] for dot in held["dots"]], ["bad"])
+        # A failed route row counts as failed, a blocked one as blocked.
+        rows = renders["failed_row"]
+        self.assertEqual((rows["tally"]["failed"], rows["tally"]["blocked"]), (1, 1))
+        self.assertEqual(rows["byId"]["status"], ["OMH", "1 failed", "1 blocked"])
+        self.assertIn("1 failed", rows["statusDetail"])
+        # The header and the status bar never disagree.
+        for name, render in renders.items():
+            data = SCENARIOS.get(name, {}).get("data")
+            if not data or not data.get("active") or data.get("error"):
+                continue
+            with self.subTest(name=name):
+                head = [node["text"] for node in render["structure"] if "omh-pane-state-seg" in node["className"]]
+                self.assertEqual(head, render["byId"]["status"][1 : 1 + len(head)])
+
+    def test_a_korean_host_reads_the_failed_count_in_korean(self) -> None:
+        korean = self._drive()["korean"]["failed_lane"]
+        self.assertEqual(korean["byId"]["hud"][:3], ["OMH", "1개 실행 중", "1개 실패"])
+        self.assertEqual(korean["byId"]["status"], ["OMH", "1개 실행 중", "1개 실패"])
+
+    def test_a_narrow_pane_stacks_the_lane_model_under_its_title(self) -> None:
+        report = self._drive()
+        css = report["style"]["css"]
+        self.assertIn("container-type:inline-size", css)
+        narrow = css[css.index("@container (max-width: 420px)") :]
+        narrow = narrow[: narrow.index("}}") + 2]
+        self.assertIn(".omh-pane-lane{grid-template-columns:14px minmax(0,1fr) 64px}", narrow)
+        self.assertIn(".omh-pane-lane-model{grid-column:2/-1;grid-row:2;max-width:none;padding-left:var(--omh-lane-indent,0)}", narrow)
+        self.assertIn(".omh-pane-lane-state{grid-column:3;grid-row:1}", narrow)
+        # The lane's indent rides a variable: the title always takes it, the model only on its own
+        # line in a narrow pane, so a wide row's model cell is not narrowed by it.
+        self.assertIn(".omh-pane-lane-title{min-width:0;padding-left:var(--omh-lane-indent,0);", css)
+        wide_model = css[css.index(".omh-pane-lane-model{") : css.index("}", css.index(".omh-pane-lane-model{"))]
+        self.assertNotIn("omh-lane-indent", wide_model)
+        lanes = [node for node in report["renders"]["failed_lane"]["structure"] if node["className"] == "omh-pane-lane"]
+        self.assertEqual(len(lanes), 2)
+        # `broke` runs after `drawn`, one step in: its row carries the indent, the top lane none.
+        self.assertEqual([node.get("style") for node in lanes], [None, {"--omh-lane-indent": "12px"}])
+        model = next(node for node in report["renders"]["failed_lane"]["structure"] if "omh-pane-lane-model" in node["className"])
+        self.assertEqual(model["text"], "gpt-5.6")
+
+    def test_text_the_user_reads_is_darker_than_the_hint_role(self) -> None:
+        css = self._drive()["style"]["css"]
+        self.assertIn("--omh-text-readable:color-mix(in srgb,var(--ui-text-secondary),var(--ui-text-tertiary))", css)
+        for rule in (".omh-pane-scope{", ".omh-pane-item-note{", ".omh-pane-summary{", ".omh-pane-notice{", ".omh-pane-tertiary{"):
+            with self.subTest(rule=rule):
+                body = css[css.index(rule) : css.index("}", css.index(rule))]
+                self.assertIn("color:var(--omh-text-readable)", body)
 
     def test_row_tool_counts_use_the_right_plural(self) -> None:
         extras = [figures["extras"] for figures in self._drive()["formatters"]["rowFigures"]]
@@ -1294,6 +1912,301 @@ class DesktopPluginNodeTests(unittest.TestCase):
         self.assertIn("kanban/미배정(gpt-5.6:medium)", tips)
         self.assertNotIn(" tok", tips)
         self.assertNotIn("included", tips)
+
+    @staticmethod
+    def _classed(render: dict, name: str) -> list[str]:
+        """The texts of one class within the DAG block; the usage board above it reuses the figure cells' classes."""
+        return [node["text"] for node in _split_at_dag(render)[1] if name in node["className"].split()]
+
+    @staticmethod
+    def _board(render: dict, name: str) -> list[str]:
+        """The texts of one class above the DAG block: the usage board's."""
+        return [node["text"] for node in _split_at_dag(render)[0] if name in node["className"].split()]
+
+    def test_a_dag_ulw_run_is_drawn_as_cards_with_the_figures_the_backend_read(self) -> None:
+        """Mutation: count the output in the hit rate, drop a lane's estimate mark, or draw the backend text instead."""
+        render = self._drive()["renders"]["dag_cards"]
+        self.assertEqual(self._classed(render, "omh-pane-dv-kpi-label"), ["Tokens", "Cache hit", "Cost", "Node time"])
+        # 1600 + 9300 + 1100 prompt + 630 out; 9300 / 12000 read; two priced lanes, one of them estimated; 47s + 31s.
+        self.assertEqual(self._classed(render, "omh-pane-dv-kpi-value"), ["12.6k", "77.5%", "~$0.0184", "1m 18s"])
+        self.assertEqual(
+            self._classed(render, "omh-pane-dv-kpi-sub"),
+            ["↓630 out · 12.0k in", "9.3k of 12.0k prompt", "2/2 nodes priced", "sum of 2 nodes"],
+        )
+        self.assertEqual(self._classed(render, "omh-pane-dv-title"), ["Write a.txt", "Write b.txt", "Sum", "Check"])
+        self.assertEqual(self._classed(render, "omh-pane-dv-path-l"), ["Critical path", "Bottlenecks"])
+        rows = [[cell["text"] for cell in node["cells"]] for node in render["structure"] if "omh-pane-dv-mrow" in node["className"].split()]
+        self.assertEqual(rows[1:], [["claude-haiku-5-5", "2", "12.6k", "77.5%", "~$0.0184"]])
+        links = [node["text"] for node in render["structure"] if node["className"] == "omh-pane-dv-chip omh-pane-dv-link"]
+        self.assertEqual(links, ["Write a.txt", "Sum", "Check", "Sum (blocks 1)"])
+        self.assertNotIn("omh-pane-dag", {node["className"] for node in render["structure"]}, "no second drawing beside the cards")
+
+    def test_a_fanout_run_uses_cards_without_claiming_missing_topology(self) -> None:
+        render = self._drive()["renders"]["fanout_cards"]
+        self.assertEqual(self._classed(render, "omh-pane-dv-title"), ["Write a.txt", "Write b.txt", "Sum", "Check"])
+        self.assertEqual(self._classed(render, "omh-pane-dv-path-l"), [])
+        self.assertEqual(self._classed(render, "omh-pane-dv-kpi-label"), ["Tokens", "Cache hit", "Cost", "Node time"])
+        self.assertNotIn("omh-pane-dag", {node["className"] for node in render["structure"]})
+
+    def test_a_run_past_the_card_limit_keeps_its_figures_and_draws_the_backend_drawing(self) -> None:
+        render = self._drive()["renders"]["dag_beyond_cards"]
+        self.assertEqual(self._classed(render, "omh-pane-dv-title"), [])
+        self.assertIn("omh-pane-dag", {node["className"] for node in render["structure"]})
+        self.assertEqual(self._classed(render, "omh-pane-more"), ["+3 more"])
+        # Nothing counted yet: a dash and a short note, never `0 of 0 prompt` or `sum of 0 nodes`.
+        self.assertEqual(self._classed(render, "omh-pane-dv-kpi-value"), ["—", "—", "—", "—"])
+        self.assertEqual(self._classed(render, "omh-pane-dv-kpi-sub"), ["", "", "no usage yet", ""])
+        self.assertIn("Step 0 (blocks 16)", self._classed(render, "omh-pane-dv-chip-t"))
+
+    def test_only_a_run_with_a_topology_takes_the_card_view(self) -> None:
+        renders = self._drive()["renders"]
+        cards = {"omh-pane-dv-canvas", "omh-pane-dv-card", "omh-pane-dv-title"}
+        for name in ("drawn_graph", "wide_drawn", "drawing_error", "settled_lanes", "graph_and_other", "failed_lane", "catches_and_lanes"):
+            with self.subTest(name=name):
+                self.assertFalse([node for node in renders[name]["structure"] if cards & set(node["className"].split())])
+
+    def test_a_settled_dag_ulw_run_is_one_summary_line_not_cards(self) -> None:
+        """Mutation: take the card view for a run whose every lane has settled (the TUI clears its block at run end)."""
+        render = self._drive()["renders"]["dag_settled"]
+        structure = render["structure"]
+        self.assertFalse([node for node in structure if {"omh-pane-dv-canvas", "omh-pane-dv-card", "omh-pane-dv-stats"}
+                          & set(node["className"].split())])
+        runs = [node["text"] for node in structure if node["className"] == "omh-pane-run"]
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].startswith("DAG · Write and sum · "), runs[0])
+        self.assertNotIn("DAG", [node["text"] for node in structure if node["className"] == "omh-pane-section-label"])
+
+    def test_a_settled_dag_ulw_run_keeps_its_figures_under_the_line(self) -> None:
+        """#2684. Mutation: drop the figures when the run settles, or keep them for a run that counted nothing."""
+        render = self._drive()["renders"]["dag_settled"]
+        run_kpis = [node for node in render["structure"]
+                    if "omh-pane-dv-kpis" in node["className"].split() and "omh-pane-ub-kpis" not in node["className"]]
+        self.assertEqual(len(run_kpis), 1)
+        labels = [node["text"] for node in render["structure"] if "omh-pane-dv-kpi-label" in node["className"].split()]
+        values = [node["text"] for node in render["structure"] if "omh-pane-dv-kpi-value" in node["className"].split()]
+        figures = dict(zip(labels[-4:], values[-4:]))
+        self.assertEqual(figures, {"Tokens": "7.7k", "Cache hit": "80.5%", "Cost": "$0.0123", "Node time": "59s"})
+        uncounted = self._drive()["renders"]["dag_settled_uncounted"]["structure"]
+        self.assertFalse([node for node in uncounted
+                          if "omh-pane-dv-kpis" in node["className"].split() and "omh-pane-ub-kpis" not in node["className"]])
+
+    def test_a_partly_priced_run_marks_its_cost_as_a_floor(self) -> None:
+        """Mutation: show the priced lanes' sum as the run's cost, in the figures or in the by-model row."""
+        render = self._drive()["renders"]["dag_partial_cost"]
+        costs = dict(zip(self._classed(render, "omh-pane-dv-kpi-label"), self._classed(render, "omh-pane-dv-kpi-value")))
+        self.assertEqual(costs["Cost"], "≥$0.0123")
+        self.assertIn("1/2 nodes priced", self._classed(render, "omh-pane-dv-kpi-sub"))
+        rows = [[cell["text"] for cell in node["cells"]] for node in render["structure"] if "omh-pane-dv-mrow" in node["className"].split()]
+        self.assertEqual(rows[1:], [["claude-haiku-5-5", "2", "12.6k", "77.5%", "≥$0.0123"]])
+        self.assertEqual(self._drive()["formatters"]["sumCostText"],
+                         ["~$0.0184", "≥$0.0123", "—", "$0.0000", "≥$0.0300", "≥$0.0100"])
+        self.assertEqual(self._drive()["formatters"]["costText"], ["$0.0123", "$0.0000", "—", "~$0.0061", "≥$0.0061"],
+                         "a provider-reported zero is a zero, not a dash; a floor has one form, never `≥~`")
+
+    def test_the_lane_detail_legend_shows_a_reported_zero_as_zero(self) -> None:
+        """Mutation: show a reported 0 as a dash beside its 0.0% share, or a count the lane never reported as 0."""
+        read_only, output_only, all_zero = self._drive()["formatters"]["laneLegend"]
+        self.assertEqual([(row["label"], row["count"], row["share"]) for row in read_only],
+                         [("Cache read", "4.0k", "100.0%"), ("Uncached input", "0", "0.0%"), ("Cache write", "0", "0.0%")])
+        self.assertEqual([(row["count"], row["share"]) for row in output_only], [("—", "—")] * 3,
+                         "a lane with no usage reported its output alone")
+        self.assertEqual([(row["count"], row["share"]) for row in all_zero], [("0", "—")] * 3)
+
+    def test_the_dag_block_is_named_dag_and_its_stats_come_before_the_dag(self) -> None:
+        """Mutation: label it `DELEGATION` again, or put the stats back under the cards."""
+        renders = self._drive()["renders"]
+        for name, drawn in (("dag_cards", "omh-pane-dv-canvas"), ("fanout_cards", "omh-pane-dv-canvas"), ("dag_beyond_cards", "omh-pane-dag")):
+            with self.subTest(name=name):
+                labels = [node["text"] for node in renders[name]["structure"] if node["className"] == "omh-pane-section-label"]
+                self.assertIn("DAG", labels)
+                self.assertNotIn("DELEGATION", labels)
+                classes = [node["className"].split() for node in _split_at_dag(renders[name])[1]]
+                at = {key: next(index for index, names in enumerate(classes) if key in names) for key in ("omh-pane-dv-kpis", "omh-pane-dv-stats", drawn)}
+                self.assertLess(at["omh-pane-dv-kpis"], at["omh-pane-dv-stats"])
+                self.assertLess(at["omh-pane-dv-stats"], at[drawn])
+        # A run with no topology stays a delegation, as before.
+        self.assertIn("DELEGATION", [node["text"] for node in renders["settled_lanes"]["structure"] if node["className"] == "omh-pane-section-label"])
+
+    def test_the_usage_board_leads_the_pane_with_this_chats_figures(self) -> None:
+        """Mutation: count the output in the hit rate, take the stream's counts over the recorded row, or show it below the plan."""
+        render = self._drive()["renders"]["usage_board"]
+        self.assertEqual(self._board(render, "omh-pane-section-label")[0], "USAGE")
+        self.assertEqual(self._board(render, "omh-pane-section-title")[0], "gpt-6-luna")
+        self.assertEqual(self._board(render, "omh-pane-section-count")[0], "4 calls")
+        self.assertEqual(self._board(render, "omh-pane-dv-kpi-label"), ["Tokens", "Cache hit", "Cost", "Context", "TPS", "TTFT"])
+        # The recorded row: 1600 + 9300 + 1100 prompt + 630 out; 9300 / 12000 read; $0.5 priced. Then the stream's
+        # window (15.7k of 100.0k), its rolling speed, and the two waits this window timed (1850 ms, 410 ms).
+        self.assertEqual(self._board(render, "omh-pane-dv-kpi-value"), ["12.6k", "77.5%", "$0.5000", "16%", "42 t/s", "410ms"])
+        self.assertEqual(
+            self._board(render, "omh-pane-dv-kpi-sub"),
+            ["↓630 out · 12.0k in", "9.3k of 12.0k prompt", "", "15.7k of 100.0k", "avg call 3.2s", "avg 1.1s · 2 turns"],
+        )
+        # The composition: what the prompt is made of, as shares of the prompt itself (the window is the Context cell's).
+        self.assertEqual(self._board(render, "omh-pane-dv-legend-k"), ["System prompt", "Tools", "Conversation"])
+        self.assertEqual(self._board(render, "omh-pane-dv-legend-n"), ["3.0k", "6.0k", "6.7k"])
+        self.assertEqual(self._board(render, "omh-pane-dv-legend-p"), ["19.1%", "38.2%", "42.7%"])
+        self.assertEqual(self._board(render, "omh-pane-dv-stats-c"), ["~15.7k"])
+        pane = " ".join(render["byId"]["hud"])
+        self.assertLess(pane.index("USAGE"), pane.index("PLAN"))
+
+    def test_the_board_never_shows_another_chats_recorded_row_or_a_failed_read(self) -> None:
+        """Mutation: show the row the last poll read for the chat before a switch, or a failed read's row as zeros."""
+        renders = self._drive()["renders"]
+        for name in ("usage_board_switched", "usage_board_read_failed"):
+            with self.subTest(name=name):
+                values = dict(zip(self._board(renders[name], "omh-pane-dv-kpi-label"),
+                                  self._board(renders[name], "omh-pane-dv-kpi-value")))
+                # The stream's 12000 prompt and 630 out; its hit rate; its cost unvouched (the row's $0.5000 is gone).
+                self.assertEqual((values["Tokens"], values["Cache hit"], values["Cost"]), ("12.6k", "77.0%", "—"))
+                self.assertNotIn("9.3k of 12.0k prompt", self._board(renders[name], "omh-pane-dv-kpi-sub"))
+
+    def test_a_chat_with_only_a_stream_shows_what_it_carries_and_dashes_for_the_rest(self) -> None:
+        render = self._drive()["renders"]["usage_board_stream_only"]
+        self.assertEqual(self._board(render, "omh-pane-dv-kpi-value"), ["4.3k", "50.0%", "—", "—", "—", "—"])
+        self.assertEqual(self._board(render, "omh-pane-dv-kpi-sub"), ["↓300 out · 4.0k in", "", "unpriced", "", "", "send → first token"])
+        self.assertEqual(self._board(render, "omh-pane-dv-legend-k"), [], "no breakdown yet, so no composition")
+
+    def test_a_chat_nothing_has_reported_on_gets_no_board(self) -> None:
+        render = self._drive()["renders"]["usage_board_unknown"]
+        labels = [node["text"] for node in render["structure"] if node["className"] == "omh-pane-section-label"]
+        self.assertTrue(labels)
+        self.assertNotIn("USAGE", labels, "an empty board is noise above the plan")
+
+    def test_the_composition_is_asked_for_only_while_a_chat_is_idle_and_never_shown_under_another(self) -> None:
+        """Mutation: ask mid-turn, ask with no chat named, or keep the last answer across a chat switch."""
+        renders = self._drive()["renders"]
+        idle = renders["usage_board"]["context"]
+        self.assertEqual(idle["queryKey"], ["omh", "context", "rt-1", 4, 1], "a call or a compression asks again")
+        self.assertTrue(idle["enabled"])
+        self.assertEqual(idle["requests"], [["session.context_breakdown", {"session_id": "rt-1"}]])
+        self.assertTrue(idle["keepsOwnChat"])
+        self.assertTrue(idle["dropsOtherChat"])
+        self.assertFalse(renders["usage_board_busy"]["context"]["enabled"], "an estimate mid-turn is stale as it lands")
+        self.assertFalse(renders["open_with_payload"]["context"]["enabled"], "no chat is named, so there is nothing to ask about")
+
+    def test_the_first_token_wait_is_timed_per_chat_and_only_from_text(self) -> None:
+        """Mutation: end the wait on an empty chunk, share one clock between chats, or keep every turn."""
+        latency, speed, waits = (self._drive()["formatters"][key] for key in ("latencyText", "speedText", "ttftWaits"))
+        self.assertEqual(latency, ["", "0ms", "12ms", "999ms", "1.0s", "1.1s", "2.5s", ""])
+        self.assertEqual(speed, ["42 t/s", "9.4 t/s", "—", "—", "120 t/s"])
+        self.assertEqual(waits[0], [[False, True, False], {"s": [250]}])
+        self.assertEqual(waits[1], [[False, False, False, True], {"s": [90]}])
+        self.assertEqual(waits[2], [[False], {}], "a chunk with no turn start before it times nothing")
+        self.assertEqual(waits[3], [[False, False, True, True, False], {"b": [20], "a": [40]}])
+        # The re-sent start of t1 does not reset the wait (1100ms from the first start), then t2 times its own (300ms).
+        self.assertEqual(waits[4], [[False, False, True, False, True], {"s": [1100, 300]}])
+        self.assertEqual(waits[5], [[False, False, False, False], {}], "no chat id and no clock time the wait of nothing")
+        self.assertEqual(waits[6][1], {"s": list(range(2, 12))}, "the last ten turns")
+        self.assertTrue(all(waits[6][0][1::2]))
+
+    def test_a_dead_turn_never_times_the_next_one(self) -> None:
+        """Mutation: keep a start no text followed past the turn's end, keep a bare start over a newer one, or key
+        pending starts by turn so dead ones pile up."""
+        report = self._drive()["formatters"]
+        waits = report["ttftWaits"]
+        self.assertEqual(waits[7], [[False, False, False, True], {"s": [300]}], "interrupted, then a turn that streams")
+        self.assertEqual(waits[8], [[False, False, False, False, True], {"s": [250]}], "a late chunk of a failed turn")
+        self.assertEqual(waits[9], [[False, False, True], {"s": [200]}], "a bare start replaces the last one")
+        self.assertEqual(waits[10], [[False, False, True], {"s": [80]}], "another turn's chunk ends no wait")
+        self.assertEqual(report["ttftPending"], [["u"]], "one pending start per chat, gone at the turn's end")
+
+    def test_the_usage_board_model_reads_each_figure_from_its_own_source(self) -> None:
+        """Mutation: take the stream over the recorded row, drop the `~` from a cost the stream does not vouch for, or
+        show a recorded zero read as a dash."""
+        (streamed, recorded, zero_read, empty, calls_only, guessed, window, ragged,
+         other_chat, unnamed, failed, free, floor) = self._drive()["formatters"]["usageBoard"]
+
+        def cells(model: dict) -> dict:
+            return {cell["label"]: (cell["value"], cell["sub"]) for cell in model["cells"]}
+
+        self.assertEqual(
+            cells(streamed),
+            {"Tokens": ("4.3k", "↓300 out · 4.0k in"), "Cache hit": ("50.0%", ""), "Cost": ("~$0.0100", ""),
+             "Context": ("—", ""), "TPS": ("—", ""), "TTFT": ("—", "send → first token")},
+        )
+        self.assertEqual(
+            cells(recorded)["Tokens"], ("12.6k", "↓630 out · 12.0k in"), "the recorded row, not the stream's one-token counts"
+        )
+        self.assertEqual((cells(recorded)["Cache hit"], cells(recorded)["Cost"]), (("77.5%", "9.3k of 12.0k prompt"), ("~$0.0184", "")))
+        self.assertEqual(
+            [cell["ring"] for cell in recorded["cells"] if cell.get("ring")],
+            [{"input": 1600, "read": 9300, "write": 1100, "output": 630}],
+        )
+        self.assertEqual(cells(zero_read)["Cache hit"], ("0.0%", "0 of 12.0k prompt"))
+        self.assertEqual(cells(zero_read)["Cost"], ("—", "unpriced"))
+        self.assertIsNone(empty)
+        self.assertIsNone(calls_only, "a call count alone is no figure")
+        self.assertEqual(cells(guessed)["Context"], ("~5.0k", ""), "an estimate keeps its mark, and no window gives no percent")
+        self.assertEqual(cells(window)["Context"], ("25%", "8.0k of 32.0k"))
+        self.assertEqual(
+            [(part["label"], part["tokens"], part["share"]) for part in window["parts"]],
+            [("System prompt", 3000, 0.375), ("Conversation", 5000, 0.625)],
+        )
+        self.assertEqual([(part["label"], part["share"]) for part in ragged["parts"]], [("A", 1.0)])
+        self.assertEqual(ragged["sum"], 600)
+        # A row for another chat, for no named chat, or a failed read: the stream's figures, the row's left out.
+        for model in (other_chat, unnamed, failed):
+            self.assertEqual((cells(model)["Tokens"], cells(model)["Cost"]), (("4.3k", "↓300 out · 4.0k in"), ("—", "unpriced")))
+        self.assertEqual(cells(free)["Cost"], ("$0.0000", ""), "a provider-reported zero is a zero cost")
+        self.assertEqual(cells(floor)["Cost"], ("≥$0.5210", ""), "an unpriced part makes the priced sum a floor, as in the DAG")
+
+    def test_a_korean_host_reads_the_usage_board_in_korean(self) -> None:
+        hud = " ".join(self._drive()["korean"]["usage_board"]["byId"]["hud"])
+        for word in ("사용량", "호출 4회", "토큰", "캐시 적중", "비용", "컨텍스트", "100.0k 중 15.7k", "호출 평균 3.2s", "평균 1.1s · 2턴", "프롬프트 구성"):
+            with self.subTest(word=word):
+                self.assertIn(word, hud)
+        for english in ("USAGE", "Context", "Prompt composition", "avg call"):
+            self.assertNotIn(english, hud)
+
+    def test_dag_model_lays_out_layers_and_skips_edges_it_cannot_draw(self) -> None:
+        plain, fanout, with_noise, cyclic, no_topology, inactive, beyond, floor = self._drive()["formatters"]["dagModel"]
+        self.assertEqual(plain["layers"], [["d:r:a", "d:r:b"], ["d:r:sum"], ["d:r:chk"]])
+        self.assertEqual(plain["path"], ["d:r:a", "d:r:sum", "d:r:chk"])
+        self.assertEqual(plain["bottlenecks"], [{"id": "d:r:sum", "blocks": 1}])
+        self.assertEqual({lane["id"]: lane["blocks"] for lane in plain["lanes"]}, {"d:r:a": 2, "d:r:b": 2, "d:r:sum": 1, "d:r:chk": 0})
+        self.assertEqual(plain["total"], {"lanes": 2, "priced": 2, "input": 1600, "read": 9300, "write": 1100, "output": 630, "cost": 0.0184, "estimated": True,
+                                          "partial": False})
+        self.assertEqual((plain["seconds"], plain["timed"], plain["cards"]), (78, 2, True))
+        self.assertEqual([(entry["model"], entry["count"]) for entry in plain["models"]], [("claude-haiku-5-5", 2)])
+        self.assertEqual((fanout["cards"], fanout["path"], fanout["bottlenecks"]), (True, [], []))
+        self.assertEqual(fanout["layers"], [["f:a", "f:b"], ["f:sum"], ["f:chk"]])
+        self.assertEqual(fanout["total"], plain["total"])
+        self.assertEqual((with_noise["layers"], with_noise["edges"]), (plain["layers"], plain["edges"]))
+        # Two lanes waiting on each other still each get one layer; the model must not loop.
+        self.assertEqual(sum(len(layer) for layer in cyclic["layers"]), 4)
+        self.assertIsNone(no_topology)
+        self.assertIsNone(inactive)
+        self.assertEqual((beyond["cards"], len(beyond["layers"]), beyond["hidden"]), (False, 17, 3))
+        self.assertEqual(beyond["total"]["lanes"], 0)
+        self.assertEqual((floor["total"]["priced"], floor["total"]["partial"]), (2, True))
+
+    def test_the_dag_view_leaves_the_hosts_sideways_swipe_alone(self) -> None:
+        """Mutation: clip every drawing (native and team graphs too), clip in a narrow mouse window, or let the cards
+        scroll sideways."""
+        css = self._drive()["style"]["css"]
+        # A run past the card limit falls back to the drawn graph; on touch that drawing clips rather than eats the
+        # host's sideways swipe. Nothing else clips a drawing: elsewhere, and with a mouse, it still scrolls.
+        clipped = "@media (pointer:coarse){.omh-pane-dv .omh-pane-dag{overflow-x:hidden}}"
+        self.assertIn(clipped, css.splitlines())
+        self.assertEqual(re.findall(r"[^{}]*omh-pane-dag\{[^}]*overflow-x:hidden", css), [".omh-pane-dv .omh-pane-dag{overflow-x:hidden"])
+        view = [line for line in css.splitlines() if "omh-pane-dv" in line and line != clipped]
+        self.assertTrue(view)
+        self.assertNotIn("touch-action", css)
+        for rule in [rule for line in view for rule in line.split("}") if "omh-pane-dv" in rule]:
+            with self.subTest(rule=rule[:60]):
+                self.assertNotIn("overflow-x", rule)
+        # A control is 32px tall on touch and reaches 44px through its padding box's pseudo-element.
+        coarse = next(line for line in view if line.startswith("@media (pointer:coarse),(max-width:640px)"))
+        self.assertIn("height:32px", coarse)
+        self.assertIn("inset:-7px -5px", coarse)
+
+    def test_a_korean_host_reads_the_dag_view_in_korean(self) -> None:
+        hud = self._drive()["korean"]["dag_cards"]["byId"]["hud"]
+        for word in ("토큰", "캐시 적중", "프롬프트 12.0k 중 9.3k", "노드 2개 합계", "통계", "병목", "Sum (후속 1개 대기)"):
+            with self.subTest(word=word):
+                self.assertIn(word, hud)
+        for english in ("Tokens", "Cache hit", "Node time", "Bottlenecks", "sum of"):
+            self.assertNotIn(english, " ".join(hud))
 
     def test_busy_polling_uses_two_seconds_and_missing_korean_keys_fall_back(self) -> None:
         report = self._drive()

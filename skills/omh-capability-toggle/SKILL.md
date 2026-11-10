@@ -18,7 +18,7 @@ This is a Hermes-native `capability-toggle` workflow skill.
 
 ## Why This Exists
 
-`capability-toggle` exists because OMH shipped one binary install lever -- 9 core skills or all of them -- so a user who wanted the coding surface but not the memory surface had to take both. It turns that into a per-family choice without uninstalling OMH.
+`capability-toggle` exists because OMH shipped one binary install lever -- the small core set or all installable skills -- so a user who wanted the coding surface but not the memory surface had to take both. It turns that into a per-family choice without uninstalling OMH.
 
 ## Do Not Use When
 
@@ -32,32 +32,31 @@ This is a Hermes-native `capability-toggle` workflow skill.
 Good example:
 
 - Prompt: turn off memory, I already run my own memory system
-- Expected behavior: Disable the retain_knowledge family, report the four memory workflows removed and the five core skills retained, and name the enable command.
+- Expected behavior: Run `omh capability-policy disable retain_knowledge`; report the four memory workflows withheld, memory off, the five core skills retained, and the enable command.
 - Why: The request is about which OMH surfaces are offered locally, not about capturing a memory.
 
 Bad example:
 
 - Prompt: add a dark mode toggle to my settings page
-- Expected behavior: Route to frontend or coding delegation instead of capability policy.
+- Expected behavior: Route to `omh-frontend` or coding delegation instead of capability policy.
 - Why: That is a feature in the user's own product, not an OMH capability family.
 
 ## Completion Checklist
 
 - The affected family is named by its canonical id, not guessed from a partial word.
-- Removed workflows and retained core skills are listed separately.
-- The reversing command is stated so the change never reads as permanent.
-- Locally modified skill files are reported as retained exceptions rather than deleted.
+- Withheld workflows and retained core skills are listed separately.
+- The report says what the disable does: `retain_knowledge` turns memory off; any other family is only withheld from the offered list (`omh capability-policy status`), routing is unchanged.
+- The change uses `omh capability-policy disable|enable <family>` (`--dry-run` previews, `status` lists), never a hand edit, and the printed reversing command is stated.
 
 ## Recovery Notes
 
 - If the family id is ambiguous, list all six and ask rather than picking the closest match.
-- If a disable would remove a core skill, refuse that part and report it; core skills are the floor doctor checks for.
-- If files were kept with --keep-files, say the policy changed but the files remain so the state is not misread as a full removal.
+- The policy never deletes skill files.
 
 ## Workflow Lane
 
-- Current lane: **Automation and status** (`achievements`, `workspace-audit`, `production-audit`, `live-incident-response`, `automation-blueprint`, `github-event-ops`, `github-issue-intake`, `buzz`, `+40 more`) - schedules, status, health, and ops review.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Automation and status** - schedules, status, health, and ops review.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -81,7 +80,7 @@ Quality bar:
 
 Handoff policy:
 
-Read and write the local capability policy directly; propose executor work only when a repository fix is required.
+Change the local capability policy with `omh capability-policy`; propose executor work only when a repository fix is required.
 
 Required inputs:
 
@@ -91,7 +90,7 @@ Required inputs:
 Expected outputs:
 
 - policy change summary
-- what was removed versus retained
+- what was withheld versus retained
 - the exact command that reverses it
 
 Artifact expectations:
@@ -109,7 +108,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

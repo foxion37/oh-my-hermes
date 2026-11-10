@@ -134,7 +134,10 @@ class PerRequestBudgetRegistryTests(unittest.TestCase):
 
         templates = context_cost.builtin_skill_templates()
         source = templates[0]
-        clone = dataclasses.replace(source, name=f"{source.name}-clone")
+        # `replace` would render the copy again under its new name; this test is about
+        # bytes, so copy the finished template instead.
+        clone = copy.copy(source)
+        object.__setattr__(clone, "name", f"{source.name}-clone")
         metrics = {metric.name: metric for metric in budget_metrics()}
         before = {
             name: metrics[name].live()
@@ -684,6 +687,25 @@ class PluginToolSchemaProducerTests(unittest.TestCase):
         # The node `role` field (+85, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped the same way, from
         # this and from the live schema below, so it can spend neither the approved schema nor the parked cap.
 
+        # The node `local` field (+37, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped first, then `owner`.
+        def without_local(target: dict) -> int:
+            before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+            local = target["parameters"]["properties"]["nodes"]["items"]["properties"].pop("local")
+            self.assertEqual(local, {"type": "boolean"})
+            self.assertEqual(target["description"].count("write_scope, role, owner, local)"), 1)
+            target["description"] = target["description"].replace(
+                "write_scope, role, owner, local)", "write_scope, role, owner)", 1)
+            return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+
+        # The node `owner` field (+70, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped next, the same way.
+        def without_owner(target: dict) -> int:
+            before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+            owner = target["parameters"]["properties"]["nodes"]["items"]["properties"].pop("owner")
+            self.assertEqual(owner, {"type": "string", "enum": ["claude-code", "codex"]})
+            self.assertEqual(target["description"].count("write_scope, role, owner)"), 1)
+            target["description"] = target["description"].replace("write_scope, role, owner)", "write_scope, role)", 1)
+            return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+
         def without_role(target: dict) -> int:
             before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
             role = target["parameters"]["properties"]["nodes"]["items"]["properties"].pop("role")
@@ -692,21 +714,28 @@ class PluginToolSchemaProducerTests(unittest.TestCase):
             target["description"] = target["description"].replace("write_scope, role)", "write_scope)", 1)
             return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
 
+        self.assertEqual(without_local(legacy), 37)
+        self.assertEqual(without_owner(legacy), 70)
         self.assertEqual(without_role(legacy), 85)
         encoded = json.dumps(legacy, sort_keys=True, ensure_ascii=False)
         self.assertEqual(len(encoded), 2479)
+        # Digest re-derived, length unchanged: the export `owner` description reads "a coding owner named in the
+        # run's request" in place of "the coding owner the person already chose" (same 42 characters), since a
+        # choice counts only for the request it was made in; the pin before it was 39be91ff...d3c5.
         self.assertEqual(
             hashlib.sha256(encoded.encode()).hexdigest(),
-            "39be91ffc4db311ad1222cd4f57ded619ceb643063fdaa7bb2f0605fe654d3c5",
+            "5f8cb791ca4052cd474026e154f759ba0ea9c01f402d4fd6ebe4054253143b6f",
         )
         # The parked cap is measured against the live schema without the six
         # category values, so category growth cannot spend the parked cap.
         live = copy.deepcopy(schema)
         del live["parameters"]["properties"]["nodes"]["items"]["properties"]["category"]["enum"][-len(recipe):]
+        self.assertEqual(without_local(live), 37)
+        self.assertEqual(without_owner(live), 70)
         self.assertEqual(without_role(live), 85)
         delta = len(json.dumps(live, sort_keys=True, ensure_ascii=False)) - len(encoded)
         self.assertEqual(
-            per_turn_context.plugin_tool_schema_chars_by_tool()["omh_dag"] - len(encoded) - delta, 75 + 85
+            per_turn_context.plugin_tool_schema_chars_by_tool()["omh_dag"] - len(encoded) - delta, 75 + 85 + 70 + 37
         )
         self.assertGreater(delta, 0)
         self.assertLessEqual(delta, 429)  # Measured feature cap, not general headroom.
@@ -734,6 +763,8 @@ class PreLlmCallScenarioTests(unittest.TestCase):
                     "running_work_board",
                     "done_unverified_plan",
                     "held_native_write",
+                    "plan_acceptance",
+                    "clarify_timed_out",
                     "all_surfaces",
                     "all_surfaces_without_section",
                 ]
@@ -754,6 +785,32 @@ class PreLlmCallScenarioTests(unittest.TestCase):
             without_line = per_turn_context.pre_llm_call_context_scenario_chars()["held_native_write"]
         line = native_todo.HELD_NATIVE_WRITE_NOTE.format(kind="accepted plan")
         self.assertEqual(with_line - without_line, len(line) + len("\n\n"))
+
+    def test_the_plan_acceptance_scenario_measures_the_follow_on_line(self) -> None:
+        from omh.plugin_bundle.omh import plan_follow_on
+        from omh.plugin_bundle.omh.hooks import llm_hooks
+
+        with_line = per_turn_context.pre_llm_call_context_scenario_chars()["plan_acceptance"]
+        with mock.patch.object(llm_hooks, "acceptance_line", lambda *args: ""):
+            without_line = per_turn_context.pre_llm_call_context_scenario_chars()["plan_acceptance"]
+        self.assertEqual(with_line - without_line, len(plan_follow_on.ACCEPTANCE_LINE) + len("\n\n"))
+
+    def test_the_console_scenarios_measure_the_console_choices_lines(self) -> None:
+        from omh.plugin_bundle.omh import console_choices
+        from omh.plugin_bundle.omh.hooks import llm_hooks
+
+        with_line = per_turn_context.pre_llm_call_context_scenario_chars()
+        with mock.patch.object(llm_hooks, "console_choices_line", lambda *args, **kwargs: ""):
+            without_line = per_turn_context.pre_llm_call_context_scenario_chars()
+        joined = len("\n\n")
+        for name in ("all_surfaces", "all_surfaces_without_section"):
+            with self.subTest(scenario=name):
+                self.assertEqual(with_line[name] - without_line[name], len(console_choices.CONSOLE_CHOICES_LINE) + joined)
+        # The re-ask is the timed-out turn's only part: the scenario is that line inside the fence.
+        self.assertEqual(without_line["clarify_timed_out"], 0)
+        self.assertEqual(
+            with_line["clarify_timed_out"], len(llm_hooks.fence_omh_context([console_choices.TIMED_OUT_LINE]))
+        )
 
     def test_parts_add_so_all_surfaces_is_the_maximum(self) -> None:
         scenarios = per_turn_context.pre_llm_call_context_scenario_chars()

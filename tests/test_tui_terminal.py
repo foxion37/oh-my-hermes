@@ -23,9 +23,12 @@ from unittest.mock import patch
 
 from omh.tui import terminal as terminal_module
 from omh.tui.keys import BUTTON_LEFT, KeyDecoder, Mouse
+from omh.tui.screen import CURSOR_SHAPE_BEAM, CURSOR_SHAPE_BLOCK, CURSOR_SHAPE_DEFAULT
 from omh.tui.terminal import (
     BRACKETED_PASTE_OFF,
     BRACKETED_PASTE_ON,
+    FOCUS_REPORTING_OFF,
+    FOCUS_REPORTING_ON,
     KITTY_KEYBOARD_POP,
     KITTY_KEYBOARD_PUSH,
     KITTY_KEYBOARD_QUERY,
@@ -34,6 +37,7 @@ from omh.tui.terminal import (
     MODIFY_OTHER_KEYS_ON,
     MOUSE_DRAG_OFF,
     MOUSE_DRAG_ON,
+    MOUSE_MODES_RESET,
     MOUSE_REPORTING_OFF,
     MOUSE_REPORTING_ON,
     BACKGROUND_QUERY,
@@ -284,8 +288,27 @@ class MouseReportingSequenceTests(unittest.TestCase):
 
     def test_the_restore_sequence_always_switches_mouse_reports_off(self) -> None:
         # Written on every exit, a crash and a signal included, whether or not they were turned on.
-        self.assertIn(MOUSE_REPORTING_OFF, RESTORE_SEQUENCE)
+        self.assertIn(MOUSE_MODES_RESET, RESTORE_SEQUENCE)
         self.assertNotIn(MOUSE_REPORTING_ON, RESTORE_SEQUENCE)
+        for mode in ("?1000h", "?1002h", "?1006h"):
+            with self.subTest(mode=mode):
+                self.assertNotIn(mode, RESTORE_SEQUENCE)
+
+    def test_the_reset_switches_off_every_mouse_mode_hermes_resets(self) -> None:
+        # Hermes' own TUI (`ui-tui/src/lib/terminalModes.ts`) arms 1000+1002+1003+1006 and a kill -9 leaves them on;
+        # every tracking mode and every encoding goes off, the encodings first, and none is switched on.
+        self.assertEqual(
+            MOUSE_MODES_RESET,
+            "\x1b[?1016l\x1b[?1015l\x1b[?1006l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l\x1b[?9l",
+        )
+        self.assertNotIn("h", MOUSE_MODES_RESET)
+
+    def test_focus_reports_are_mode_1004_and_every_exit_switches_them_off(self) -> None:
+        # Asked on entry on every terminal (the pty cases below: an allowlisted one, Apple Terminal, legacy keys),
+        # and switched off on every exit, a crash, a signal and a stop included, so no shell is sent `ESC[I`.
+        self.assertEqual((FOCUS_REPORTING_ON, FOCUS_REPORTING_OFF), ("\x1b[?1004h", "\x1b[?1004l"))
+        self.assertIn(FOCUS_REPORTING_OFF, RESTORE_SEQUENCE)
+        self.assertNotIn(FOCUS_REPORTING_ON, RESTORE_SEQUENCE)
 
 
 @unittest.skipUnless(pty is not None and termios is not None, "needs a POSIX pty")
@@ -344,7 +367,7 @@ class TerminalPtyTests(unittest.TestCase):
 
     def test_bracketed_paste_is_switched_on_and_back_off(self) -> None:
         with Terminal(self.slave, self.slave):
-            self.assertEqual(self.master_output(), BRACKETED_PASTE_ON.encode())
+            self.assertEqual(self.master_output(), (MOUSE_MODES_RESET + BRACKETED_PASTE_ON + FOCUS_REPORTING_ON).encode())
         tail = self.master_output()
         self.assertTrue(tail.endswith(BRACKETED_PASTE_OFF.encode()), tail)
 
@@ -358,7 +381,9 @@ class TerminalPtyTests(unittest.TestCase):
                 term = Terminal(self.slave, self.slave, environ={"TERM_PROGRAM": program})
                 self.assertFalse(term.keyboard_protocol)
                 with term:
-                    self.assertEqual(self.master_output(), (BRACKETED_PASTE_ON + request).encode())
+                    self.assertEqual(
+                        self.master_output(), (MOUSE_MODES_RESET + BRACKETED_PASTE_ON + FOCUS_REPORTING_ON + request).encode()
+                    )
                     self.assertTrue(term.keyboard_protocol)
                 self.assertFalse(term.keyboard_protocol)
                 self.assertTrue(self.master_output().endswith(RESTORE_SEQUENCE.encode()))
@@ -368,7 +393,7 @@ class TerminalPtyTests(unittest.TestCase):
             with self.subTest(environ=environ):
                 term = Terminal(self.slave, self.slave, environ=environ)
                 with term:
-                    self.assertEqual(self.master_output(), BRACKETED_PASTE_ON.encode())
+                    self.assertEqual(self.master_output(), (MOUSE_MODES_RESET + BRACKETED_PASTE_ON + FOCUS_REPORTING_ON).encode())
                     self.assertFalse(term.keyboard_protocol)
                 # Released anyway: harmless where nothing was asked.
                 self.assertTrue(self.master_output().endswith(RESTORE_SEQUENCE.encode()))
@@ -388,7 +413,7 @@ class TerminalPtyTests(unittest.TestCase):
     def test_mouse_reporting_is_off_on_entry_and_set_mouse_writes_only_on_a_change(self) -> None:
         term = Terminal(self.slave, self.slave)
         with term:
-            self.assertEqual(self.master_output(), BRACKETED_PASTE_ON.encode())
+            self.assertEqual(self.master_output(), (MOUSE_MODES_RESET + BRACKETED_PASTE_ON + FOCUS_REPORTING_ON).encode())
             self.assertFalse(term.mouse_reporting)
             term.set_mouse(False)
             self.assertEqual(self.master_output(), b"")
@@ -406,6 +431,47 @@ class TerminalPtyTests(unittest.TestCase):
             self.master_output()
         self.assertFalse(term.mouse_reporting)
         self.assertTrue(self.master_output().endswith(RESTORE_SEQUENCE.encode()))
+
+    def test_every_mouse_mode_goes_off_on_entry_and_again_on_exit(self) -> None:
+        # A mode another program left on (a killed Hermes TUI's 1003) would report every drag to a TUI that never
+        # asked, which drops the report, so the person's selection dies; it goes off before anything else is asked
+        # for, and again on the way out, though this run never turned the mouse on.
+        term = Terminal(self.slave, self.slave)
+        with term:
+            entry = self.master_output()
+            self.assertTrue(entry.startswith(MOUSE_MODES_RESET.encode()), entry)
+            self.assertFalse(term.mouse_reporting)
+        tail = self.master_output()
+        self.assertIn(MOUSE_MODES_RESET.encode(), tail)
+        self.assertNotIn(MOUSE_REPORTING_ON.encode(), entry + tail)
+
+    def test_the_shells_cursor_shape_is_put_back_only_where_this_run_changed_it(self) -> None:
+        with Terminal(self.slave, self.slave) as term:
+            self.master_output()
+            term.set_cursor_shape(CURSOR_SHAPE_BEAM)
+            self.assertEqual(self.master_output(), CURSOR_SHAPE_BEAM.encode())
+            term.set_cursor_shape(CURSOR_SHAPE_BEAM)
+            self.assertEqual(self.master_output(), b"")
+            term.set_cursor_shape(CURSOR_SHAPE_BLOCK)
+            self.assertEqual(self.master_output(), CURSOR_SHAPE_BLOCK.encode())
+        written = self.master_output()
+        self.assertTrue(written.endswith(RESTORE_SEQUENCE.encode()), written)
+        self.assertTrue(written.startswith(CURSOR_SHAPE_DEFAULT.encode()), written)
+        self.assertIsNone(term.cursor_shape)
+
+    def test_a_run_that_never_set_a_cursor_shape_leaves_the_shells_alone(self) -> None:
+        self.assertNotIn(CURSOR_SHAPE_DEFAULT, RESTORE_SEQUENCE)
+        with Terminal(self.slave, self.slave) as term:
+            self.master_output()
+            term.set_cursor_shape(None)
+            self.assertEqual(self.master_output(), b"")
+        self.assertEqual(self.master_output(), RESTORE_SEQUENCE.encode())
+
+    def test_a_cursor_shape_set_outside_the_with_block_is_refused(self) -> None:
+        term = Terminal(self.slave, self.slave)
+        term.set_cursor_shape(CURSOR_SHAPE_BEAM)
+        self.assertEqual(self.master_output(), b"")
+        self.assertIsNone(term.cursor_shape)
 
     def test_a_drag_turns_on_over_the_reports_and_off_without_them(self) -> None:
         term = Terminal(self.slave, self.slave)
@@ -438,7 +504,7 @@ class TerminalPtyTests(unittest.TestCase):
                         self.master_output()
                         raise error
                 self.assertFalse(term.mouse_reporting)
-                self.assertIn(MOUSE_REPORTING_OFF, self.master_output().decode())
+                self.assertIn(MOUSE_MODES_RESET, self.master_output().decode())
 
     def test_set_mouse_outside_the_block_writes_nothing(self) -> None:
         # Nothing would turn them off again, and every click would type escape codes into the shell.
@@ -552,7 +618,7 @@ class TerminalPtyTests(unittest.TestCase):
                 self.assertTrue(term.suspend())
             written = self.master_output().decode()
             self.assertIn(RESTORE_SEQUENCE, written)
-            self.assertTrue(written.endswith(BRACKETED_PASTE_ON + KITTY_KEYBOARD_PUSH), written)
+            self.assertTrue(written.endswith(BRACKETED_PASTE_ON + FOCUS_REPORTING_ON + KITTY_KEYBOARD_PUSH), written)
         self.assertTrue(self.master_output().endswith(RESTORE_SEQUENCE.encode()))  # KITTY_KEYBOARD_POP among it
 
     def test_a_terminal_that_answers_no_kitty_query_gets_no_push(self) -> None:

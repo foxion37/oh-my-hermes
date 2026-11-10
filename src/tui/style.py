@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 
 from ..skin_pack import hex_to_rgb
 
@@ -76,6 +77,7 @@ def nearest_16(rgb: tuple[int, int, int]) -> int:
     return min(range(16), key=lambda at: _distance(_ANSI_16[at], rgb))
 
 
+@lru_cache(maxsize=16384)
 def _colour_parameter(base: int, value: str | None, depth: str = TRUECOLOR) -> str:
     if value is None or depth == NO_COLOR:
         return ""
@@ -104,6 +106,9 @@ class Style:
     # A cell that frames the text and is no part of it (a block's rail, a reply's margin): never painted differently,
     # and left out of what the pager copies (`Pager.handle_mouse`).
     gutter: bool = False
+    # A gutter painted as one run with a neighbour of the same look (`screen.paint_line`): a framed question's bar and
+    # the context beside it, which were one run before the bar became a gutter.
+    joins: bool = False
 
     def sgr(self) -> str:
         """The SGR sequence that turns this style on; "" for the default style."""

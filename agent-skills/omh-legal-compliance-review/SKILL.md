@@ -38,19 +38,20 @@ Good example:
 Bad example:
 
 - Prompt: Audit this OAuth integration for secret and permission risks.
-- Expected behavior: Route to `security-safety-review`, not `legal-compliance-review`.
+- Expected behavior: Route to `omh-security-safety-review`, not `legal-compliance-review`.
 - Why: The target is technical security risk rather than contract or compliance analysis.
 
 ## Completion Checklist
 
-- Findings or no-issue results are grounded in concrete file, artifact, command, or source evidence.
-- Open questions, residual risk, and missing verification are named.
-- Fixes or follow-up work are separate handoffs unless the user explicitly asked to implement them.
+- Every authority-dependent statement has an exact locator and effective status or is marked unverified.
+- Every mandatory hold trigger is evaluated and each open one has a counsel owner and a question; the disposition is PASS, REVISE or HOLD.
+- The documents and versions that were not supplied are listed; no sign-off, filing or advice is claimed.
 
 ## Recovery Notes
 
-- If the reviewed target is missing, inspect the requested artifact or ask one target question.
-- If independent verification is unavailable, report the gap and avoid an approval-style claim.
+- If an authority's pinpoint or effective status cannot be verified, retain the established document scope, mark authority-dependent issues unresolved, and hand back legal_scope_authority_record/v1 with the missing citations for counsel.
+- If a contested clause has an open counsel hold or no cited playbook position, retain its issue row, mark that redline row unresolved, and hand back the counsel question rather than proposed language.
+- If mandatory counsel triggers remain open at final review, retain the issue matrix and hold register, mark legal_review_disposition/v1 unresolved with HOLD, and hand back the exact triggers and counsel owner without a final determination.
 
 
 

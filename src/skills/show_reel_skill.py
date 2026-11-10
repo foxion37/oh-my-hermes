@@ -9,7 +9,7 @@ This module grants no execution, network, installation, or publication authority
 """
 from __future__ import annotations
 
-from .catalog_types import ExpertQuestion, HermesSkillLine, ProcedureCheck, ProcedureStep, SkillDefinition, SkillExample
+from .catalog_types import ExpertQuestion, HermesSkillLine, ProcedureCheck, ProcedureBail, ProcedureStep, SkillDefinition, SkillExample
 
 SHOW_REEL_ARTIFACTS = (
     "show_reel_brief/v1",
@@ -53,6 +53,7 @@ DEFINITION = SkillDefinition(
         "For a product, brand or work film, compare at least 3 genuinely distinct concept candidates before selection; record the rubric, winner, rejected alternatives, and per-segment art direction. Read `references/craft-workflow.md` (the full upstream production method), `toolkit/README.md` under the loaded skill directory with a file reader, then `references/renderer-adapter.md` before choosing tools; a missing renderer means HOLD on a requested video, not a completed delivery.",
         "If the reel is captured from a game or simulation instead of authored from static assets, read `references/game-capture.md` before capture and timeline authoring: run the simulate → capture → timeline.json → finish edit pipeline with `timeline.json` as the single source of truth for events, SFX cues and titles, pin and record the source game data version/build, map every gameplay event that needs SFX to a cue in timeline.json (an unmapped event is HOLD), apply the shorts defaults (1080x1920, black letterbox bars, centered white title, fade-in, tuned BGM start offset) only as brief-overridable defaults, and record voice provenance (source clip URL, sha256, excerpt range) for any real voice — never synthesizing an impersonation of a real voice actor or person and labeling timbre-alike or synthetic voice methods honestly in credits, with performer/IP permissions handled in the existing assets-and-rights flow.",
         "If the selected concept is kinetic typography for a hype launch or teaser, read `references/kinetic-type.md` before beat-sheet and scene authoring; this opt-in lane never applies to explainers or evidence films.",
+        "If the selected concept is a 60-120 s launch film of a product the team can run and capture, read `references/launch-film.md` before the act sheet and scene authoring; a promo of 15 s or less keeps the one-scene rule.",
     ),
     handoff_policy="Keep brief, source verification, concept selection, storyboard, critique, and evidence synthesis with the current host. Use only explicitly selected available production tools in an approved workspace. Load `references/procedure.md` for the ordered method and the production references for working templates; the optional local toolkit is declared data, never automatically executed. A prepared handoff is not a render, translation review, listening check, attachment, or publication; never add a core render command.",
     procedure_checks=(
@@ -69,21 +70,70 @@ DEFINITION = SkillDefinition(
     ),
     procedure_steps=(
         ProcedureStep("reel_brief", "analysis", _INPUTS, (_BRIEF,), ("reel_brief_check",), "Create the audience brief with explicit duration/format, language decision basis, separate reply/content/subtitle/pronunciation/voice/font/direction tracks, literal tokens, budget and missing facts; retrieve what is available before asking."),
-        ProcedureStep("reel_verify_sources", "validation", (_INPUTS[0], _INPUTS[2]), (_SOURCES,), ("reel_source_check",), "For an idea video with nothing of a product on screen, record `no_product_claims` and move on. Otherwise verify claim provenance, revision, brand identity, screenshots, font and asset rights; distinguish supplied, observed, vendor-asserted, inferred and concept. Resolve conflicts or HOLD; never fabricate metrics, customers or real demos."),
+        ProcedureStep("reel_verify_sources", "validation", (_INPUTS[0], _INPUTS[2]), (_SOURCES,), ("reel_source_check",), "For an idea video with nothing of a product on screen, record `no_product_claims` and move on. Otherwise verify claim provenance, revision, brand identity, screenshots, font and asset rights; distinguish supplied, observed, vendor-asserted, inferred and concept. Resolve conflicts or HOLD; never fabricate metrics, customers or real demos.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1',),
+                downgrade_to='unresolved',
+                handback='Return show_reel_source_asset_register/v1 with unresolved source revisions, rights, consent and literal-fact citations, plus the decision-changing question needed to clear HOLD.',
+            ),
+        ),
         ProcedureStep("reel_select_concept", "analysis", (_INPUTS[0], _INPUTS[1], _INPUTS[2]), (_CONCEPT,), ("reel_concept_check",), "For an idea video, pick one concept from its genre recipe in `references/genres.md` and record its assumptions. For a product, brand or work film, author at least 3 distinct concept candidates, compare one shared rubric, select with reasons and rejected alternatives, and fix the iteration/time budget including weakest-scene revision; do not impose a default aesthetic."),
-        ProcedureStep("reel_direct_segments", "production", (_INPUTS[0], _INPUTS[1], _INPUTS[2]), (_STORY,), ("reel_story_check",), "Author each timed segment with message, source/asset IDs, medium, palette, typography, texture, layout, camera/object movement and transition, listing a distinct composition per beat so that adjacent segments differ in at least two of medium, palette, typeface, motion and texture; bind native-script text runs and visibly distinguish concept from captured product evidence."),
-        ProcedureStep("reel_measure_timing", "production", (_INPUTS[0], _INPUTS[1], _INPUTS[3]), (_TIMING,), ("reel_timing_check",), "Select muted, music-only or narration mode only as needed; measure reading, approved pronunciation and word/beat cues before locking scene times, keep literal onscreen text separate, and HOLD unsupported voice locales or consent."),
-        ProcedureStep("reel_author_motion", "production", _INPUTS, (_ADAPTER,), ("reel_adapter_check",), "Read the installed `toolkit/README.md`, `references/motion-techniques.md`, `references/craft-engine.md` and `references/craft-techniques.md` with ordinary file tools; write scenes fresh from the segment art direction with the engine or another observed host-tool recipe. Bind toolkit provenance and source-bound run receipts, safe inputs/cwd, versions, deterministic seek, commands, timeout/cancel and font readiness; serial capture has no resume/chunk claim. Author motion without hidden installs or core subprocesses."),
-        ProcedureStep("reel_review_revise", "validation", (_INPUTS[0], _INPUTS[1], _INPUTS[3]), (_PREVIEW,), ("reel_preview_check",), "Render style frames, then draft playback and transition strips at delivery-size; record keep/fix/rebuild by scene, identify strongest and weakest scenes, reject repeated headline/card/rail grammar, spend the declared revision budget rebuilding the weakest, compare same-time before/after plus both cut boundaries, re-render, and stop at the budget with unresolved defects visible."),
-        ProcedureStep("reel_export", "production", (_INPUTS[1], _INPUTS[3]), (_EXPORT,), ("reel_export_check",), "Export actual master/share variants as requested; measure codec, color, dimensions, fps, duration, filesize and hashes, audio loudness/true peak and sync when audio exists. Keep failed and partial outputs distinct from final files."),
-        ProcedureStep("reel_validate", "validation", _INPUTS, (_QA,), ("reel_qa_check", "reel_export_check"), "Inspect actual delivery-size playback, content/brand, localized native line breaks, glyph fallback, Arabic shaping/bidi isolation, cuts, motion and audio; return evidence-linked PASS/REVISE/HOLD, keep technical, artistic, full-speed playback and listening verdicts independent; never whole-video PASS from a screenshot, score, metric or preset."),
-        ProcedureStep("reel_deliver", "validation", _INPUTS, (_DELIVERY,), ("reel_delivery_check", "reel_qa_check"), "Deliver requested files and source package with selected sources, pinned versions, licenses, locale variants, regeneration recipe and QA receipts; distinguish generated/attached/received/published with exact-target readback and honest missing evidence. HOLD a video request if only a storyboard exists."),
+        ProcedureStep("reel_direct_segments", "production", (_INPUTS[0], _INPUTS[1], _INPUTS[2]), (_STORY,), ("reel_story_check",), "Author each timed segment with message, source/asset IDs, medium, palette, typography, texture, layout, camera/object movement and transition, listing a distinct composition per beat so that adjacent segments differ in at least two of medium, palette, typeface, motion and texture; bind native-script text runs and visibly distinguish concept from captured product evidence.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_source_asset_register/v1'),
+                downgrade_to='tentative',
+                handback='Return show_reel_storyboard/v1 with the failing segments, source/asset bindings, composition and native-script legibility defects marked for revision.',
+            ),
+        ),
+        ProcedureStep("reel_measure_timing", "production", (_INPUTS[0], _INPUTS[1], _INPUTS[3]), (_TIMING,), ("reel_timing_check",), "Select muted, music-only or narration mode only as needed; measure reading, approved pronunciation and word/beat cues before locking scene times, keep literal onscreen text separate, and HOLD unsupported voice locales or consent.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_source_asset_register/v1', 'show_reel_storyboard/v1'),
+                downgrade_to='unresolved',
+                handback='Return show_reel_timing_map/v1 with available measured cues, missing reading or pronunciation evidence and unresolved voice rights, leaving scene times unlocked.',
+            ),
+        ),
+        ProcedureStep("reel_author_motion", "production", _INPUTS, (_ADAPTER,), ("reel_adapter_check",), "Read the installed `toolkit/README.md`, `references/motion-techniques.md`, `references/craft-engine.md` and `references/craft-techniques.md` with ordinary file tools; write scenes fresh from the segment art direction with the engine or another observed host-tool recipe. Bind toolkit provenance and source-bound run receipts, safe inputs/cwd, versions, deterministic seek, commands, timeout/cancel and font readiness; serial capture has no resume/chunk claim. Author motion without hidden installs or core subprocesses.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_source_asset_register/v1', 'show_reel_storyboard/v1', 'show_reel_timing_map/v1'),
+                downgrade_to='not_observed',
+                handback='Return show_reel_renderer_handoff/v1 with the bounded recipe, missing capability or font evidence, timeout/cancel limits and partial-resume boundaries, without claiming a render.',
+            ),
+        ),
+        ProcedureStep("reel_review_revise", "validation", (_INPUTS[0], _INPUTS[1], _INPUTS[3]), (_PREVIEW,), ("reel_preview_check",), "Render style frames, then draft playback and transition strips at delivery-size; record keep/fix/rebuild by scene, identify strongest and weakest scenes, reject repeated headline/card/rail grammar, spend the declared revision budget rebuilding the weakest, compare same-time before/after plus both cut boundaries, re-render, and stop at the budget with unresolved defects visible.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_renderer_handoff/v1', 'show_reel_source_asset_register/v1', 'show_reel_storyboard/v1', 'show_reel_timing_map/v1'),
+                downgrade_to='tentative',
+                handback='Return show_reel_preview_review/v1 with observed previews, missing motion checks, keep/fix/rebuild findings and remaining weakest-scene work at the revision budget.',
+            ),
+        ),
+        ProcedureStep("reel_export", "production", (_INPUTS[1], _INPUTS[3]), (_EXPORT,), ("reel_export_check",), "Export actual master/share variants as requested; measure codec, color, dimensions, fps, duration, filesize and hashes, audio loudness/true peak and sync when audio exists. Keep failed and partial outputs distinct from final files.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_preview_review/v1', 'show_reel_renderer_handoff/v1', 'show_reel_source_asset_register/v1', 'show_reel_storyboard/v1', 'show_reel_timing_map/v1'),
+                downgrade_to='not_observed',
+                handback='Return show_reel_export_manifest/v1 separating failed or partial files from final files and listing missing codec, color, size, hash and audio measurements needed before export can pass.',
+            ),
+        ),
+        ProcedureStep("reel_validate", "validation", _INPUTS, (_QA,), ("reel_qa_check", "reel_export_check"), "Inspect actual delivery-size playback, content/brand, localized native line breaks, glyph fallback, Arabic shaping/bidi isolation, cuts, motion and audio; return evidence-linked PASS/REVISE/HOLD, keep technical, artistic, full-speed playback and listening verdicts independent; never whole-video PASS from a screenshot, score, metric or preset.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_export_manifest/v1', 'show_reel_preview_review/v1', 'show_reel_renderer_handoff/v1', 'show_reel_source_asset_register/v1', 'show_reel_storyboard/v1', 'show_reel_timing_map/v1'),
+                downgrade_to='tentative',
+                handback='Return show_reel_qa_report/v1 with evidence-linked REVISE/HOLD findings, missing required checks and separate technical, artistic, playback and listening verdicts for the next correction.',
+            ),
+        ),
+        ProcedureStep("reel_deliver", "validation", _INPUTS, (_DELIVERY,), ("reel_delivery_check", "reel_qa_check"), "Deliver requested files and source package with selected sources, pinned versions, licenses, locale variants, regeneration recipe and QA receipts; distinguish generated/attached/received/published with exact-target readback and honest missing evidence. HOLD a video request if only a storyboard exists.",
+            on_fail=ProcedureBail(
+                still_stands=('show_reel_brief/v1', 'show_reel_concept_selection/v1', 'show_reel_export_manifest/v1', 'show_reel_preview_review/v1', 'show_reel_qa_report/v1', 'show_reel_renderer_handoff/v1', 'show_reel_source_asset_register/v1', 'show_reel_storyboard/v1', 'show_reel_timing_map/v1'),
+                downgrade_to='not_observed',
+                handback='Return show_reel_delivery_manifest/v1 with generated files, available source-package files, QA receipts and missing attachment or recipient evidence, keeping transfer and publication unconfirmed.',
+            ),
+        ),
     ),
     artifact_expectations=("Keep media, source files and authored text in the approved project folder; durable OMH records contain only bounded safe references, digests, states and gaps, never raw media, private source text or credentials.",),
     safety_rules=(
         "No automatic network/model/API calls, subprocess execution, dependency installation, font downloads, account discovery, voice cloning or paid defaults inside core; every chosen external action needs scope and authority.",
         "A renderer unavailable, timeout, pageerror, missing font or partial export is HOLD or failed, never successful delivery. Never invent a tool receipt, translation, listening review or product capture.",
         "Use user/official/rights-cleared assets first; generated visuals carry generation provenance and concept labels. Publish/spend/voice cloning requires separate explicit consent and exact-target approval.",
+        "A paid call billed to the user's own subscription credits or plan usage (`eleven.py` and `narrate.py` narration, voice, STT, SFX or music; every codex image run, `codex_imagegen_batch.sh` and `codex_ref_image.sh` alike; every `codex exec` text run, the script review and concept candidates, with its spend-only cap set in calls) goes through `omh-spend-gate` first: its card names the exact target (the lines, voice and model, or the job and its length) with the expected credits read from the provider's own price for that model, `references/craft-brief.md`'s estimates serving only as a rough guide, or says the cost is unknown so the gate's spend-only cap applies; the person's typed yes to that card is the exact-target spend approval for that run only.",
     ),
     quality_tier="evidence-gated",
     quality_bar=(
@@ -94,7 +144,7 @@ DEFINITION = SkillDefinition(
     do_not_use_when=(
         "Only a static infographic or summary card is needed; use `img-summary`.",
         "The request is a website, landing page or interactive UI build, or an animation inside an app's own UI (a button, modal, page transition or loading state); use `frontend`.",
-        "Summarizing, transcribing, captioning or trimming a recording that already exists; use `media-input-operator`.",
+        "Summarizing or transcribing a recording that already exists; use `media-input-operator`. Trimming, converting or burning in captions is plain ffmpeg through `command-operator`.",
         HermesSkillLine("A math proof, equation or algorithm animation in the 3Blue1Brown style belongs to Hermes' bundled `manim-video` skill; converting existing footage to ASCII art belongs to `ascii-video`.", ("manim-video", "ascii-video")),
         "The output is a deck, PDF, spreadsheet or office document; use `materials-package`.",
         "Only a premium layout quality assessment is wanted; use `design-quality-gate`.",

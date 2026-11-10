@@ -156,7 +156,11 @@ HOOK_REVIEWS: dict[str, dict[str, Any]] = {
         "source_path": "hooks/llm_hooks.py",
         "event_scope": ("pre_llm_call",),
         "reviewed_timeout_ms": 2000,
-        "capability": "OMH awareness, context brief, and route hint injection before a Hermes LLM call",
+        "capability": (
+            "OMH awareness, context brief, and route hint injection before a Hermes LLM call, "
+            "and, in a Slack or Discord room where Hermes lets a silence marker stand, a short "
+            "instruction to answer [SHUTUP] to be quiet or [SILENT] when a message is not for the bot"
+        ),
     },
     "pre_tool_call": {
         "source_path": "hooks/tool_hooks.py",
@@ -164,10 +168,22 @@ HOOK_REVIEWS: dict[str, dict[str, Any]] = {
         "reviewed_timeout_ms": 1000,
         "capability": (
             "user-authored toolcall-rule block directives, the refusal of a "
-            "skill_manage edit to an OMH-managed skill, the OMH "
+            "skill_manage edit to an OMH-managed skill, the refusal of a "
+            "write_file or patch into OMH's own evidence stores or outside a "
+            "dag-ulw node's write scope, the OMH "
             "repeat-call guard and its human-approval escalation, and the "
             "human approval of an omh_team start's exact check commands, before "
             "a Hermes tool call"
+        ),
+    },
+    "post_api_request": {
+        "source_path": "hooks/verify_hooks.py",
+        "event_scope": ("post_api_request",),
+        "reviewed_timeout_ms": 1000,
+        "capability": (
+            "keeping the tool-call ids of the model's latest message (ids and "
+            "tool names only), so the shell round end looks at a message's "
+            "commands only after its last one"
         ),
     },
     "post_tool_call": {
@@ -178,10 +194,30 @@ HOOK_REVIEWS: dict[str, dict[str, Any]] = {
             "closing the in-flight tool-call ledger entry that backs the OMH "
             "HUD's liveness signal (open-call count, stalled-todo warning, "
             "parallel-shot lifetime), mirroring Hermes' native todo_list "
-            "writes into the session's OMH plan todo, and, for a delegate_task "
+            "writes into the session's OMH plan todo, recording a metadata-only "
+            "fetch receipt per URL a successful web_extract, browser_navigate or "
+            "web_search returned (hashes, lengths and a query-free display URL; "
+            "no page text, title or arguments), and, for a delegate_task "
             "Hermes did not block, tying each child to its call, task index and "
             "delegation in the delegation ledger (ids only, from the dispatch "
             "handle; no goal text)"
+        ),
+    },
+    "pre_gateway_dispatch": {
+        "source_path": "hooks/gateway_hooks.py",
+        "event_scope": ("pre_gateway_dispatch",),
+        "reviewed_timeout_ms": 1000,
+        "capability": (
+            "skipping a Slack or Discord group message before it opens a turn: "
+            "a whole-message quiet word aimed at the bot mutes that thread "
+            "(a saluting-face reaction, no text), a muted thread stays silent "
+            "until the bot is mentioned, replied to or called by name, and a "
+            "message that opens with someone else's mention or calls someone "
+            "else by name is skipped; in a room where Hermes lets a silence "
+            "marker stand the quiet words and name calls are left to the model; "
+            "mutes and a bounded skip log (ids and "
+            "the first 120 characters) are kept in the OMH home; never writes "
+            "a reply and fails open"
         ),
     },
     "pre_verify": {
@@ -235,8 +271,12 @@ HOOK_REVIEWS: dict[str, dict[str, Any]] = {
             "the count line alone where a block and the reply do not fit one "
             "message; read from the delegation ledger and Hermes' state.db, "
             "with the posted moment, run phase, counts and graph fingerprint, "
-            "or the skip, written back to the ledger (every other response "
-            "passes through untouched)"
+            "or the skip, written back to the ledger; and, on a turn given the "
+            "group-chat marker instruction, a [SHUTUP] reply replaced by "
+            "[SILENT] with that thread muted and a saluting-face reaction, a "
+            "wrapped silence marker cleaned, a marker at the edge of a real "
+            "answer removed with no mute, and one skip-log line per marker "
+            "(every other response passes through untouched)"
         ),
     },
     "transform_tool_result": {

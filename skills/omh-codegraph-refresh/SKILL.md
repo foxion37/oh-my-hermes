@@ -19,7 +19,7 @@ This is a Hermes-native `codegraph-refresh` workflow skill.
 
 ## Why This Exists
 
-`codegraph-refresh` adapts ECC-style codemap freshness into OMH's local codegraph commands so operators can refresh navigation context before handoff without pretending code intelligence is execution evidence.
+`codegraph-refresh` exists so the local code index is rebuilt before a handoff and the answer says how old it was, without pretending code intelligence is execution evidence; the freshness posture is credited to ECC's codemap work.
 
 ## Do Not Use When
 
@@ -50,14 +50,15 @@ Bad example:
 
 ## Recovery Notes
 
-- If the codegraph command is unavailable, route to doctor or toolbelt-readiness before claiming freshness.
+- If the codegraph command is unavailable, route to `omh-doctor` or `omh-toolbelt-readiness` before claiming freshness.
 - If no task focus is supplied, prepare build/summary guidance and ask for focus only when a handoff pack would otherwise be misleading.
 - If the index is stale or missing, report the stale/missing state and next safe command rather than treating prior summaries as current.
+- The codegraph indexes Python files only; when `omh codegraph summary` shows no Python files, say so, navigate with `rg` or `ast-grep`, and present no handoff pack.
 
 ## Workflow Lane
 
-- Current lane: **Intent -> plan** (`oh-my-hermes`, `meta-router`, `deep-interview`, `context`, `plan`, `ralplan`, `adversarial-consensus`, `codebase-onboarding`, `+9 more`) - clarify, plan, ship, or loop goals.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Intent -> plan** - clarify, plan, ship, or loop goals.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -79,7 +80,7 @@ Quality bar:
 - Name repo root, refresh depth, task focus, artifact write policy, and stop condition.
 - Choose build, summary, handoff, `--write`, and `--json` deliberately instead of treating all codegraph commands as equivalent.
 - Separate prepared command plans from observed command outputs, generated artifacts, and executor-ready handoffs.
-- Route broader first-read orientation to codebase-onboarding and implementation to ultrawork or the selected coding owner.
+- Route broader first-read orientation to `omh-codebase-onboarding` and implementation to `ulw-work` or the selected coding owner.
 
 Handoff policy:
 
@@ -104,7 +105,7 @@ Expected outputs:
 Artifact expectations:
 
 - codegraph_command_plan/v1 naming `omh codegraph build`, `summary`, `handoff`, `--write`, and `--json` choices
-- staleness_and_scope_report/v1 separating requested refresh scope, observed command output, missing index evidence, and stale artifacts
+- staleness_and_scope_report/v1 separating requested refresh scope, observed command output, missing index evidence, and stale artifacts; the artifact is stale when its `generated_at` is older than the newest commit (`git log -1 --format=%cI`) or a Python file listed by `git status --porcelain -- '*.py'` has an mtime later than `generated_at` (a dirty file older than the artifact is not stale, and the list stays non-empty after a rebuild), or the HEAD reflog's newest entry is later than `generated_at` (`git reflog -1 --date=iso-strict --format=%gd` prints `HEAD@{<time>}`; a branch switch or pull moves it while the commit time stays old; compare the two as instants, because the entry carries the local UTC offset and `generated_at` is UTC), or a dirty file is deleted (it has no mtime, so treat it as stale); a rebuild is the refresh because the scan is full, not incremental
 - `omh_codegraph_summary/v1` or `.omh/codegraph/codegraph.json` only when the corresponding command output or write is observed
 - codegraph_handoff_context/v1 with task terms, focus files, symbols, entrypoints, warnings, and claim boundary when `omh codegraph handoff` is observed
 
@@ -131,7 +132,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

@@ -10,7 +10,7 @@ metadata:
     phase: rhythm-history
     role: operator
     quality_tier: operations-gated
-    related_skills: [omh-meeting-brief, omh-ops-review]
+    related_skills: [omh-meeting-brief, omh-ops-review, omh-report-package, omh-reliability-review]
 ---
 
 # Operating Rhythm
@@ -25,7 +25,7 @@ This is a Hermes-native `operating-rhythm` workflow skill.
 
 - The user only needs a one-off meeting agenda before the meeting; use `omh-meeting-brief`.
 - The request is a weekly status/risk summary rather than cadence history; use `omh-ops-review`.
-- The user asks for report packaging, PPT outline, or reliability evidence review.
+- The user asks for report packaging or a PPT outline; use `omh-report-package`. The user asks for reliability evidence review; use `omh-reliability-review`.
 
 ## Examples
 
@@ -43,19 +43,19 @@ Bad example:
 
 ## Completion Checklist
 
-- Confirm the workflow target, evidence boundary, and stop condition are named.
-- Report which outputs are prepared, observed, blocked, or missing.
-- Name the smallest next verification or handoff instead of claiming completion from narration.
+- Each decision names who decided and its source; an undecided proposal stays out of the log.
+- Each action item has outcome, owner, due date and source, unknown where the notes are silent; last meeting's actions carry their status.
 
 ## Recovery Notes
 
-- If required context is missing, ask one blocking question or route back to the narrower workflow.
-- If runtime or wrapper evidence is unavailable, keep the status as not_observed and expose the next observable action.
+- If source notes are missing, retain the cadence, audience, and time-window scaffold, mark minutes and decisions not_observed, and hand back operation_artifact/v1 with the explicit missing-notes boundary.
+- If notes leave an action item's owner or due date unstated, retain its source-linked outcome and dependencies, mark follow-up readiness unresolved, and hand back the action item history with unknown fields for confirmation.
+- If a retro proposal has no decision or owner acknowledgement, retain the source notes, mark acceptance unresolved, and hand back the proposal outside the decision log for explicit confirmation before an implementation handoff.
 
 ## Workflow Lane
 
-- Current lane: **Research and company ops** (`product-docs`, `source-finder`, `web-research`, `research`, `model-optimization`, `inference-serving`, `model-finetuning`, `research-brief`, `+27 more`) - research, signals, ops, and briefings.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Research and company ops** - research, signals, ops, and briefings.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -77,6 +77,8 @@ Quality bar:
 - Name cadence, audience, time window, known notes, and missing evidence before producing a record.
 - Separate agenda/templates from observed minutes, decisions, and action items.
 - Record follow-up ownership only when supplied or explicitly mark it unknown.
+- Give each decision row a status (proposed, accepted, superseded) and what it supersedes, and open each retro record with the previous retro's actions and their outcome.
+- This skill records an existing cadence; when the user wants a new cadence designed, propose it with owner, frequency, inputs and decision rights, then record minutes here.
 - Record each action item with its outcome, owner, due date, dependency, acceptance condition, and source reference, marking an owner or date the notes do not state as unknown, and keep a proposal that was discussed but not decided out of the decision log.
 - On Hermes, when the bundled `meeting-action-items` skill is available, it may pull decisions, owners, and actions out of the supplied notes; its list is a reading of those notes, so every item keeps its source reference and stays unaccepted until the notes or the owner confirm it, and a ticket or message it drafts is reported as published only after the user approved it and it was read back.
 
@@ -120,7 +122,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

@@ -90,7 +90,21 @@ class RoutingPrecisionTests(unittest.TestCase):
         # and so do two throwaway OMH test messages and the user's own router,
         # two tasks on what OMH selected or picked, and a Korean test request,
         # and eight messages where a command follows what OMH chose.
-        self.assertEqual(payload["summary"]["case_count"], 1322)
+        # #2485: find-out tasks after what OMH picked, an OMH terminology
+        # loader migration, Korean messages with "OMH가" that read as on main,
+        # OMH ignoring files, and a filler adverb, a why-question about a
+        # parser and "Hermes with OMH" before a task stay off it too.
+        # systematic-review adds six review, screening and criteria controls.
+        # The ops-review pair keeps `리스크` and `블로커` spelled across other words out.
+        # model-compression adds eleven compress, quantize, prune and distill
+        # controls in another sense and moves "distill this model" to the
+        # intervention corpus.
+        # Its review round adds twenty-four controls with an ordinary
+        # statistics, 3D, game, signal or know-how word beside a shared phrase.
+        # Its second review round adds eighteen: billions that are money, data or
+        # volume, game and 3D bit widths, grid transformers, firmware quantization.
+        # Its third review round adds four: two billions of money or data.
+        self.assertEqual(payload["summary"]["case_count"], 1512)
         self.assertEqual(payload["summary"]["passing_count"], payload["summary"]["case_count"])
         self.assertEqual(payload["summary"]["negative_case_count"], payload["summary"]["case_count"])
         self.assertEqual(payload["summary"]["negative_passing_count"], payload["summary"]["case_count"])
@@ -164,12 +178,19 @@ class RoutingPrecisionTests(unittest.TestCase):
         # The three sprite-forge vocabulary controls answer directly (+3).
         # The rendered-scene lane's crime-scene control is a direct answer (+1).
         # show-reel's quoted idea-video ask is translation input, answered directly (+1).
-        self.assertEqual(payload["summary"]["direct_answer_count"], 355)
+        # A concept question under a busy-path gateway origin is answered directly (+1).
+        # 356 -> 359: the reach round's negatives that the router answers directly.
+        self.assertEqual(payload["summary"]["direct_answer_count"], 359)
         # show-reel's README-link control is answered as a file lookup (+1).
         # "Use OMH to fix the failing test in billing.py" names a file: a file lookup (+1).
         # Copying the skills OMH selected and summarizing the files it picked
         # are file tasks (+2), and so is opening the files OMH selected (+1).
-        self.assertEqual(payload["summary"]["file_lookup_count"], 15)
+        # Finding the unused keys of the config OMH picked, asked in Korean, is
+        # a file lookup (+1), and so is the English one with a courtesy tail (+1).
+        # A recruiter question and a contract clause that quote an
+        # architecture-deepening phrase are answered as file lookups (+2).
+        # 19 -> 20: the reach round's `at the same time instead` sentence reads as a file lookup.
+        self.assertEqual(payload["summary"]["file_lookup_count"], 20)
         self.assertEqual(payload["summary"]["overroute_count"], 0)
         self.assertEqual(payload["summary"]["catalog_picker_count"], 0)
         self.assertEqual(payload["summary"]["generic_ack_count"], 0)
@@ -238,7 +259,19 @@ class RoutingPrecisionTests(unittest.TestCase):
         # reports or meta questions keep workflow-learning. A later command keeps
         # release-cut, and two more reports keep workflow-learning. A command
         # after "then" keeps command-operator, and "list the reasons" is a report.
-        self.assertEqual(payload["summary"]["intervention_case_count"], 1219)
+        # Three reports the classifier missed (a Korean 보냈어, OMH ignoring the
+        # request, OMH "apparently" choosing) reach workflow-learning, and a
+        # Korean casual "고쳐줘?" after what OMH picked keeps the coding lane,
+        # a Korean "정리해 둬" keeps toolbelt-readiness, OMH missing a test
+        # before an add-tests request keeps ultrawork, and two reports quoting
+        # the user's own migrate / rewrite ask reach workflow-learning.
+        # systematic-review adds four screening requests and two owner-keeping controls.
+        # The ops-review pair keeps `리스크블로커` and `주요리스크와 블로커`.
+        # model-compression adds eight compression requests and three owner-keeping controls.
+        # Its review round adds eight requests that missed: GGUF and 4-bit Korean
+        # quantization, distillation by parameter count, a llama model slimmed.
+        # Its second review round drops the Korean 4-bit case, which falls back to main.
+        self.assertEqual(payload["summary"]["intervention_case_count"], 1299)
         self.assertEqual(
             payload["summary"]["intervention_passing_count"], payload["summary"]["intervention_case_count"]
         )

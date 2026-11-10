@@ -63,7 +63,10 @@ class SkillContextCostTests(unittest.TestCase):
         # (1,350 bytes) is preserved, not widened.
         # Merged with main: 126,593 + 1,943 + 2,007 = 130,543 measured, plus the
         # same 1,350 allowance = 131,893.
-        self.assertLess(profile["repeated"]["bytes"], 131_893)
+        # 131,893 -> 133,335: the tree now measures 131,985 with systematic-review's
+        # mandatory Workflow Lane (497) and Runtime Evidence (1,446) rails (+1,943
+        # over 130,042); the same 1,350 allowance is kept, not widened.
+        self.assertLess(profile["repeated"]["bytes"], 133_335)
 
     def test_repro_audit_context_increment_stays_bounded(self) -> None:
         from omh.skills.context_cost import _skill_context_cost_profile
@@ -106,13 +109,26 @@ class SkillContextCostTests(unittest.TestCase):
         # feature changes opening actions only, never indexed descriptions.
         # Career adds its bounded 86-character entry; repro-audit its 84-character one;
         # sprite-forge its line + newline (13,243 -> 13,328); merged with main's
-        # repro-audit line, 13,327 + 85 = 13,412.
-        self.assertEqual(skill_index_chars(), 13_412)
+        # repro-audit line, 13,327 + 85 = 13,412; systematic-review its line +
+        # newline (+90); model-compression its line + newline (+90).
+        self.assertEqual(skill_index_chars(), 13_592)
         # research and web-research add the shipped `ru` trigger pack's routing
         # signals (+446 and +316 bytes, after its review dropped the everyday
         # and nested phrases) to their pre-feature bodies; the search guidance
-        # increment itself (286 and 305) is unchanged.
-        baseline = {'research': 20_033, 'web-research': 11_811, 'source-finder': 9_221}
+        # increment itself (286 and 305) is unchanged. The citation receipts rule
+        # (`omh research receipts verify`, 262 bytes) joins both bodies.
+        # research's entity-match clause (answer only from a source on the exact
+        # named entity; a different name is a different entity) adds 222 bytes.
+        # The render rail writes `research` as `ulw-research` and the like in these
+        # bodies. Each pin moved by the body's measured growth against main
+        # (research +3, web-research +7, source-finder +19), plus the research-lane fixes'
+        # own lines (web-research +181, source-finder +169), not by a figure chosen to fit the cap; the increment above stays the feature's own.
+        # 20,520 -> 20,902: `research` takes defaults when no human can answer its opening questions
+        # (+382, not search guidance).
+        # 12,261 -> 12,409: web-research's Do-Not-Use line for market sizing (+148, not search guidance).
+        # Each baseline -316: every body's reply-voice paragraph becomes one line (not search guidance).
+        # Each baseline +276: the one reply line takes back the turn-ending rule (not search guidance).
+        baseline = {'research': 20_862, 'web-research': 12_369, 'source-finder': 9_369}
         for name, before in baseline.items():
             record = skill_record(name)
             body = record.body().content

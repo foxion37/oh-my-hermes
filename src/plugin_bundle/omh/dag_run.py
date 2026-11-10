@@ -39,10 +39,13 @@ is named in every view (`stuck`); the profile can move that mark, the
 re-offer wait and the re-offer bound (`Limits`). A failed or blocked node blocks its
 dependents and nothing else. ``repair`` adds a group
 of repair nodes for a failed or blocked node, at most `MAX_REPAIR_CYCLES` per
-original node. Once its latest group is all accepted the original counts as
-satisfied and the nodes after it read the group's handoff files, except a
-verification node: it runs again, and only its own accepted re-run satisfies
-it. Nodes of an earlier group that never got accepted are superseded. ``extend`` adds a round of nodes to a run whose every node passed
+original node. Its last repair cycle briefs a re-plan from the earlier
+failures, not another retry of the same approach. Once its latest group is
+all accepted the original counts as satisfied and the nodes after it read
+the group's handoff files, except a verification node (or a role-less writer
+guessed as one, ``role_guess``): it runs again, and only its own accepted
+re-run satisfies it. Nodes of an earlier group that never got accepted are
+superseded. ``extend`` adds a round of nodes to a run whose every node passed
 when the goal check finds work missing, at most `MAX_EXTEND_ROUNDS` per run.
 Each node records where it came from (``origin``): ``define``,
 ``repair:<root>`` or ``extend:<round>``.
@@ -81,8 +84,13 @@ MAX_NAME_CHARS: Final = 48
 MAX_GOAL_CHARS: Final = 240
 MAX_SCOPE_ENTRIES: Final = 16
 MAX_SCOPE_CHARS: Final = 200
+OVERLAPS_NAMED: Final = 20  # pairs one write_scope_overlap refusal names; the rest are counted
 MAX_REASON_CHARS: Final = 200
+# The verify node's producer scope map and a repair node's `git diff` paths are cut at these lengths (per node turn).
+SCOPE_MAP_CHARS: Final = 600
+LEFTOVER_PATHS_CHARS: Final = 300
 MAX_REPAIR_CYCLES: Final = 2
+REPLAN_CYCLE: Final = MAX_REPAIR_CYCLES
 MAX_EXTEND_ROUNDS: Final = 2
 MAX_PROVIDER_RETRIES: Final = 1
 MAX_PARKS: Final = 3
@@ -104,6 +112,10 @@ MAX_LOST_REOFFERS_LIMIT: Final = 10
 BIND_SLACK_SECONDS: Final = 2.0
 CATEGORIES: Final = tuple(HERMES_MIXTURE_CATEGORY_CHAINS)
 DEEP_CATEGORIES: Final = frozenset({"deep", "deep-work"})
+# The categories that carry the one judgement deciding a run (a design decision, a root cause, a contested
+# trade-off); a graph this wide with none of them is told to give that node `ultrabrain` (`no_judgement_node`).
+JUDGEMENT_CATEGORIES: Final = frozenset({"ultrabrain", "architect", "forensics"})
+JUDGEMENT_GRAPH_NODES: Final = 4
 OUTCOMES: Final = ("accepted", "failed", "blocked", "parked")
 # The ``origin`` kinds of a node added after define: ``repair:<root>`` and ``extend:<round>``.
 ADDED_ORIGIN_KINDS: Final = ("repair", "extend")
@@ -115,7 +127,9 @@ SERIAL_GRAPH_SHARE: Final = 0.8
 CHILD_FAILURE_STOPS: Final = frozenset({"failed", "error", "timeout", "interrupted"})
 # What every view says for a node accepted while its handoff could not be read where the child wrote it.
 HANDOFF_NOT_CHECKED: Final = "handoff not checked"
-NODE_FIELDS: Final = frozenset({"id", "label", "category", "prompt", "depends_on", "write_scope", "role"})
+EXTERNAL_OWNERS: Final = ("claude-code", "codex")
+NODE_FIELDS: Final = frozenset({"id", "label", "category", "prompt", "depends_on", "write_scope", "role", "owner",
+                                "local"})
 # What a node is for, as the parent declares it (``build`` when it names none). A ``build`` node with a write scope is a
 # producer; baseline, verify and review nodes stay native whoever builds, and only a ``verify`` node verifies the goal.
 ROLES: Final = ("build", "baseline", "verify", "review")
@@ -138,6 +152,12 @@ _CONTROL: Final = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _BASELINE_WORD: Final = re.compile(r"(?<![a-z])baseline(?![a-z])")
 _VERIFY_WORDS: Final = re.compile(r"(?<![a-z])(verif|audit|validat|qa(?![a-z]))")
 _REVIEW_WORDS: Final = re.compile(r"(?<![a-z])review")
+# Read only for a new node's guess (``role_guess``), not for a node stored before nodes carried a role (`node_role`).
+_DOUBLE_CHECK: Final = re.compile(r"(?<![a-z])double[- ]check")
+# A write scope entry with one of these suffixes is docs, not code (`writes_code`).
+DOC_SUFFIXES: Final = frozenset({".md", ".markdown", ".rst", ".adoc", ".txt"})
+# A write scope entry named exactly one of these (casefolded, no suffix) is docs, not code (`writes_code`).
+DOC_NAMES: Final = frozenset({"readme", "changelog", "license", "notice", "authors", "contributing", "copying"})
 _MARKER_PATTERNS: Final = {
     marker: re.compile(r"(?<![A-Za-z])" + r"\s+".join(marker.split()) + r"\s*:", re.IGNORECASE)
     for marker in PROMPT_MARKERS
@@ -227,6 +247,10 @@ def _record_shape_ok(raw: object) -> bool:
     ids = [node.get("id") for node in nodes if isinstance(node, dict)]
     if len(ids) != len(nodes) or len(set(ids)) != len(ids) or not all(isinstance(i, str) and _ID.fullmatch(i) for i in ids):
         return False
+    # The coding owners the defining request named (`dag_tool._define`); only `define` writes them.
+    owners = raw.get("owners", [])
+    if not isinstance(owners, list) or not all(isinstance(owner, str) and owner in EXTERNAL_OWNERS for owner in owners):
+        return False
     known = set(ids)
     for node in nodes:
         if not isinstance(node.get("depends_on"), list) or not set(node["depends_on"]) <= known:
@@ -236,6 +260,8 @@ def _record_shape_ok(raw: object) -> bool:
         if not isinstance(node.get("prompt"), str) or node.get("category") not in CATEGORIES:
             return False
         if "role" in node and node["role"] not in ROLES:
+            return False
+        if "owner" in node and (node["owner"] not in EXTERNAL_OWNERS or not is_coding(node)):
             return False
     if dag_core.layers(ids, {node["id"]: node["depends_on"] for node in nodes}) is None:
         return False
@@ -327,7 +353,8 @@ def valid_id(value: object, reason: str, say: str) -> str:
 def _validated_node(raw: object) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or set(raw) - NODE_FIELDS:
         raise DagRefusal("invalid_node",
-                         "Each node takes only id, label, category, prompt, depends_on, write_scope and role.")
+                         "Each node takes only id, label, category, prompt, depends_on, write_scope, role, owner and "
+                         "local.")
     node_id = valid_id(raw.get("id"), "invalid_node_id", "Each node needs a short lowercase id (a-z, 0-9, -).")
     label = _plain(raw.get("label"), MAX_LABEL_CHARS, "invalid_label", f"Node {node_id} needs a short label.")
     # Either lane's reader also takes a marker that opens a goal (one handed out before an update), so a label holding
@@ -369,9 +396,28 @@ def _validated_node(raw: object) -> dict[str, Any]:
         "attempts": [],
     }
     guess = guessed_role(validated) if "role" not in raw else DEFAULT_ROLE
+    if guess == DEFAULT_ROLE and "role" not in raw and _DOUBLE_CHECK.search(label.casefold()):
+        guess = "verify"
     if guess != DEFAULT_ROLE:
-        # Advice only (`lint`): the node runs as a build node, and the role its label reads like is named.
+        # The node runs as a build node and stays a producer; the lint names the role its label reads like, and the
+        # guess keeps it native (`is_coding`). Not in the digest (`NODE_FIELDS`).
         validated["role_guess"] = guess
+    if "owner" in raw:
+        if raw["owner"] not in EXTERNAL_OWNERS or not is_coding(validated):
+            raise DagRefusal("invalid_owner",
+                             f"Node {node_id}: owner is one of {', '.join(EXTERNAL_OWNERS)} and only a coding node may name it.")
+        validated["owner"] = raw["owner"]
+    if "local" in raw:
+        # A node whose material must not leave the machine: only a local model_map option runs it (`local_options`).
+        # An external coding CLI calls its own cloud model, so a local node never names one. Stored only when true,
+        # so a node sent with `local: false` keeps the digest it had before the field existed.
+        if not isinstance(raw["local"], bool):
+            raise DagRefusal("invalid_local", f"Node {node_id}: local is true or false.")
+        if raw["local"] and "owner" in validated:
+            raise DagRefusal("invalid_local",
+                             f"Node {node_id}: a local node runs only on a local model, so it cannot name an owner.")
+        if raw["local"]:
+            validated["local"] = True
     return validated
 
 
@@ -406,11 +452,17 @@ def _require_graph(
 ) -> None:
     """The hard rejects over a whole graph: references, cycles, and write scopes shared without an edge.
 
+    Scopes are compared as paths (`dag_core.shared_scope_pairs` ``as_paths``):
+    ``./src/x.py`` is ``src/x.py``, ``src/`` holds it, and ``src/*.py`` matches
+    it. One refusal names every overlapping pair in the check, and which node
+    wrote which entry, so a directory entry is not refused one pair per round.
+
     ``editable`` limits the scope check to pairs of those nodes: a repair is
     checked against the nodes that can still run, not against finished ones.
     ``involving`` limits it further to pairs with one of those nodes in them:
-    an extend round is checked against the run's earlier nodes, not the run
-    against itself again. ``before`` adds orderings the scope check counts as
+    a repair or an extend round is checked against the run's earlier nodes,
+    not the run against itself again (two earlier nodes are not the new
+    nodes' to change). ``before`` adds orderings the scope check counts as
     edges, {node: nodes ordered before it}: a repair group runs before every
     node that waits on the node it repairs.
     """
@@ -430,15 +482,21 @@ def _require_graph(
         raise DagRefusal("dependency_cycle", f"These nodes depend on each other in a circle: {', '.join(stuck)}.")
     checked = set(editable) if editable is not None else known
     new = set(involving)
-    scopes = [(str(node["id"]), node["write_scope"]) for node in nodes]
+    scopes = {str(node["id"]): node["write_scope"] for node in nodes}
     ordered = {node: [*listed, *(before or {}).get(node, ())] for node, listed in parents.items()}
-    for first, second, shared, joined in dag_core.shared_scope_pairs(scopes, ordered):
-        if not joined and first in checked and second in checked and (not new or first in new or second in new):
-            raise DagRefusal(
-                "write_scope_overlap",
-                f"Nodes {first} and {second} both write {', '.join(shared)} with no edge between them; "
-                "make one depend on the other or split the scope.",
-            )
+    overlaps = [
+        f"{first} writes {', '.join(entry for entry in shared if entry in scopes[first])} and "
+        f"{second} writes {', '.join(entry for entry in shared if entry in scopes[second])}"
+        for first, second, shared, joined in dag_core.shared_scope_pairs(list(scopes.items()), ordered, as_paths=True)
+        if not joined and first in checked and second in checked and (not new or first in new or second in new)
+    ]
+    if overlaps:
+        raise DagRefusal(
+            "write_scope_overlap",
+            f"These nodes write overlapping paths with no edge between them: {'; '.join(overlaps[:OVERLAPS_NAMED])}"
+            f"{f' and {len(overlaps) - OVERLAPS_NAMED} more pairs' if len(overlaps) > OVERLAPS_NAMED else ''}. "
+            "Make one of each pair depend on the other, or split the scope.",
+        )
 
 
 def markerless_nodes(nodes: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -491,8 +549,12 @@ def _mentions_full_suite(prompt: str) -> bool:
     return False
 
 
-def lint(nodes: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Advisory findings: they never reject a run, and the run records them."""
+def lint(nodes: Sequence[Mapping[str, Any]], *, defining: bool = True) -> list[str]:
+    """Advisory findings: they never reject a run, and the run records them.
+
+    `no_judgement_node` is define-time only (``defining``): a repair or extend
+    round cannot change the category of a node already settled.
+    """
     findings: list[str] = []
     for node in nodes:
         missing = [marker for marker in PROMPT_MARKERS if not _MARKER_PATTERNS[marker].search(str(node["prompt"]))]
@@ -507,6 +569,10 @@ def lint(nodes: Sequence[Mapping[str, Any]]) -> list[str]:
     verifiers = [node for node in nodes if is_verification(node)]
     if len(nodes) > 1 and not verifiers:
         findings.append("no_verification_node")
+    # A role-less node guessed as review ("Review the diff") counts as the review here, and its guess is named above.
+    if (len(nodes) > 1 and not any(node_role(node) == "review" or node.get("role_guess") == "review" for node in nodes)
+            and any(node_role(node) == DEFAULT_ROLE and writes_code(node) for node in nodes)):
+        findings.append("no_review_node")
     if verifiers:
         parents = {str(node["id"]): node["depends_on"] for node in nodes}
         baselines = {str(node["id"]) for node in nodes if is_baseline(node)}
@@ -521,7 +587,36 @@ def lint(nodes: Sequence[Mapping[str, Any]]) -> list[str]:
         findings.append("all_nodes_deep")
     if sum(1 for node in nodes if node["category"] == "ultrabrain") > 1:
         findings.append("ultrabrain_more_than_once")
+    if defining and len(nodes) >= JUDGEMENT_GRAPH_NODES and not any(node["category"] in JUDGEMENT_CATEGORIES for node in nodes):
+        findings.append("no_judgement_node")
+    # Only a declared review: a guessed one (a role-less or stored node) is not asked to move. Verify nodes are left
+    # alone: they judge the run goal, which can need a high category.
+    findings += [f"review_not_review_category:{node['id']}" for node in nodes
+                 if node.get("role") == "review" and node["category"] != "review"]
     return findings
+
+
+def writes_code(node: Mapping[str, Any]) -> bool:
+    """Whether a node's write scope may touch code (`no_review_node`): any entry that is not docs.
+
+    An entry is docs when it ends in a docs suffix (``DOC_SUFFIXES``), sits
+    under a ``docs`` directory anywhere in its path, or is named one of ``DOC_NAMES``
+    (README, CHANGELOG, LICENSE, ...). Any other directory, glob or file
+    counts as code. Advice only, so it errs toward naming the missing review.
+    """
+    return not all(_is_docs_entry(str(entry)) for entry in node["write_scope"])
+
+
+def _is_docs_entry(entry: str) -> bool:
+    """Docs: a docs suffix or name, or a ``docs`` directory anywhere in the path (``/repo/docs/``, ``../wt/docs/x``).
+    An entry ending in ``/`` is all directories, and so is a bare ``docs``; otherwise its last segment is the file, so
+    ``src/docs`` is code."""
+    segments = [segment for segment in entry.casefold().split("/") if segment not in ("", ".")]
+    if not segments:
+        return False
+    directories = segments if entry.endswith("/") or segments == ["docs"] else segments[:-1]
+    return (posixpath.splitext(segments[-1])[1] in DOC_SUFFIXES or "docs" in directories
+            or segments[-1] in DOC_NAMES)
 
 
 def guessed_role(node: Mapping[str, Any]) -> str:
@@ -554,11 +649,14 @@ def is_verification(node: Mapping[str, Any]) -> bool:
 
 
 def is_coding(node: Mapping[str, Any]) -> bool:
-    """A node an external coding owner may take, and the work a verify node follows: a build node that writes files.
+    """A node an external coding owner may take: a build node that writes files.
 
-    Baselines, verification and review stay native whoever builds: the builder never approves itself.
+    Baselines, verification and review stay native whoever builds: the builder never approves itself. So does a build
+    node defined with no role whose label reads like another role (``role_guess``, as in "Re-verify the fix" or
+    "independent verification vs baseline"): it is not refused, since "Add input validation" reads the same way,
+    but it never leaves for an external owner. A node the parent named ``build`` carries no guess and goes.
     """
-    return bool(node["write_scope"]) and node_role(node) == DEFAULT_ROLE
+    return bool(node["write_scope"]) and node_role(node) == DEFAULT_ROLE and not node.get("role_guess")
 
 
 def is_producer(node: Mapping[str, Any]) -> bool:
@@ -606,7 +704,8 @@ def topology(nodes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def definition_digest(nodes: Sequence[Mapping[str, Any]]) -> str:
     # A build role is left out, so a run stored before nodes carried a role, defined again unchanged, is the same run.
-    shape = [{key: node[key] for key in sorted(NODE_FIELDS) if key != "role" or node[key] != DEFAULT_ROLE}
+    shape = [{key: node[key] for key in sorted(NODE_FIELDS)
+              if key in node and (key != "role" or node[key] != DEFAULT_ROLE)}
              for node in nodes]
     return hashlib.sha256(json.dumps(shape, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
@@ -727,7 +826,10 @@ def derive(record: Mapping[str, Any], children: Sequence[Mapping[str, Any]], now
             base.get(member, {}).get("state") == "accepted" for member in latest
         ):
             failures = sum(1 for attempt in nodes[root].get("attempts") or [] if attempt.get("outcome") in ("failed", "blocked"))
-            if not is_verification(nodes[root]):
+            # A role-less writer guessed as verify ("Re-verify the fix") re-runs too, though it covers nothing, but only
+            # after a group `repair` stamped ``reruns_root``: a group stored before that rule keeps the root repaired.
+            reruns = any(nodes.get(member, {}).get("reruns_root") for member in latest)
+            if not (is_verification(nodes[root]) or reruns):
                 base[root]["state"] = "repaired"
             elif failures <= len(root_groups):
                 base[root].update(state="pending", child=None)
@@ -989,6 +1091,31 @@ def stuck_say(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]
     return " ".join(parts)
 
 
+def running_children(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]],
+                     now: float) -> list[dict[str, Any]]:
+    """Nodes with a live child: id, label, subagent id and seconds open, in record order.
+
+    Cancel names these so the parent can stop each one instead of losing track
+    of it: a cancelled record never settles them, and their results land in no
+    handoff the run reads.
+    """
+    ages = open_for(record, derived, now)
+    rows = []
+    for node in record["nodes"]:
+        node_id = str(node["id"])
+        if derived[node_id]["state"] != "running":
+            continue
+        child = derived[node_id].get("child") or {}
+        if not isinstance(child, Mapping) or isinstance(child.get("stop"), Mapping):
+            continue
+        subagent = child.get("subagent_id")
+        if not subagent:
+            continue
+        rows.append({"id": node_id, "label": str(node["label"]), "subagent_id": str(subagent),
+                     "open_for_s": int(ages.get(node_id, 0.0))})
+    return rows
+
+
 def resume_handle_for(attempts: Sequence[Mapping[str, Any]]) -> str:
     """The process identity a new attempt must resume, or ``""`` for fresh work.
 
@@ -1044,6 +1171,48 @@ def reads_for(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]
     return reads
 
 
+def _fit(items: Sequence[str], limit: int, sep: str) -> tuple[list[str], int]:
+    """The leading ``items`` whose ``sep`` join fits ``limit`` (the first always), and how many were left out."""
+    shown = list(items[:1])
+    for item in items[1:]:
+        if len(sep.join([*shown, item])) > limit:
+            break
+        shown.append(item)
+    return shown, len(items) - len(shown)
+
+
+def _producer_scopes(record: Mapping[str, Any], node: Mapping[str, Any], preceding: set[str]) -> str:
+    """``id: path, path; ...`` for the producers a verify node follows (and their repairs, and its own), cut at
+    `SCOPE_MAP_CHARS` on whole paths and producers. Attribution by declared scope only: no write is observed."""
+    holders = preceding | {str(node["id"])}
+    rows = []
+    for item in record["nodes"]:
+        if is_producer(item) and (str(item["id"]) in preceding or item.get("repairs") in holders):
+            paths, left = _fit(item["write_scope"], SCOPE_MAP_CHARS, ", ")
+            rows.append(f"{item['id']}: {', '.join(paths)}" + (f" (+{left} more paths)" if left else ""))
+    shown, left = _fit(rows, SCOPE_MAP_CHARS, "; ")
+    return "; ".join(shown) + (f"; (+{left} more producers)" if left else "")
+
+
+def _leftovers_line(record: Mapping[str, Any], node: Mapping[str, Any]) -> str:
+    """A repair that writes starts from what earlier attempts left on disk (no rollback: the worktree is shared)."""
+    root = _root(node)
+    earlier = {root}
+    for group in (record.get("repairs") or {}).get(root, [])[:max(0, int(node.get("cycle") or 1) - 1)]:
+        earlier.update(group)
+    paths = sorted({path for item in record["nodes"] if str(item["id"]) in earlier for path in item["write_scope"]})
+    # `shlex.quote` is POSIX shell quoting; a Windows shell reads those quotes differently.
+    shown, left = _fit([shlex.quote(path) for path in paths or node["write_scope"]], LEFTOVER_PATHS_CHARS, " ")
+    more = f" (+{left} more paths)" if left else ""
+    check = (f"if this is a git checkout, inspect `git status --short -- {' '.join(shown)}`{more} and "
+             "`git diff HEAD` on the same paths")
+    if not paths:  # the failed root declared no scope (a verify node): earlier nodes' edits sit in this one's
+        return (f"Files in your SCOPE may already carry earlier nodes' edits: {check} before editing; keep what is "
+                "right, undo what is wrong in your SCOPE.")
+    return (f"The failed attempt's edits may still be on disk: {check} (or the files its handoff reported) before "
+            "editing; keep what is right, undo what is wrong in your SCOPE.")
+
+
 def task_for(
     record: Mapping[str, Any], node: Mapping[str, Any], omh_home: Path, derived: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, str]:
@@ -1061,6 +1230,37 @@ def task_for(
             "The run goal is acceptance context, not permission to widen your SCOPE.",
             "",
         ])
+    if node.get("cycle") == REPLAN_CYCLE:
+        root = _root(node)
+        earlier = {root}
+        for group in (record.get("repairs") or {}).get(root, [])[:REPLAN_CYCLE - 1]:
+            earlier.update(group)
+        failures = [
+            (str(item["id"]), attempt)
+            for item in record["nodes"] if str(item["id"]) in earlier
+            for attempt in item.get("attempts") or [] if attempt.get("outcome") in ("failed", "blocked")
+        ]
+        failures.sort(key=lambda row: _number(row[1].get("settled_at")) or 0.0)
+        recent = [
+            (f"{attempt['outcome']} {node_id} attempt {attempt.get('n', 1)}: ",
+             " ".join(str(attempt.get("reason") or "").split()),
+             " (provider error)" if attempt.get("provider_error") else "")
+            for node_id, attempt in failures[-6:]
+        ]
+        intro = f"Re-plan: last repair cycle for {root}. Earlier failures (newest last):"
+        guidance = (
+            "Do not retry the same approach; before editing, write two or three approaches that differ in kind "
+            "into the handoff, rule out what the failures refute, and take the one that remains. "
+            "Read earlier handoffs (<node id>.md beside your handoff) for evidence (test ids, errors, measurements), "
+            "not for their plan. If every listed failure is an infrastructure cut (provider error, interrupted child), "
+            "retrying the same approach is right; say so in the handoff."
+        )
+        # Keep all six identities and provider flags; share the remaining space between settle reasons.
+        reason_limit = max(0, (1180 - len(intro) - len(guidance)
+                              - sum(len(prefix) + len(flag) + 1 for prefix, _, flag in recent)) // max(1, len(recent)))
+        evidence = [prefix + (reason if len(reason) <= reason_limit else reason[:max(0, reason_limit - 1)] + "…") + flag
+                    for prefix, reason, flag in recent]
+        lines.extend([intro, *evidence, guidance, ""])
     lines.extend([
         f"Handoff: before you stop, write your report to {node_handoff(record, omh_home, str(node['id']))}: "
         "what you did, the files you changed, what VERIFY showed, and anything still open. The parent reads that "
@@ -1083,6 +1283,12 @@ def task_for(
                              "goal done.")
         lines.append("Check the complete run goal, not only this node's local VERIFY. "
                      "Name each unmet or unobserved goal criterion; producer claims are not verification evidence.")
+        scopes = _producer_scopes(record, node, preceding)
+        if scopes:
+            lines.append("In the handoff, name for each failing check the producer whose declared write_scope holds "
+                         f"its failing path, or `unattributed`: by declared scope, not proven cause. Scopes: {scopes}")
+    if node.get("repairs") and node["write_scope"]:
+        lines.append(_leftovers_line(record, node))
     lines.append("Stay inside your SCOPE: other parts of this run work at the same time. If you cannot finish, "
                  "say plainly that you are blocked and why; do not report blocked work as done.")
     # The marker ends the goal: Hermes previews each goal by its first 40 characters, and a person reads the label
@@ -1090,8 +1296,35 @@ def task_for(
     return {"goal": f"{node['label']} [dag:{run}/{node['id']}]", "context": "\n".join(lines)}
 
 
+def retry_count(node: Mapping[str, Any]) -> int:
+    """How many of the node's attempts ended in a provider-error retry: the index of its next model_map option."""
+    return sum(1 for item in node.get("attempts") or [] if item.get("outcome") == "retry")
+
+
+def local_blocked(record: Mapping[str, Any], offered: Iterable[str], backend: Mapping[str, Any] | None) -> list[str]:
+    """Offered nodes marked ``local`` that no local model can take now; they are held, never sent to another model.
+
+    A local node runs only on a local option of Hermes' `model_map` backend
+    (`category_local_options`), one per provider-error retry. Under any other
+    backend, an unreadable one, or with every local option tried, OMH cannot
+    tell where a child would run, so the node waits for the person.
+    """
+    nodes = {str(node["id"]): node for node in record["nodes"]}
+    local_options = (backend or {}).get("local_options") or {}
+    readable = str((backend or {}).get("backend") or "") == "model_map" and (backend or {}).get("status") == "read"
+    blocked = []
+    for node_id in offered:
+        node = nodes[node_id]
+        if not node.get("local"):
+            continue
+        names = list(local_options.get(str(node["category"])) or []) if readable else []
+        if retry_count(node) >= len(names):
+            blocked.append(node_id)
+    return blocked
+
+
 def _call_route(
-    category: str, fallback: bool, retries: int, backend: Mapping[str, Any] | None
+    category: str, fallback: bool, retries: int, backend: Mapping[str, Any] | None, local: bool = False
 ) -> tuple[dict[str, Any], str]:
     """The call's ``route`` and the model_map option its tasks carry (``""`` for none).
 
@@ -1099,16 +1332,20 @@ def _call_route(
     route with `omh_delegate_route` as before. Under `model_map` the option
     goes on each task and no tool runs: a provider-error retry takes the
     category's next option. Any other backend gets nothing from OMH -- it
-    never picks a `profile_routes` profile.
+    never picks a `profile_routes` profile. A ``local`` call takes the
+    category's local options only; `local_blocked` keeps a local node that
+    has none out of every call.
     """
     name = str((backend or {}).get("backend") or "default")
     if name == "default":
         return {"tool": "omh_delegate_route", "action": "fallback" if fallback else "set", "category": category}, ""
     route: dict[str, Any] = {"backend": name, "category": category}
+    if local:
+        route["local"] = True
     if name != "model_map" or (backend or {}).get("status") != "read":
         route["status"] = "not_applied"
         return route, ""
-    names = list(((backend or {}).get("options") or {}).get(category) or [])
+    names = list(((backend or {}).get("local_options" if local else "options") or {}).get(category) or [])
     if retries < len(names):
         route.update(status="option_selected", option=names[retries])
         return route, names[retries]
@@ -1133,24 +1370,26 @@ def calls_for(
     `_call_route`.
     """
     nodes = {str(node["id"]): node for node in record["nodes"]}
-    groups: dict[tuple[str, bool, int], list[str]] = {}
     skipped = set(skip)
     # Under model_map the option is the retry count's: nodes on different retries go in different calls.
     by_option = str((backend or {}).get("backend") or "") == "model_map"
+    # A local node no local model can take is never handed out, whatever the caller skips.
+    skipped |= set(local_blocked(record, offerable(record, derived, now, limits=limits), backend))
+    groups: dict[tuple[str, bool, int, bool], list[str]] = {}
     for node_id in offerable(record, derived, now, limits=limits):
         if node_id in skipped:
             continue
         node = nodes[node_id]
         attempts = node.get("attempts") or []
         fallback = bool(attempts) and attempts[-1].get("outcome") == "retry"
-        retries = sum(1 for item in attempts if item.get("outcome") == "retry") if by_option else 0
-        groups.setdefault((str(node["category"]), fallback, retries), []).append(node_id)
+        retries = retry_count(node) if by_option else 0
+        groups.setdefault((str(node["category"]), fallback, retries, bool(node.get("local"))), []).append(node_id)
     calls: list[dict[str, Any]] = []
     held: list[str] = []
     size = max(1, per_call)
     left = None if task_budget is None else max(0, task_budget)
-    for (category, fallback, retries), members in groups.items():
-        route, option = _call_route(category, fallback, retries, backend)
+    for (category, fallback, retries, local), members in groups.items():
+        route, option = _call_route(category, fallback, retries, backend, local)
         for start in range(0, len(members), size):
             chunk = members[start:start + size]
             if left is not None:
@@ -1317,17 +1556,19 @@ def repair(
                 f"Repair node {node['id']} may depend only on accepted nodes or its own group, not {', '.join(outside)}.",
             )
         node.update(repairs=root, cycle=len(groups) + 1, origin=f"repair:{root}")
+        if nodes[root].get("role_guess") == "verify":
+            node["reruns_root"] = True  # `derive` runs the root again once this group is accepted; not in the digest
     runnable = {key for key, info in derived.items() if info["state"] in LIVE | {"ready", "waiting", "held"}}
     # The group runs before every node that waits on the root (they wait on the root, the root on the group), so a
     # dependent writing what the group writes is ordered, not an overlap.
     every = {str(node["id"]): node["depends_on"] for node in record["nodes"]}
     below = {key: sorted(group) for key in every if root in ancestors(key, every)}
-    _require_graph(list(record["nodes"]) + added, editable=group | runnable, before=below)
+    _require_graph(list(record["nodes"]) + added, editable=group | runnable, involving=group, before=below)
     _require_oneshot_room(added, oneshot_remaining, "repair")
     record["nodes"].extend(added)
     groups.append([str(node["id"]) for node in added])
     record["topology"] = topology(record["nodes"])
-    record["lint"] = lint(record["nodes"])
+    record["lint"] = lint(record["nodes"], defining=False)
     record["updated_at"] = now
     return [str(node["id"]) for node in added]
 
@@ -1398,7 +1639,7 @@ def extend(
     record["nodes"].extend(added)
     rounds.append([str(node["id"]) for node in added])
     record["topology"] = topology(record["nodes"])
-    record["lint"] = lint(record["nodes"])
+    record["lint"] = lint(record["nodes"], defining=False)
     record["updated_at"] = now
     return [str(node["id"]) for node in added]
 

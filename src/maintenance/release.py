@@ -80,6 +80,17 @@ from ..use_cases import (
 REPOSITORY_ARCHIVE_ROOT = "https://github.com/rlaope/oh-my-hermes/archive/refs"
 RELEASE_ASSET_ROOT = "https://github.com/rlaope/oh-my-hermes/releases/download"
 RELEASE_CHANNELS = ("stable", "preview", "local")
+# `preview` is the channel that tracks branch `main`, so `--channel main` names
+# it in the words people use for it. Only the CLI flag reads the alias; every
+# record and URL keeps the canonical `preview`.
+RELEASE_CHANNEL_ALIASES = {"main": "preview"}
+
+
+def normalize_release_channel(value: str) -> str:
+    """The canonical channel for a `--channel` value (`main` -> `preview`)."""
+    return RELEASE_CHANNEL_ALIASES.get(value, value)
+
+
 # `.github/workflows/release.yml` refuses any tag that is not `vX.Y.Z` and
 # names the wheel it uploads after that version, so a stable version of this
 # shape has a predictable release-asset URL. Anything else does not, and falls
@@ -185,7 +196,11 @@ CONCEPTUAL_AWARENESS_SURFACES = ("request-to-handoff", "executor selection", "co
 # 13243 -> 13328: one index line for the new `sprite-forge` skill; its name
 # and visible description window (+85). Re-derived from the producer.
 # Merged with main: 13327 (main) + 85 = 13412, re-derived from the producer.
-SKILL_INDEX_CHAR_LIMIT = 13412
+# 13412 -> 13502: one `systematic-review` index line plus newline (+90),
+# measured from the producer; no headroom.
+# 13502 -> 13592: one `model-compression` index line plus newline (+90),
+# measured from the producer; no headroom.
+SKILL_INDEX_CHAR_LIMIT = 13592
 # The longest single skill line in that index. Every description is already cut
 # to 60 characters, so what moves this is a longer skill name.
 SKILL_INDEX_LINE_CHAR_LIMIT = 100
@@ -370,7 +385,27 @@ SKILL_INDEX_LINE_CHAR_LIMIT = 100
 # enum carries no description (the skill and the tool's results explain it).
 # Measured by per_turn_context.plugin_tool_schema_chars_by_tool() against base
 # c90d94551. No headroom.
-PLUGIN_TOOL_SCHEMA_CHAR_LIMIT = 72455
+# 72455 -> 72525: the node `owner` field on omh_dag (+70, 3068 -> 3138): a bare
+# two-value enum (claude-code, codex) and the word in the description's field
+# list, so one run can send different coding nodes to different external
+# owners. No description (the skill's run-loop reference explains it).
+# Measured by per_turn_context.plugin_tool_schema_chars_by_tool() against base
+# df07e3573. No headroom.
+# 72525 -> 72561: the node `local` field on omh_dag (+37, 3138 -> 3175): a bare
+# boolean and the word in the description's field list, so a node whose
+# material must not leave the machine runs only on a local model_map option
+# and is held otherwise. No description (the skill's run-loop reference
+# explains it). omh_delegate_route's fallback sentence was corrected in the
+# same change (-1, 5296 -> 5295). Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against base a72f02362.
+# No headroom.
+# 72561 -> 72566: omh_delegate_route's category example names the shipped
+# ultrabrain head, which became claude-fable-5-1 in place of gpt-6-astra
+# (+5, 5295 -> 5300; owner decision, 2026-11-09). The example has to track the
+# head (tests/test_delegate_route_tool.py). Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against base b38ff85a1.
+# No headroom.
+PLUGIN_TOOL_SCHEMA_CHAR_LIMIT = 72566
 # PRE_LLM_CALL_CONTEXT_CHAR_LIMIT, PRE_LLM_CALL_CONTEXT_FALLBACK_CHAR_LIMIT: moved with
 # their history to src/plugin_bundle/omh/turn_budget.py; imported at the top of this file.
 # 340000 -> 349637: three capability-skill sections were added by the domain
@@ -910,7 +945,87 @@ PLUGIN_TOOL_SCHEMA_CHAR_LIMIT = 72455
 # product film to every authored video (explainer, motion graphics, kinetic
 # type, logo intro, 3D scene, data-viz, music visual, short), and its four
 # genre triggers move "+N more triggers". Measured by release drift; no headroom.
-FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 532741
+# 532741 -> 533028: the `app-debugging` row only (#2499). Its quality bar gains
+# the `symptom_match` and `minimised` lines and its safety rules the redaction
+# rule (+287). Re-derived from the producer on the tree merged with main; no
+# headroom.
+# 532741 -> 533078: the `llm-app-dev` row (+307) and the `rust` row (+30) only.
+# The llm-app-dev quality bar gains the three rules that are wrong to discover
+# after the call sites exist: a deterministic fake adapter at the client
+# boundary so the code around the model is unit-tested offline, the stop reason
+# read before validation (a response cut at the output cap is truncation, never
+# re-asked under the same cap), and tool arguments validated before the tool
+# runs with invalid calls and tool failures returned as tool results. The rust
+# line only names the new binary-interface and dependency sections it loads;
+# the gate flags, the CLI contract, and the dependency rules stay in
+# `references/rust-discipline.md`. Re-derived from the producer; no headroom.
+# Merged with #2499 and #2497 after #2498: 533028 (#2499's tree: +287 app-debugging) and
+# 533078 (#2498: +307 llm-app-dev, +30 rust) each grew a different row over 532741, so the
+# merged value is re-derived from the producer: 533365 (532741 + 287 + 307 + 30); no headroom.
+# Architecture deepening (#2501) adds: the `refactor-plan` row's first
+# required input admits a chosen deepening candidate whose interface is shaped
+# first by `references/interface-shaping.md` (+136); the `tech-debt-audit`
+# row's description names architecture deepening and drops "against the
+# previous ledger" from its rerun clause (-2). No other row moved.
+# Merged with main after #2506: 533365 (main) + 136 - 2 = 533499, measured from the producer
+# on the merged tree; no headroom.
+# Planning skills offer dag-ulw after acceptance: the `ralplan` row's node-prompt
+# line names `dag-ulw` nodes beside `ultrawork` board rows (+12). No other row
+# moved. 533499 + 12 = 533511, measured from the producer; no headroom.
+# 533511 -> 533758: the `dag-ulw` row only. Its category-ladder quality-bar line
+# says a `role=review` node takes the `review` category where the routes serve
+# it, a `role=baseline` node stays `quick` or `unspecified-low`, and a
+# `role=verify` node, which judges the run goal, climbs the ladder (+247).
+# Measured from the producer; no headroom.
+# 533758 -> 536969: one `systematic-review` capability row (3209) plus its
+# separator (+3211); no other row moved. Measured from the producer.
+# 536969 -> 536979: the `dag-ulw` row only. Its handoff policy names the third
+# way an external coding owner is chosen (naming it in a dag-ulw request) and
+# the per-owner `exports` list (+10). Measured from the producer; no headroom.
+# 536979 -> 539268: the skill audit round, +2,289 net, each lane read at its own head against
+# main and the sum exact on the merged tree. Plan record +6 (the plan, ralplan and
+# adversarial-consensus artifact lines name `--plan-file`); research +485
+# (biomedical-evidence +190, data-analysis +2, live-info-operator +23, long-document-reading
+# +174, research-department +96); memory and Jev +234 (the memory-new and memory-sync
+# descriptions, decision-recall's Do Not Use lines, jev-action-check's third safety rule, the
+# jev-review-gate test diff); business +347 (required-input words and the redline rule); coding
+# core +1,207 (quality bars, safety rules and inputs on ten skills); build, infra and security
+# +27 (application-threat-model -4, security-event-response +31); host readiness -17
+# (executor-runtime-readiness -16, provider-profile-posture -14, capability-toggle +13). The
+# operations lane moves no row, and design and media moves sprite-forge at the same length.
+# 539268 -> 540929: the code-quality skills fix round (+1,661) on top of the audit round, each read at
+# its own head: native-debugging, build-failure-triage, verification-gate, github-event-ops, agent-debug,
+# codebase-onboarding, github-issue-intake, frontend-refactor, repro-audit, codegraph-refresh, codebase-uml,
+# rust, and the todo-checklist path in three rows. Measured from the producer on the merged tree; no headroom.
+# 540929 -> 541026: the cross-lane rail fix, +97. Sibling hand-offs gain backticks or labels in the rows that
+# carry them: apple-design, award-bar-score, codebase-onboarding, codegraph-refresh, design-orchestration,
+# executor-runtime-readiness, external-connector-readiness, memory-new, memory-sync, physical-device-readiness,
+# prompt-import-readiness, ralplan, research, research-brief, research-department, source-finder,
+# toolbelt-readiness, ultraperf. Measured from the producer; no headroom.
+# 541026 -> 540901: the routing reach round, measured per row from the producer: research-brief's description
+# keeps its exclusions in do_not_use_when only (-104), model-optimization drops two triggers (-44),
+# morning-brief's and native-debugging's index text (-6, -4), and the named phrases joining agent-ops-review,
+# code-review, security-event-response, verification-gate and wiki (+3, +2, +14, +6, +8); -125 in all.
+# 540901 -> 541076: a coding-owner choice counts only for the request it was made in. dag-ulw's handoff policy and
+# fourth safety rule drop the one-day window (+90); ulw-maestro's required input, first safety rule and owner-choice
+# quality bar say the same (+85). Measured per row from the producer; no headroom.
+# 541076 -> 541116: no learned coding-owner default. ulw-maestro's owner-choice quality bar names the setup-profile
+# default as a choice that stands and drops "recorded or learned" (+30); dag-ulw's handoff policy says the owner is
+# named in a request that invokes dag-ulw (+10). Measured per row from the producer; no headroom.
+# 540901 -> 544876: one `model-compression` capability row (3973) plus its
+# separator (+3975); no other row moved. Measured per row from the producer.
+# Merged with main: 541076 (main) + 3975 for the `model-compression` row = 545051,
+# re-derived from the producer.
+# Merged with main again: 541116 (main) + 3975 for the `model-compression` row =
+# 545091, re-derived from the producer.
+# 545091 -> 545113: ultrawork's handoff policy routes planning, decomposition and hard-debugging lanes to
+# ultrabrain and ideation to deep (+22); no other row moved. Measured per row from the producer; no headroom.
+# 545113 -> 545231: dag-ulw's ladder quality bar gives `ultrabrain` to the one build node whose judgement decides
+# the run (a design decision, a root cause, a contested trade-off), at most one, and says the verify node is not
+# that node (+118); no other row moved. Measured from the producer; no headroom.
+# 545231 -> 545258: the same sentence gives `ultrabrain` only "where your routes serve it", as the review clause
+# says for `review` (+27); no other row moved. Measured from the producer; no headroom.
+FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 545258
 FULL_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 9000
 # 100000 -> 102070: the same three domain workflows each add one standalone
 # capability row, again measured on the merged tree; warranted growth for three
@@ -1018,7 +1133,11 @@ FULL_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 9000
 # 142635 -> 143595: one 958-character standalone `sprite-forge` summary +
 # separator (+960); the method and Pillow companion stay on demand.
 # Merged with main: 143564 (main) + 960 = 144524, re-derived from the producer.
-STANDALONE_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 144524
+# 144524 -> 145471: one 945-character standalone `systematic-review` row plus
+# separator (+947); the procedure stays in the skill body.
+# 145471 -> 146418: one 945-character standalone `model-compression` row plus
+# separator (+947); the method stays in its on-demand reference.
+STANDALONE_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 146418
 STANDALONE_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 2200
 # ULW fold context ceiling (issue #954, PR D). The limit is the pre-D measured
 # value of the full profile's `skill_body` chars on `main` @ acb9a060, in the
@@ -2099,10 +2218,26 @@ STANDALONE_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 2200
 # body (+11,249), merged over the Vietnamese pack. Its own measurement on
 # 32878e25d (1,332,345) and this pack's (1,325,671) each raised the ceiling to
 # 1,500,000; together they read 1,336,920, whose 10% still rounds to it.
-FULL_PROFILE_SKILL_BODY_MEASURED_CHARS = 1336920
+# 1336920 -> 1511394 (measured; the ceiling 1500000 -> 1700000): the pack had grown to
+# 1,471,273 on main without a re-measure, because a floor the producer reads above fires no
+# re-derive signal, and `test_one_more_ordinary_lane_member_fits_every_body_budget` found that
+# the largest lane-mate copy (`ultrawork`) no longer fits. The skill audit round adds 40,121,
+# each lane read at its own head against main and the sum exact on the merged tree: plan
+# record +843, research +11,359, operations +5,958, memory and Jev +6,241, business +5,740,
+# coding core +2,599, design and media +2,329, build, infra and security +2,798, host
+# readiness +2,254. 1,511,394 plus 10%, rounded up to the next 50,000, is 1,700,000.
+# 1511394 -> 1521089 (the ceiling stays 1700000): the code-quality skills fix round adds 9,695 on the merged
+# tree; 1,521,089 plus 10%, rounded up to the next 50,000, is still 1,700,000.
+# 1521089 -> 1499208 (the ceiling 1700000 -> 1650000): each body's `Current lane` line drops its sample of up to
+# eight member names and a `+N more` count, none of which `skill_view` loads, and the cross-lane rail fix adds its
+# hand-off labels. 1,499,208 plus 10%, rounded up to the next 50,000, is 1,650,000.
+# 1499208 -> 1450927 (the ceiling 1650000 -> 1600000): every body's reply-voice paragraph becomes one line; the
+# record-term and turn-ending clauses it repeated live in the shared rail's Reply Language And Host Voice and Turn
+# Ending sections, which already held them. 1,450,927 plus 10%, rounded up to the next 50,000, is 1,600,000.
+FULL_PROFILE_SKILL_BODY_MEASURED_CHARS = 1450927
 FULL_PROFILE_SKILL_BODY_HEADROOM_PERCENT = 10
 FULL_PROFILE_SKILL_BODY_CEILING_STEP_CHARS = 50000
-FULL_PROFILE_SKILL_BODY_CHAR_LIMIT = 1500000
+FULL_PROFILE_SKILL_BODY_CHAR_LIMIT = 1600000
 FULL_PROFILE_SKILL_BODY_REVIEWED_EXCEPTION_CHARS = 0
 # Repeated bytes: characters of full-profile SKILL.md `##` sections that are
 # byte-identical to the same section in another skill -- the second and later
@@ -2200,9 +2335,24 @@ FULL_PROFILE_SKILL_BODY_REVIEWED_EXCEPTION_CHARS = 0
 # +512) then took the reading to 113,986.
 # Three compact science bodies and their shared lane/evidence rails cross the
 # ceiling: reading 122343; plus 10%, rounded up to 10000, derives 140000.
-FULL_PROFILE_SKILL_BODY_REPEATED_MEASURED_CHARS = 122343
+# 122343 -> 117436 (the ceiling 140000 -> 130000): the skill audit round gives skills their own
+# Completion Checklist, Why and Recovery lines in place of the defaults they repeated, so the
+# reading falls below this floor. From main's 126,756 it falls 9,320: research -1,199,
+# operations -1,735, memory and Jev -593, business -1,600, coding core -246, design and media
+# -1,251, build, infra and security -1,402, host readiness -1,547, each lane read at its own
+# head; the merged tree is 253 above that sum, all under `Completion Checklist`, whose last
+# copy of a default stops counting as a duplicate only once. 117,436 plus 10%, rounded up to
+# the next 10,000, is 130,000.
+# 117436 -> 116571 (the ceiling stays 130000): agent-debug states its own Why and Do Not Use When, and
+# github-event-ops and github-issue-intake their own Completion Checklists, in place of the feature-surface
+# defaults those bodies repeated (-865). 116,571 plus 10%, rounded up to the next 10,000, is still 130,000.
+# 116571 -> 94049 (the ceiling 130000 -> 110000): the same lane line, whose sample of names was the same text in
+# every lane mate. 94,049 plus 10%, rounded up to the next 10,000, is 110,000.
+# 94049 -> 84569 (the ceiling 110000 -> 100000): the same one-line reply-voice rule, shorter in every section that
+# repeats it. 84,569 plus 10%, rounded up to the next 10,000, is 100,000.
+FULL_PROFILE_SKILL_BODY_REPEATED_MEASURED_CHARS = 84569
 FULL_PROFILE_SKILL_BODY_REPEATED_CEILING_STEP_CHARS = 10000
-FULL_PROFILE_SKILL_BODY_REPEATED_CHAR_LIMIT = 140000
+FULL_PROFILE_SKILL_BODY_REPEATED_CHAR_LIMIT = 100000
 
 
 @dataclass(frozen=True)

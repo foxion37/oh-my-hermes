@@ -15,6 +15,8 @@ PORTABILITY_HERMES_ONLY = "hermes-only"
 _PORTABILITY: dict[str, str] = {
     # Exact local comparison uses OMH paper commands, with no evaluator runtime.
     'omh-repro-audit': PORTABILITY_REQUIRES_OMH_CLI,
+    # Freeze, prepare and merge run through `omh research screening`.
+    'omh-systematic-review': PORTABILITY_REQUIRES_OMH_CLI,
     # required_inputs require Hermes skill discovery; final_checklist owns wrapper routing.
     'omh-routing': PORTABILITY_HERMES_ONLY,
     # required_inputs use leading /omh wrapper intake and live full-catalog routing, not host skill nomination.
@@ -125,6 +127,7 @@ _PORTABILITY: dict[str, str] = {
     'omh-data-pipelines': PORTABILITY_PORTABLE,
     # required_inputs: the failing task and held-out examples, what cheaper fixes scored, the data's shape, the base model; expected_outputs: a fine-tune decision, method, data plan, baseline comparison and promotion gate prepared for an operator, so no Hermes runtime is needed.
     'omh-model-finetuning': PORTABILITY_PORTABLE,
+    'omh-model-compression': PORTABILITY_PORTABLE,
     # required_inputs: platforms and build numbers, how signing is held, the shipped SDKs, the beta and its testers, observed crash figures; expected_outputs: signing, privacy, beta, rollout and hotfix plans prepared for an operator, so no Hermes runtime is needed.
     'omh-mobile-release': PORTABILITY_PORTABLE,
     # required_inputs: the control, its population, sampling guidance, materiality, observed evidence; expected_outputs: control, sample design, evidence requests, re-performance record and a criteria-derived grade prepared for an auditor, so no Hermes runtime is needed.
@@ -416,6 +419,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'show-reel/references/art-direction.md',
     'show-reel/references/game-capture.md',
     'show-reel/references/kinetic-type.md',
+    'show-reel/references/launch-film.md',
     'show-reel/references/genres.md',
     'show-reel/references/craft-workflow.md',
     'show-reel/references/craft-brief.md',
@@ -438,6 +442,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'frontend/references/scroll-motion-libraries.md',
     'frontend/references/component-registry-adoption.md',
     'frontend/references/chart-styling.md',
+    'frontend/references/forms-and-input.md',
     'frontend/references/rendered-scene-craft.md',
     'design-quality-gate/references/design-critique-rubric.md',
     'visual-qa/references/visual-verdict-contract.md',
@@ -453,11 +458,13 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'inference-serving/references/serving-runbooks.md',
     'inference-serving/references/serving-bench.md',
     'tech-debt-audit/references/debt-dimensions.md',
+    'tech-debt-audit/references/architecture-deepening.md',
     'accessibility-audit/references/a11y-rules.md',
     'strategy-brief/references/decision-records.md',
     'strategy-brief/references/capacity-planning.md',
     'refactor-plan/references/refactor-phases.md',
     'refactor-plan/references/dependency-upgrade.md',
+    'refactor-plan/references/interface-shaping.md',
     'frontend-refactor/references/refactor-passes.md',
     'frontend-refactor/references/state-discipline.md',
     'ai-slop-cleaner/references/cleanup-passes.md',
@@ -465,6 +472,8 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'backend/references/service-contract.md',
     'backend/references/schema-migration.md',
     'backend/references/consumer-impact.md',
+    'backend/references/contract-tests.md',
+    'backend/references/inbound-and-async.md',
     'rust/references/rust-discipline.md',
     'rust/references/ub-escalation.md',
     'native-debugging/references/native-debug-loop.md',
@@ -477,6 +486,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'iac-change/references/iac-change-method.md',
     'data-pipelines/references/pipeline-method.md',
     'model-finetuning/references/finetuning-method.md',
+    'model-compression/references/compression-method.md',
     'mobile-release/references/mobile-release-method.md',
     'internal-audit/references/control-audit-method.md',
     'data-share-review/references/data-share-method.md',
@@ -488,6 +498,9 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'verification-gate/references/generated-artifact-provenance.md',
     # Shared host-neutral adaptation procedure, loaded only for capability ports.
     'verification-gate/references/adaptation-quality.md',
+    # Shared test-authoring contract, loaded from backend, frontend and
+    # app-debugging bodies and from backend's contract-tests reference.
+    'verification-gate/references/test-authoring.md',
     'security-safety-review/references/credential-rotation.md',
     # Issue #1714. Each of these is named by a body pointer that projects into
     # this target, so omitting it would ship a pointer at a file the portable
@@ -503,6 +516,9 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'code-review/references/review-lenses.md',
     'ai-slop-cleaner/references/prose-lexicon.md',
     'plan/references/project-constitution.md',
+    # Named by a decision-prototype quality_bar pointer that projects into this
+    # target; host-neutral prose with no OMH command or Hermes-only surface.
+    'decision-prototype/references/artifact-shapes.md',
 })
 
 
@@ -569,10 +585,48 @@ PORTABLE_SUPPORT_PATHS = frozenset({
 # the reference exactly once, so an edit that moves it fails the render
 # instead of shipping the old pointer.
 PORTABLE_REFERENCE_REWRITES: dict[str, tuple[tuple[str, str], ...]] = {
+    'ultrawork/references/dependency-topology.md': (
+        (
+            "When the accepted plan's tasks form an ordered graph with a separate verification task and the user did not name this skill themselves, and `omh_dag` is in your tool list, recommend `dag-ulw` with a one-line reason (it validates the graph, settles each node from its handoff, and reports a verdict) rather than running the order here. Stay here for live coordinated lanes, a durable ledger, or a single owner.\n\n",
+            "",
+        ),
+    ),
+    'research/references/briefing-format.md': (
+        (
+            "Render with `omh hermes briefing --input <payload.json> [--markdown out.md] [--page out.html]`, which validates the payload, prints the first five errors it finds, and writes the markdown, the print-ready page, or both. `title` and `question` are both required (both renderers print `title`), `claim_boundary` must be the exact sentence below, `export` must map each format to `prepared`, `handoff_prepared` or `rendered_observed`, each section needs a lowercase `role` from the closed list, a `title` and at least one paragraph, and `figures`, `sources`, `role_labels` and `captions` are optional (`role_labels` and `captions` are required for a non-English `language`). The smallest payload that renders:\n\n```json\n{\n  \"schema_version\": \"research_briefing/v1\",\n  \"audience\": \"human_briefing\",\n  \"output_formats\": [\n    \"markdown\"\n  ],\n  \"language\": \"en\",\n  \"title\": \"Cache eviction options\",\n  \"question\": \"Which cache fits?\",\n  \"as_of\": \"2026-11-07\",\n  \"sections\": [\n    {\n      \"role\": \"concept\",\n      \"title\": \"Cache eviction\",\n      \"paragraphs\": [\n        \"Eviction removes the least recently used entry first.\"\n      ]\n    }\n  ],\n  \"export\": {\n    \"markdown\": \"prepared\"\n  },\n  \"claim_boundary\": \"A research briefing is prepared decision context. It is not execution, review, CI, merge-readiness, or merge evidence, and a rendered page is not a rendered PDF without observed file evidence.\"\n}\n```\n\n",
+            "",
+        ),
+    ),
+    'context/references/project-terms.md': (
+        (
+            "Once per project, `omh memory project-identity init` names the scope; without it the next command stops with `scope_unresolved`. Preview with `omh --scope project memory domain-capture --from-file PROJECT_TERMS.md` (read-only, `prepared_not_observed`). After the user confirms, add `--stage` to write pending candidates. Review and approval stay with `omh --scope project memory domain-review` and `domain-approve`, which this workflow never runs; without `--scope project` they look in another scope and find nothing. When no shell tool is available, show the projection in prose and stop.",
+            "Show the machine-only projection in prose and stop for the user's confirmation. Staging, review and approval belong to the host's own terminology tooling, which this workflow never runs.",
+        ),
+    ),
+    'adversarial-consensus/references/consensus-protocol.md': (
+        (
+            "When `delegate_task` is in your tool list, run each seat as its own child so the contexts really are separate; otherwise run the seats in sequence and mark the caveat below.",
+            "When the host can run a seat as a separate subagent or task, do so, so the contexts really are separate; otherwise run the seats in sequence and mark the caveat below.",
+        ),
+    ),
     'wiki/references/wiki-blueprint.md': (
         (
-            "Route existing `USER.md`/`MEMORY.md` cleanup to `memory-sync`, new durable project facts to `memory-new`,",
-            "Keep existing `USER.md`/`MEMORY.md` cleanup out of the wiki; route new durable project facts to `memory-new`,",
+            "Route existing `USER.md`/`MEMORY.md` cleanup to `omh-memory-sync`, new durable project facts to `omh-memory-new`,",
+            "Keep existing `USER.md`/`MEMORY.md` cleanup out of the wiki; route new durable project facts to `omh-memory-new`,",
+        ),
+    ),
+    # `ulw-work` ships portably, but its TDD reference ships only in the Hermes projection.
+    'verification-gate/references/test-authoring.md': (
+        (
+            "A tests-first lane also follows `ulw-work`'s `references/tdd-red-green.md`, which adds the red-before-green order and the red-commit checkpoint on top of this page.",
+            "A tests-first lane run through `ulw-work` also runs each new test red before any implementation line, on top of this page.",
+        ),
+    ),
+    # `skill_view` is Hermes' loader; the portable pack reads the file by path.
+    'backend/references/contract-tests.md': (
+        (
+            "load `skill_view(name='omh-verification-gate', file_path='references/test-authoring.md')`",
+            "read `../../omh-verification-gate/references/test-authoring.md`",
         ),
     ),
 }

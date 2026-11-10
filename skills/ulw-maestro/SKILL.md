@@ -55,20 +55,21 @@ Bad example:
 
 ## Recovery Notes
 
-- If the selected executor is unavailable, ask for Codex, Claude Code, Hermes, or another runtime before retrying.
-- If dispatch or result evidence is missing, keep the handoff prepared_not_observed and expose the next observable action.
+- If this request lacks an explicit coding-owner choice, no handoff stands yet; mark prompt composition unresolved and hand back the choose_executor question without selecting a CLI.
+- If the scratch-edit permission probe fails, retain the composed prompt and discovered skill names, mark execution not_observed, and hand back the denied permission and required grant change before retrying.
+- If dispatch returns no session or thread id, retain the dispatch receipt, mark steering unresolved, and hand back the explicit unsteerable note and any observed unit result without claiming a resumable session.
 
 ## Workflow Lane
 
-- Current lane: **Coding handoff** (`idea-to-deploy`, `llm-app-dev`, `cto-loop`, `deploy-and-monitor`, `code-review`, `build-failure-triage`, `verification-gate`, `security-safety-review`, `+28 more`) - coding owners, handoffs, review, CI, and merge evidence.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Coding handoff** - coding owners, handoffs, review, CI, and merge evidence.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
 
 Use once a lane's coding owner is an explicit external CLI and the work needs a prompt composed from that CLI's own installed skills, its readiness and permission checked, and its session captured for steering.
 
-    Strong routing signals: `$maestro`, `ulw-maestro`, `coding handoff`, `prepare the handoff`, `prepare a coding handoff`, `hand off the coding work`, `external executor handoff`, `handoff prompt`, `delegation prompt`, `コーディング委任`, `委任プロンプト`, `ハンドオフを準備`, `外部の実行エージェントに渡す`, `코딩 위임`, `위임 프롬프트`, `핸드오프 준비`, `외부 실행기 위임`, `코딩 에이전트에 넘기`, `передай кодексу`, `отдай задачу агенту`, `подготовь хэндофф`, `подготовь делегирование`, `编码委托`, `移交提示词`, `准备交接`, `交给编码代理`, `siapkan handoff coding`, `buat prompt delegasi untuk agen coding`, `susun instruksi implementasi untuk eksekutor coding`, `siapkan serah terima ke agen coding pilihan saya`, `bantu bikin brief untuk eksekutor coding`, `kemas tugas coding untuk agen yang sudah dipilih`, `chuẩn bị bàn giao coding`, `tạo prompt ủy quyền cho agent coding`, `lập hướng dẫn thực hiện cho trình thực thi coding`, `chuẩn bị bàn giao cho agent coding đã chọn`, `giúp viết brief cho trình thực thi coding`, `đóng gói công việc coding cho agent đã chọn`
+    Strong routing signals: `$maestro`, `ulw-maestro`, `coding handoff`, `prepare the handoff`, `prepare a coding handoff`, `hand off the coding work`, `external executor handoff`, `handoff prompt`, `delegation prompt`, `コーディング委任`, `委任プロンプト`, `ハンドオフを準備`, `外部の実行エージェントに渡す`, `코딩 위임`, `위임 프롬프트`, `핸드오프 준비`, `외부 실행기 위임`, `코딩 에이전트에 넘기`, `코딩 에이전트에 넘길`, `передай кодексу`, `отдай задачу агенту`, `подготовь хэндофф`, `подготовь делегирование`, `编码委托`, `移交提示词`, `准备交接`, `交给编码代理`, `siapkan handoff coding`, `buat prompt delegasi untuk agen coding`, `susun instruksi implementasi untuk eksekutor coding`, `siapkan serah terima ke agen coding pilihan saya`, `bantu bikin brief untuk eksekutor coding`, `kemas tugas coding untuk agen yang sudah dipilih`, `chuẩn bị bàn giao coding`, `tạo prompt ủy quyền cho agent coding`, `lập hướng dẫn thực hiện cho trình thực thi coding`, `chuẩn bị bàn giao cho agent coding đã chọn`, `giúp viết brief cho trình thực thi coding`, `đóng gói công việc coding cho agent đã chọn`
 
 ## Catalog Metadata
 
@@ -81,9 +82,9 @@ Reasoning demand: `heavy`
 Quality bar:
 
 - Planning is not execution permission. Handoff requests authorize preparation only; explicit execution requests authorize only their scope, subject to readiness and permission probes. Clarify missing authority.
-- Require an explicit owner choice for this run: named now, confirmed when asked, or recorded as `accepted_explicit_choice`. Recommendations, plan mentions and previous owners do not count. For a missing, ambiguous or unready owner, ask `choose_executor` once and stop; never choose for the user.
+- Require an explicit owner choice made in this request: named in it, or confirmed when asked; a default the person set in the setup profile also stands. A choice counts only for the request it was made in: an earlier request's owner, recommendations and plan mentions do not count, so ask again. For a missing, ambiguous or unready owner, ask `choose_executor` once and stop; never choose for the user.
 - Owner selection alone is not dispatch permission: `prepare a Codex handoff only` or `use Codex, do not dispatch` stays preparation-only. `Use Codex to implement this now` supplies both the owner choice and dispatch permission within scope, with no redundant confirmation. After readiness and permission probes, invoke the fanout-dispatch bridge (`omh coding run` for one unit); clarify missing owner or action authority first.
-- State the handoff mode before composing: claude-code is prompt-only (`coding_prompt_handoff/v1` -- the prepared handoff record is never dispatchable and never described as a run; only the fanout-dispatch bridge -- `omh coding fanout dispatch` or its `omh coding run` single-run entry -- ever spawns a CLI), codex is a dispatchable `coding_executor_handoff/v1`, and omx-runtime/pi-family-runtime/omc-runtime are `coding_runtime_handoff/v1`.
+- State the handoff mode before composing: the claude-code handoff record is prompt-only (`coding_prompt_handoff/v1` -- that record is never dispatchable and never described as a run; a user-commanded Claude Code run goes through the bridge below, and only the fanout-dispatch bridge -- `omh coding fanout dispatch` or its `omh coding run` single-run entry -- ever spawns a CLI), codex is a dispatchable `coding_executor_handoff/v1`, and omx-runtime/pi-family-runtime/omc-runtime are `coding_runtime_handoff/v1`.
 - Compose the prompt from the selected profile's DISCOVERED skills via `omh coding executor-skills --profile <profile>`: arrange the returned skills by the unit's role recipe, one named skill per step, using each skill's own invocation string verbatim (`/name`, `/pack:name` from its manifest, `$name` for a codex pack) -- never a guessed prefix. Empty discovery gets one explicit line -- "no installed skills discovered for <profile>; prompt composed generically" -- then compose generically. Load `references/executor-prompt-composition.md` for the full procedure.
 - A discovered skill is declared, never observed: a `SKILL.md` on disk is evidence the file exists, not that the receiving agent loads, enables, or honours it -- its own registry is the authority.
 - Hold every composed prompt to the executor prompting contract: the ten required sections in order (Goal, Do, Don't, Known context, Unknowns and decision rule, Expected result, Test, Progress and blockers, Evidence boundary, Task), a greppable `Docs consulted:` block (URL plus version, or the explicit none-line), and the six-section session summary shape on report-back.
@@ -115,14 +116,14 @@ Executor readiness:
 
 Delegation transparency:
 
-- When delegating, show the composed delegate prompt in a fenced code block in the status message; truncate a long prompt to a bounded preview ending with `... [truncated, N chars total]` — the user must see WHAT was asked, not just that something was.
+- When delegating, show the composed delegate prompt in a fenced code block in the status message; truncate a long prompt to a bounded preview ending with `... [truncated, N chars total]`.
 - Name every delegated or parallel lane's model and, when the host exposes it, its reasoning effort inline as `(model effort)` in status and briefing lines — including runtime-native subagents; when no effort is exposed, show the model alone as `(model)` rather than writing a placeholder like `unknown` beside a known model, and never emit empty parentheses. Carry token and elapsed figures the same way in these narration lines: report observed figures and omit unobserved ones — when the user asks for a figure directly, say it was not observed instead of omitting it; a rendered status-board column keeps its own `unknown` cell.
-- Capture a resumable session or thread id at dispatch and report it in the status message: for non-interactive Claude Code pass `--output-format json` and read `session_id` from the result (resume with `claude -p --resume <session-id>`); for Codex pass `--json` and read `thread_id` (resume with `codex exec resume <thread-id>`, repeating `--skip-git-repo-check` outside a git repo). Never leave a delegate run with no recorded way to resume or steer it — a plain-text one-shot that hides its session id strands the work when the run stalls or times out.
+- Capture a resumable session or thread id at dispatch and report it in the status message: for non-interactive Claude Code pass `--output-format json` and read `session_id` from the result (resume with `claude -p --resume <session-id>`); for Codex pass `--json` and read `thread_id` (resume with `codex exec resume <thread-id>`, repeating `--skip-git-repo-check` outside a git repo). Never leave a delegate run with no recorded way to resume or steer it.
 - Before dispatch, grant the executor session every permission the task will need — file write/edit, command/test execution, and the working directory — on the dispatch command itself, not through settings-file guesses: for non-interactive Claude Code pass `--permission-mode acceptEdits` or an explicit `--allowedTools` list (`--dangerously-skip-permissions` only inside an isolated worktree or sandbox), and the equivalent sandbox/approval flags for other CLIs. `acceptEdits: true` is not a settings key and `~/.claude/settings.local.json` is not a file Claude Code reads — user scope is `~/.claude/settings.json` and project scope is the dispatch cwd's `.claude/settings.local.json` with rules under `permissions.allow`. Prove the grant with a bounded scratch-edit probe run before the real dispatch: a permission denial in a non-interactive run recurs identically on retry, so never redispatch until a changed grant is proven, and surface an ungrantable permission as a blocker before dispatch, not after minutes of silence.
 
 Required inputs:
 
-- explicit coding-owner choice for this run
+- explicit coding-owner choice made in this request
 - task or unit description
 - the chosen profile's discovered executor skill set
 
@@ -138,7 +139,7 @@ Artifact expectations:
 
 Safety rules:
 
-- Never prepare a handoff without an explicit owner choice for this run -- a routing recommendation, a plan mention, or a previous run's owner is not a choice for this run.
+- Never prepare a handoff without an explicit owner choice made in this request -- a routing recommendation, a plan mention, or an earlier request's owner is not a choice for this one.
 - Prepared, composed, or shown is never dispatch, execution, review, CI, or merge evidence.
 - Never route a Hermes-owned lane through this engine; the Hermes harness stays the default coding path.
 - Never carry a discovered skill's description text into a composed prompt -- only its name and invocation string ever leave discovery; the description stays inside the classifier.
@@ -156,7 +157,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

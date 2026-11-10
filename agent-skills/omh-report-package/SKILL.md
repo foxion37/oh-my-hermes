@@ -22,7 +22,7 @@ This is an OMH `report-package` workflow skill, projected for Agent Skills hosts
 ## Do Not Use When
 
 - The user needs SLO, incident, or error-budget review; use `omh-reliability-review`.
-- The user asks for a live `.pptx` deck file rather than a PPT-ready outline.
+- The user asks only for a designed `.pptx` file; use `omh-materials-package`.
 - The request is meeting minutes, scrum history, or action-item tracking.
 
 ## Examples
@@ -36,7 +36,7 @@ Good example:
 Bad example:
 
 - Prompt: report-package prove our SLO passed and close the incident.
-- Expected behavior: Route to `reliability-review` and require metric or incident evidence.
+- Expected behavior: Route to `omh-reliability-review` and require metric or incident evidence.
 - Why: Report packaging cannot satisfy reliability closure evidence.
 
 ## Completion Checklist
@@ -47,8 +47,9 @@ Bad example:
 
 ## Recovery Notes
 
-- If input evidence is incomplete, mark the section as pending rather than fabricating a report claim.
-- If delivery or attachment is unavailable, keep the report package prepared_not_observed.
+- If no presentation tool can produce a binary deck, retain the PPT-ready Markdown or JSON outline, mark binary export not_observed, and hand back the outline, assumptions, and missing-input list for separate deck generation.
+- If the tool returns "rendered": false (it still exits 0) or its image count differs from slide_count, keep the deck's outline read-back, leave render QA not observed, and hand back the missing-tool or image-count gap for that file.
+- If the requested achievements export fails, retain the rest of the report package, mark the badge section not_observed, and hand back the missing output from omh achievements export --format md instead of inventing badges.
 
 
 
@@ -69,16 +70,17 @@ Quality bar:
 
 - Name audience, reporting period, sections, supplied facts, assumptions, and missing data.
 - Keep report packaging independent from reliability review unless explicitly requested.
+- Open with the conclusion and any decision requested; show each metric against target or prior value or mark it no baseline.
 - Export only Markdown/JSON outlines unless a separate presentation tool produces a binary deck.
-- On Hermes, that tool can be the bundled `powerpoint` skill, and a deck it builds counts as generated from its read-back (`pptx_read.py --outline`).
+- On Hermes, that tool can be the bundled PowerPoint skill (`powerpoint`; `microsoft-office` from v0.22.6), and a deck it builds counts as generated from its read-back (`pptx_read.py --outline`).
 - On Hermes, a rung taken from a bundled document skill is observed only from that skill's result for that exact file, judged by its field, not its exit code: `"rendered": false` or `"recalculated": false` exits 0 yet leaves that rung not observed, blocked on the missing tools it names; other observed evidence for a rung still counts.
-- On Hermes, `powerpoint` gives `slide_count` (`pptx_read.py --outline`) and `render_screenshot` (`pptx_render.py` into a fresh directory, its image count matching `slide_count`, since it lists every image already in that directory). Images that exist are not a render pass until each one has been inspected.
+- On Hermes, PowerPoint gives `slide_count` (`pptx_read.py --outline`) and `render_screenshot` (`pptx_render.py` into a fresh directory, its image count matching `slide_count`, since it lists every image already in that directory). Images that exist are not a render pass until each one has been inspected.
 
 Required inputs:
 
 - audience
 - reporting period or scope
-- supplied facts
+- supplied facts with targets or prior-period figures
 - missing data or assumptions
 
 Expected outputs:

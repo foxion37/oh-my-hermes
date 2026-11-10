@@ -24,6 +24,7 @@ This is an OMH `img-summary` workflow skill, projected for Agent Skills hosts (C
 - The user needs a deck, PDF, spreadsheet, HWP, Markdown package, or binary file export plan; use `omh-materials-package`.
 - The user wants a text-only report, leadership brief, or PPT-ready outline; use `omh-report-package`.
 - The user asks OMH to directly generate, inspect, upload, or post an image without a wrapper-supplied observed evidence path.
+- A standalone picture with no source material to summarize; call the host image tool with the user's own prompt, no card format.
 
 ## Examples
 
@@ -41,14 +42,14 @@ Bad example:
 
 ## Completion Checklist
 
-- The material source, target format, audience, structure, and QA expectation are named.
-- Binary export, rendering, formula recalculation, attachment, and delivery stay observed-only.
-- The next action identifies whether the package is planned, generated, QA-ready, or blocked.
+- The source kind, format, ratio and language mode are named.
+- Prompt prepared, image generated, text read back, visual QA and delivery are separate states.
 
 ## Recovery Notes
 
-- If a renderer or file tool is missing, keep the package prepared and expose the generation handoff.
-- If render QA is unavailable, mark the artifact unverified and request the smallest visual/file check.
+- If image_generation_capability/v1 is unknown or prompt_only, retain visual_prompt_card/v1, mark generation not_observed, and hand back image_generation_setup/v1 with the question of which image tool to use.
+- If an edit lacks the supplied image reference or preserve/remove constraints, retain only the supplied edit intent, mark transformation unresolved, and hand back the missing inputs for the image transformation brief.
+- If visual_generation_receipt/v1 reports a failed or partial attempt, retain visual_prompt_card/v1 and the receipt's failure stage, mark generation not_observed, and hand back the failed attempt without claiming an image.
 
 
 
@@ -73,13 +74,14 @@ Quality bar:
 - Adapt scene, texture, depth, lighting, camera, motifs, palette, and composition to domains such as security, commerce, sports, fashion, finance, developer work, or research.
 - Resolve a poster archetype such as Swiss grid, cinematic key-art, editorial magazine, constructivist photomontage, data infographic, product ad, technical brutalist, museum exhibition, sports event, or luxury lookbook.
 - Ask image tools to render the domain-specific environment first, then place readable card modules on top; reject flat vector clipart, plain gradients, generic glass cards, color-swapped templates, and low-detail wallpaper.
-- Preserve a stable OMH img-summary format contract: source badge, headline, source-kind subtitle, content modules, evidence footer, and small `OMH generated` mark.
+- Preserve a stable OMH img-summary format contract: source badge, headline, source-kind subtitle, content modules, evidence footer, and small `OMH generated` mark (on request, delete its clause from the prompt).
 - Use long_scroll or extended rows when the card needs a document-style vertical canvas with more sections or denser text.
 - Keep visible card text readable and faithful to supplied source or structured sections; do not shrink paragraphs into tiny poster copy.
+- Read every visible string back from an observed card and compare it with the card copy; a misspelled name, number or date, or garbled CJK, fails the attempt: regenerate with shorter copy or add the text outside the model.
 - Separate prompt prepared, image generated, visual QA passed, and delivered states.
 - Bind an image result to the card digest, action, attempt, and content digest, then warn on route mismatch, unknown route, stale card, digest drift, and response reuse rather than resolving any of them.
 - For transformations, preserve requested identity, composition, text, and protected regions; verify the observed result against the edit brief before a PASS claim.
-- Prefer `img-summary` over `materials-package` only when the request asks for an image, visual card, or summary card.
+- Prefer `img-summary` over `omh-materials-package` only when the request asks for an image, visual card, or summary card.
 - Use materials/report workflows only after an observed generated file needs packaging.
 
 Required inputs:

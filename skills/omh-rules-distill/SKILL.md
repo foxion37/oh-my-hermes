@@ -10,7 +10,7 @@ metadata:
     phase: rules-distillation
     role: memory-keeper
     quality_tier: rules-distillation-gated
-    related_skills: [omh-workflow-learning, omh-wiki, omh-agent-instructions]
+    related_skills: [omh-workflow-learning, omh-memory-new, omh-memory-sync, omh-agent-instructions, omh-model-compression]
 ---
 
 # Rules Distill
@@ -19,14 +19,15 @@ This is a Hermes-native `rules-distill` workflow skill.
 
 ## Why This Exists
 
-`rules-distill` gives OMH a disciplined way to learn from large skill ecosystems like ECC without wholesale copying: extract principles, review them, then patch OMH only through explicit verified work.
+`rules-distill` exists because a repeated lesson buried in traces, reviews, and skill text changes behaviour only once it is written down as a rule, and a rule written from one anecdote does the opposite: it extracts candidate rules from a corpus the user names, checks them against what is already written, and hands approved ones to the destination the user chose; the method is adapted from ECC's rules-distill without wholesale copying.
 
 ## Do Not Use When
 
 - The user wants a single workflow route regression; use `omh-workflow-learning`.
-- The user wants durable factual project memory; use `omh-wiki` or memory curation.
+- The user wants durable factual project memory; use `omh-memory-new`, or `omh-memory-sync` to curate what Hermes already holds.
 - The user already approved a concrete code/doc change; use the implementation workflow.
 - The ask is writing or keeping current the file an agent reads at startup -- AGENTS.md, CLAUDE.md, a Cursor rule; use `omh-agent-instructions`, which updates only its marked region.
+- The ask is shrinking a neural network's weights into a smaller student model; use `omh-model-compression`.
 
 ## Examples
 
@@ -44,19 +45,21 @@ Bad example:
 
 ## Completion Checklist
 
-- The durable fact, source evidence, retrieval hint, and staleness risk are recorded.
-- Uncertain or conflicting knowledge is marked as review-needed rather than permanent truth.
-- Separate coding or docs tasks are extracted instead of buried in notes.
+- Every candidate in principle_candidate_set/v1 cites the repeated observations it rests on, counted as independent runs, sessions, or sources (one session counts once); a candidate resting on one observation stays needs-evidence in review_queue/v1, and two is tentative.
+- Every candidate is classed mechanical or judgement before it is worded. A mechanical candidate is a miss a machine can find from the text alone (a forbidden call, a disallowed import, a file in the wrong place), and its destination is a check (a linter rule, test, hook, or CI step); when the repository already has a check for it that never runs or no longer fails, the candidate is repairing that check, not adding another. Its approved_patch_handoff/v1 names the check and where it is wired, and sets as an acceptance criterion the run the implementer must observe: the check fails with the violation injected and passes once it is reverted. A mechanical candidate outside the chosen destination boundary is reported as a check proposal outside the boundary, never reworded as prose. Only judgement candidates, which need a reader (consistency across files, fit with the code around them), are worded as prose.
+- duplication_conflict_report/v1 names the existing rule or check each candidate repeats or contradicts, or says none was found and where it looked.
+- Nothing reached a destination without an approval recorded in review_queue/v1.
 
 ## Recovery Notes
 
-- If source evidence conflicts, route to memory or knowledge review before writing durable guidance.
-- If the fact may be stale, record the staleness warning and next refresh action.
+- If a principle rests on one observation, retain its source reference in principle_candidate_set/v1, mark the rule tentative and needs-evidence in review_queue/v1, and hand back the candidate for repeated observations.
+- If approval is missing, retain principle_candidate_set/v1 and duplication_conflict_report/v1, mark implementation not_observed, and hand back review_queue/v1 without producing approved_patch_handoff/v1.
+- If skill_manage stages an approved change, retain the approved candidate and staged result, mark the skill update not_observed, and hand back the pending ID for the person's `/skills approve <id>`.
 
 ## Workflow Lane
 
-- Current lane: **Automation and status** (`achievements`, `workspace-audit`, `production-audit`, `live-incident-response`, `automation-blueprint`, `github-event-ops`, `github-issue-intake`, `buzz`, `+40 more`) - schedules, status, health, and ops review.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Automation and status** - schedules, status, health, and ops review.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -88,7 +91,7 @@ Keep principle extraction and candidate review in Hermes. Editing AGENTS.md, cat
 Required inputs:
 
 - source corpus: skills, prompts, traces, reviews, failures, or docs
-- destination boundary: AGENTS, skill catalog, prompt, docs, memory, or no-write review
+- destination boundary: AGENTS, skills, prompt, docs, memory, check, or no-write review
 - rule granularity and acceptance criteria
 - reviewer or approval requirement
 
@@ -103,7 +106,7 @@ Expected outputs:
 
 Artifact expectations:
 
-- principle_candidate_set/v1 with source references, repeated pattern, candidate wording, scope, non-goals, and risk
+- principle_candidate_set/v1 with source references, repeated pattern, mechanical or judgement class, candidate wording or check, scope, non-goals, and risk
 - duplication_conflict_report/v1 with already-covered rules, conflicts, and stale guidance
 - review_queue/v1 separating proposed, approved, rejected, deferred, and needs-evidence candidates
 
@@ -126,7 +129,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

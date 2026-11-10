@@ -223,7 +223,7 @@ class LostCallTests(unittest.TestCase):
         app, old, _spawner, now = crashing(busy=True, cols=120)
         type_text(app, "steer me")
         app._on_input(Key(ENTER, ctrl=True))
-        self.assertEqual(app.client.named("session.steer"), [{"session_id": SID, "text": "steer me"}])  # type: ignore[attr-defined]
+        self.assertEqual(app.client.named("session.redirect"), [{"session_id": SID, "text": "steer me"}])  # type: ignore[attr-defined]
         crash(app, old)
         self.assertEqual(app.composer.text, "steer me")  # never sent again: Hermes may have taken it
         self.assertEqual([call.method for call in app.pending.values()], ["config.get", "commands.catalog"])
@@ -295,7 +295,7 @@ class TellFieldAcrossARespawnTests(unittest.TestCase):
                 self.assertIsNone(app.tell_draft)
                 self.assertEqual(app.composer.text, f"my draft\n{typed}" if typed else "my draft")
                 self.assertEqual(TELL_LOST_NOTICE in notices(app), bool(typed))
-                self.assertEqual(app.client.named("session.steer"), [])  # type: ignore[attr-defined]  # never sent
+                self.assertEqual(app.client.named("session.redirect"), [])  # type: ignore[attr-defined]  # never sent
 
 
 class AgentsAcrossARespawnTests(unittest.TestCase):
@@ -320,7 +320,7 @@ class AgentsAcrossARespawnTests(unittest.TestCase):
                          {FIRST: COMPLETED, SECOND: INTERRUPTED})  # the gateway that ran it is gone
         self.assertIsNone(app.agent_steer)
         view = [line_text(line) for line in app._agent_view(120, 30)]
-        self.assertTrue(view[1].startswith("  ○ Run the shell command one"), view)
+        self.assertTrue(view[1].startswith("  ✓ Run the shell command one"), view)
         self.assertTrue(view[2].startswith("  ▪ Run the shell command two"), view)
         self.assertFalse([row for row in view if "│" in row], "no HUD agents block header beside them")
 
@@ -526,7 +526,7 @@ class LoopTests(unittest.TestCase):
 
         first.resume = {"session_id": SID, "stored_session_id": STORED, "info": {}}
         environ = {**ENVIRON, "HERMES_TUI_RESUME": STORED}
-        code = _run(first, environ, _Sink(), lambda: terminal, poller, spawner)  # type: ignore[arg-type]
+        code = _run(first, environ, _Sink(), lambda: terminal, poller, spawner, contain_faults=False)  # type: ignore[arg-type]
         self.assertEqual(code, 0)
         (new,) = spawner.made
         self.assertEqual(new.closed, 1)  # reaped by `_run`; the first one is the caller's to close
@@ -547,7 +547,7 @@ class SignalDuringRespawnTests(unittest.TestCase):
 
         environ = {**ENVIRON, "HERMES_TUI_RESUME": STORED}
         with self.assertRaises(SystemExit):
-            _run(first, environ, _Sink(), lambda: terminal, poller, Spawner(new))  # type: ignore[arg-type]
+            _run(first, environ, _Sink(), lambda: terminal, poller, Spawner(new), contain_faults=False)  # type: ignore[arg-type]
         self.assertEqual(terminal.exited, 1)  # the terminal was handed back first
         return first
 

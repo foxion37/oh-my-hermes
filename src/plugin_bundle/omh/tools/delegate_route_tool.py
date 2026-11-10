@@ -46,13 +46,19 @@ from ..delegation_backend_mode import (
     MODEL_MAP_BACKEND,
     PROFILE_ROUTES_BACKEND,
     STATUS_UNREADABLE,
+    FAST_TIER_CATEGORIES,
     option_chain,
     option_for,
     read_backend_mode,
 )
 from ..omh_identities import read_identity_chains
 from ..route_endpoint_guard import managed_config_layer, route_endpoint_refusal
-from ..provider_detection import config_provider_base_url_hosts, config_provider_declared_models, configured_provider_ids
+from ..provider_detection import (
+    config_provider_base_url_hosts,
+    config_provider_declared_models,
+    configured_provider_ids,
+    route_only_provider_ids,
+)
 from ..host_observation import OBSERVATION_SCHEMA, attach_public_observation, host_session_id, observe_plugin_tool_call
 from ..kanban_board_reader import conversation_session_ids
 from ..orchestration_say import route_say, with_say
@@ -121,13 +127,14 @@ def _backend_route(
             "note": "OMH routes only the default and model_map backends; `/delegation default` restores OMH routing.",
         }
     options = list(mode.get("options") or [])
-    carried = option_chain(chain, options, provider_routes) if chain else []
+    prefer_fast = category in FAST_TIER_CATEGORIES
+    carried = option_chain(chain, options, provider_routes, prefer_fast=prefer_fast) if chain else []
     matched = False
     if alias:
         # The lane's own model (the category head, or the user's explicit
         # model) leads; the rest of the chain follows as its fallbacks.
         provider, wire_model = provider_routes.get(alias, ("", ""))
-        name = option_for(options, alias, effort, wire_model=wire_model, provider=provider)
+        name = option_for(options, alias, effort, wire_model=wire_model, provider=provider, prefer_fast=prefer_fast)
         matched = bool(name)
         if name:
             carried = [{"option": name, "alias": alias, "reasoning_effort": effort}] + [
@@ -350,7 +357,8 @@ def _configured_providers(hermes_home: Any, omh_home: Any) -> frozenset[str]:
     every `providers.<id>` block and `model.provider` in config.yaml (a
     loopback block is configured even though entitlements skip it), the
     `custom:<name>` identities of `providers.<id>` blocks with a `base_url`
-    and of legacy `custom_providers` entries, and the session's own provider.
+    and of legacy `custom_providers` entries, `route_only_provider_ids`
+    (minus the same exclusions), and the session's own provider.
     """
     recorded, _ = load_provider_entitlements(omh_home)
     excluded = {str(item).casefold() for item in (recorded or {}).get("excluded_providers", [])}
@@ -364,6 +372,7 @@ def _configured_providers(hermes_home: Any, omh_home: Any) -> frozenset[str]:
         }
         custom_names |= _legacy_custom_provider_names(text)
         configured |= config_ids | {f"custom:{name}" for name in custom_names - excluded}
+    configured |= {item.casefold() for item in route_only_provider_ids(Path(hermes_home).expanduser())} - excluded
     session = read_session_provider(hermes_home).casefold()
     if session:
         configured.add(session)
@@ -549,7 +558,7 @@ OMH_DELEGATE_ROUTE_SCHEMA = {
         "have to clear at the end; call clear only to put the previous values back sooner. "
         "A restore is skipped, and says so, when the keys no longer hold what OMH wrote -- "
         "a value someone else set is never overwritten. Children already running keep their model. "
-        "Hermes has NO provider-side fallback: a child whose model the billing account "
+        "Unless delegation.fallback_providers is set, a child whose model the account "
         "cannot serve dies on an HTTP 400 yet its delegation still reports completed with "
         "the error text as the result — a completed child with no recorded model usage "
         "means exactly this. When that happens call action=fallback to advance the route "
@@ -580,7 +589,7 @@ OMH_DELEGATE_ROUTE_SCHEMA = {
                 "enum": sorted(HERMES_MIXTURE_CATEGORY_CHAINS),
                 "description": (
                     "Mixture category to route to; resolves to the chain head "
-                    "(e.g. ultrabrain -> gpt-6-astra xhigh). Required for set unless "
+                    "(e.g. ultrabrain -> claude-fable-5-1 xhigh). Required for set unless "
                     "an explicit model is given."
                 ),
             },

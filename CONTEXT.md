@@ -439,6 +439,29 @@ Hermes home — plugin readiness, activity rows, the plan todo, display lines.
 Status narration, never execution, review, CI, merge, or token-usage evidence.
 _Avoid_: runtime state (the payload is a read-only projection of it)
 
+### Desktop app
+
+**omher**:
+The macOS desktop app in `apps/omher/` (Tauri shell, React UI, a Python
+bridge). One Hermes profile is one bot; each bot has one main chat, the
+session titled `Bot Chat`, and omher shows its other sessions read-only. The
+app starts the bridge, which reaches the person's own Hermes gateway over
+loopback through Hermes' `connect_gateway`; omher makes no model or API call
+and is not part of the `omh` Python package. Its SESSIONS list starts one of a
+fixed set of agent programs (`claude`, `codex`, `omh`, `pi`, `omp`, `grok`) in a
+terminal in a folder the person picks. Boundary:
+`docs/OMHER-BOUNDARY.md`.
+_Avoid_: counting omher as an OMH execution surface, the OMH TUI, a Hermes
+Desktop plugin
+
+**Elsewhere**:
+A session of a bot's Hermes profile whose source is not one of `tui`, `cli`,
+`local`, `desktop`, `acp`, `api_server`, `omher` and which is not the bot's
+main chat: Slack, Discord, Telegram and cron sessions. omher lists them and
+reads their last messages and never sends, answers or interrupts in them.
+_Avoid_: other chats (omher has one chat per bot), shared session, a place to
+type
+
 ### Hermes terminal surfaces
 
 **Classic TUI**:
@@ -483,7 +506,11 @@ child exits on its own with a failure, it spawns it again the same way and
 resumes the open session, at most 3 times in 60 s (an open question closes
 unanswered, a running turn is reported lost and never re-sent), and past that
 it exits as before; Ctrl+Z stops its process group, the gateway child with it, as
-Hermes' own CLI's Ctrl+Z does. Layout, input, rendering and
+Hermes' own CLI's Ctrl+Z does. `/gateway restart`, typed by the person and
+confirmed in the slot, runs Hermes' own `hermes gateway restart` (for a
+named profile the shared gateway serves, that profile alone or the whole
+gateway, as the person picks) and then reattaches to the same session,
+outside that limit. Layout, input, rendering and
 the OMH panels are OMH's; every model call, tool run and approval decision is
 the gateway's. Shift+Tab may turn on Hermes' per-session yolo, so Hermes stops
 asking for approvals in that one session (a `config.set` naming the session,

@@ -90,7 +90,7 @@ from ..install.skill_registration import (
 from ..doctor import DEFAULT_DOCTOR_NEXT_ACTION, doctor_ok, recommended_next_action, run_doctor
 from ..maintenance.build_identity import probe_build_identity
 from ..maintenance.doctor import run_doctor_advisories
-from ..maintenance.hermes_gateway import gateway_restart_hints
+from ..maintenance.hermes_gateway import gateway_restart_hints, refresh_skill_dir_caches
 from ..executors import CODING_EXECUTOR_TARGETS
 from ..hashutil import sha256_file
 from ..installer import (
@@ -127,6 +127,7 @@ from ..plugin_bundle.omh.provider_detection import (
 from ..plugin_bundle.omh.runtime_paths import default_hermes_home
 from ..plugin_pack import PLUGIN_NAME, PluginPackError, install_plugin_bundle
 from ..install.plugin_pack import HERMES_PLUGIN_UPDATE_COMMAND, PluginContentProtectedError
+from ..install.self_update import PROFILE_REPAIR_EXIT_CODE, names_flag
 from ..probe import probe_capabilities
 from ..release import (
     COMMIT_SHA_RE,
@@ -134,6 +135,7 @@ from ..release import (
     RELEASE_CHANNELS,
     RELEASE_WHEEL_VERSION_RE,
     ReleaseSelection,
+    normalize_release_channel,
     package_url_for,
     release_artifact_note,
     release_from_direct_url,
@@ -342,6 +344,40 @@ def _requested_release(args: argparse.Namespace) -> ReleaseSelection:
     return package_url_for("preview")
 
 
+def _installer_self_update_release(args: argparse.Namespace, requested: ReleaseSelection) -> ReleaseSelection | str:
+    """The release an installer-managed `omh update` moves the command package to, or why it should not move.
+
+    An explicit `--channel`, `--version`, or `--package-url` wins. Otherwise the
+    installed package's PEP 610 record keeps its channel, as `_requested_release`
+    does for setup: a stable install moves to the newest published release
+    instead of the `main` archive, and is left alone when it is already on it or
+    when the newest release cannot be read. A `main` install, or one that records
+    nothing, keeps tracking `main`.
+    """
+    if args.channel is not None or args.version or args.package_url:
+        return requested
+    installed = release_from_direct_url(_installed_direct_url() or {})
+    if installed is None or installed.channel != "stable":
+        return requested
+    from ..tui.update_notice import fetch_latest, is_newer
+
+    try:
+        latest = fetch_latest()
+    except Exception as exc:  # urllib can raise http.client errors this module may not import; any failure skips the move
+        detail = _bounded_command_error(str(exc)) or type(exc).__name__
+        return f"could not read the newest stable release ({detail}); pass --version or --channel"
+    if not RELEASE_WHEEL_VERSION_RE.fullmatch(latest):
+        return f"the newest published release {latest!r} is not a stable version; pass --version or --channel"
+    # Only ever forward: the release workflow creates the GitHub release before
+    # `npm publish`, so npm's `latest` can trail an install made from the new
+    # release's wheel, and installing it would downgrade the command package.
+    if not is_newer(latest, __version__):
+        if latest == __version__:
+            return f"already on the newest stable release v{latest}"
+        return f"installed v{__version__} is newer than the newest published release v{latest}; pass --version to move"
+    return package_url_for("stable", latest)
+
+
 def _homebrew_prefix_root() -> Path | None:
     prefix = Path(sys.prefix)
     folded_parts = tuple(part.casefold() for part in prefix.parts)
@@ -357,6 +393,9 @@ SETUP_OPERATOR_SUMMARY_SCHEMA_VERSION = "setup_operator_summary/v1"
 DOCTOR_SUMMARY_SCHEMA_VERSION = "doctor_summary/v1"
 MCP_SETUP_SCHEMA_VERSION = "omh_mcp_setup/v1"
 SELF_UPDATE_REENTRY_ENV = "OMH_UPDATE_COMMAND_PACKAGE_REENTERED"
+# The started process's alone (`update_gateway`). A constant here: the re-entry's argv is read after a package
+# manager replaced the code, where a new import could fail.
+RESTART_FLAGS = frozenset({"--restart-gateway", "--no-restart-gateway"})
 # Set by the self-update on the re-entry that restores the known-good
 # generation after a refused candidate; the human summary then says
 # "rollback", never "update complete".
@@ -479,6 +518,7 @@ def _install_result(args: argparse.Namespace) -> dict[str, object]:
         source=source,
         dry_run=bool(args.dry_run),
         command_package_updated=bool(getattr(args, "command_package_updated", False)),
+        would_update_to=str(getattr(args, "command_package_would_update", "") or ""),
     )
     result["workflow_content"] = _workflow_content_status(
         paths,
@@ -536,7 +576,9 @@ def _install_result(args: argparse.Namespace) -> dict[str, object]:
 def cmd_update(args: argparse.Namespace) -> int:
     self_update = _command_package_self_update_plan(args)
     if self_update.get("should_update"):
-        return _run_command_package_self_update(args, self_update)
+        if not getattr(args, "dry_run", False):
+            return _run_command_package_self_update(args, self_update)
+        args.command_package_would_update = _self_update_target_label(self_update)
     # Explicit local skill sources retain the content-only install contract.
     if args.from_skills_dir or args.source:
         code = cmd_install(args)
@@ -548,6 +590,13 @@ def cmd_update(args: argparse.Namespace) -> int:
     if code:
         return code
     failures: list[dict[str, object]] = []
+    from ..install.agent_skills_projection import agent_skills_user_home, refresh_installed_agent_skills
+
+    payload["agent_skills"] = None
+    try:
+        payload["agent_skills"] = refresh_installed_agent_skills(agent_skills_user_home(), dry_run=bool(args.dry_run))
+    except (OSError, ValueError) as exc:
+        failures.append({"phase": "agent_skills", "error": f"{type(exc).__name__}: {_bounded_command_error(str(exc))}"})
     primary_registration: dict[str, object] | None = None
     try:
         if _paths(args).hermes_plugin_dir.is_dir():
@@ -565,21 +614,48 @@ def cmd_update(args: argparse.Namespace) -> int:
         failures.append({"phase": "primary", "error": f"{type(exc).__name__}: {_bounded_command_error(str(exc))}"})
     payload["hermes_registration"] = primary_registration
     payload["menubar_app"] = _refresh_installed_menubar_app(args)
+    payload["tui_home"] = _refresh_tui_home(args)
     profile_results = _sync_hermes_profiles(args) if hasattr(args, "omh_home") else []
     payload["hermes_profiles"] = profile_results
     failures.extend(
         {"phase": "profile_sync", "profile": row["profile"], "error": row["error"]}
         for row in profile_results if row.get("status") == "failed"
     )
-    code = 1 if failures else 0
+    if not bool(getattr(args, "dry_run", False)):
+        # A running Hermes caches where `current/skills` resolved until config.yaml's
+        # signature moves; this runs in the re-entered process, after the pointer switch.
+        payload["hermes_skill_refresh"] = refresh_skill_dir_caches(_paths(args).hermes_home, managed_current_workflow_pack_dir())
+    # Only bot profiles failing gets its own nonzero code: this home refreshed,
+    # so a staged update keeps the generation instead of rolling it back.
+    # A dry run records the primary plugin's refusal as `would_refuse`, not as
+    # a failure row, and that home is then blocked too.
+    primary_blocked = any(row["phase"] != "profile_sync" for row in failures) or (
+        isinstance(payload.get("plugin_bundle"), dict) and payload["plugin_bundle"].get("status") == "would_refuse"
+    )
+    code = (1 if primary_blocked else PROFILE_REPAIR_EXIT_CODE) if failures else 0
     payload.update({"status": "partial" if failures else "ok", "failures": failures, "exit_code": code})
+    unrefreshed = frozenset(
+        row["config"] for row in payload.get("hermes_skill_refresh") or [] if row.get("status") == "failed"
+    )
+    # None: not computed (a dry run installs no bundle to compare), as against [] (no gateway needs a restart).
+    restart_hints = (
+        None if bool(getattr(args, "dry_run", False)) or not hasattr(args, "omh_home")
+        else gateway_restart_hints(_paths(args), unrefreshed_configs=unrefreshed)
+    )
+    payload["gateway_restart_hints"] = restart_hints
     if _wants_json(args):
         _print_json(payload)
     else:
         if payload.get("skills") is not None:
             _print_install_summary(payload, command="update", language=_resolve_language(args))
+        agent_skills = payload.get("agent_skills")
+        if agent_skills and "refreshed_files" in agent_skills:
+            count = agent_skills["refreshed_files"]
+            print(f"Agent Skills (Codex/.agents): refreshed {count} files" if count
+                  else "Agent Skills (Codex/.agents): already up to date")
         _print_display_release_lines(primary_registration, profile_results)
         _print_registration_migrations(primary_registration, profile_results)
+        _print_dangling_link_repairs(payload.get("plugin_bundle"), profile_results)
         _print_omh_home_reclaims(profile_results)
         _print_hermes_profiles_line(profile_results, language=_resolve_language(args))
         for failure in failures:
@@ -588,9 +664,29 @@ def cmd_update(args: argparse.Namespace) -> int:
         if not bool(getattr(args, "dry_run", False)) and hasattr(args, "omh_home"):
             for line in _registration_ambiguity_lines(args):
                 print(f"  warning: {line}")
-            for hint in gateway_restart_hints(_paths(args)):
+            for line in _skill_refresh_lines(payload.get("hermes_skill_refresh") or []):
+                print(f"  {line}")
+            for hint in restart_hints or ():
                 print(f"  {hint}")
-    return code
+    return _offer_gateway_restart(args, code)
+
+
+def _skill_refresh_lines(rows: list[dict[str, str]]) -> list[str]:
+    """What `refresh_skill_dir_caches` did, said once for the homes it reached and once per miss."""
+    refreshed = sum(1 for row in rows if row.get("status") == "refreshed")
+    lines = []
+    if refreshed:
+        noun = "home" if refreshed == 1 else "homes"
+        lines.append(
+            f"Hermes skills refreshed in {refreshed} {noun}: new conversations and every skill load use the new "
+            "OMH skills without a restart; an open conversation keeps the skill list it started with until `/new`"
+        )
+    lines.extend(
+        f"warning: {row['home']}: could not mark config.yaml changed ({row.get('error', '')}); "
+        "a running Hermes there keeps the previous OMH skills until it restarts"
+        for row in rows if row.get("status") == "failed"
+    )
+    return lines
 
 
 def _bootstrap_tui_surface(args: argparse.Namespace) -> dict[str, object] | None:
@@ -655,8 +751,9 @@ def _profile_clone(args: argparse.Namespace, primary: OmhPaths, profile_dir: Pat
 def _profile_env_names_omh_home(profile_dir: Path) -> bool:
     """Whether a profile chose its store through its `.env` `OMH_HOME` (#1679).
 
-    Names only, never the value: the choice is the profile's whatever it
-    says, and a setting written beside it would outrank it.
+    The name, never the value: the choice is the profile's whatever it says,
+    and a setting written beside it would outrank it. An empty `OMH_HOME=`
+    names no store, and the plugin refuses a blank path.
     """
     return bool(env_key_names(profile_dir, allowed=("OMH_HOME",)))
 
@@ -674,8 +771,8 @@ def _profile_theme_home(profile_paths: OmhPaths, profile_dir: Path) -> Path | No
     the primary's.
 
     None when the profile chose a store OMH cannot read: a setting in a
-    shape the standalone scan refuses, or an `OMH_HOME` in its `.env`,
-    whose value OMH never reads. Saving into the primary's store then
+    shape the standalone scan refuses, or a filled `OMH_HOME` in its `.env`,
+    whose value OMH does not keep. Saving into the primary's store then
     would hand the primary that profile's theme. That includes a setting
     OMH wrote before the `.env` named a store: the same pass takes it back
     (`reclaim_plugin_omh_home`, asked here with the record `_apply_result`
@@ -749,6 +846,9 @@ def _sync_hermes_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
                 # it, so "refreshed" would claim an update that did not happen.
                 entry["status"] = "host_managed"
                 entry["plugin_update_command"] = HERMES_PLUGIN_UPDATE_COMMAND
+            dangling_link = plugin.get("replaced_dangling_link")
+            if isinstance(dangling_link, str) and dangling_link:
+                entry["replaced_dangling_link"] = dangling_link
             applied = _apply_result(
                 clone,
                 bind_omh_home=not _profile_env_names_omh_home(profile_dir),
@@ -768,6 +868,30 @@ def _sync_hermes_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
             entry["error"] = f"{type(exc).__name__}: {_bounded_command_error(str(exc))}"
         results.append(entry)
     return results
+
+
+def _uninstall_tui_runtime(paths: OmhPaths, *, remove_all: bool, dry_run: bool) -> dict[str, object]:
+    """Remove the TUI's own runtime profile (`tui/own_runtime.py`) on a full uninstall: OMH's, built from the root.
+
+    `absent` when there is none, `kept` when its gateway runs or the directory
+    carries no OMH marker (then it is not OMH's to remove), `would_remove` on
+    a dry run, `removed`, or `failed` with the error; a failure never fails the
+    uninstall. Registration-only and `--remove-files` scopes leave it
+    (`not_requested`), as they leave the bots' profiles.
+    """
+    from ..tui.own_runtime import MARKER_FILE, remove_tui_home, tui_home_path
+
+    home = tui_home_path(Path(paths.hermes_home))
+    entry: dict[str, object] = {"path": str(home)}
+    if not remove_all:
+        return {**entry, "status": "not_requested"}
+    if dry_run:
+        return {**entry, "status": "would_remove" if (home / MARKER_FILE).is_file() else "absent" if not home.is_dir() else "kept"}
+    try:
+        return {**entry, "status": remove_tui_home(Path(paths.hermes_home))}
+    except OSError as exc:
+        print(f"note: the TUI's own runtime profile at {home} was not removed: {exc}", file=sys.stderr)
+        return {**entry, "status": "failed", "reason": str(exc)}
 
 
 def _uninstall_hermes_profiles(
@@ -872,6 +996,18 @@ def _print_hermes_profiles_line(results: list[dict[str, object]], *, language: s
         for entry in results
     )
     print(f"  {tr(language, 'hermes_profiles_synced', summary=summary)}")
+
+
+def _print_dangling_link_repairs(primary: object, profile_results: list[dict[str, object]]) -> None:
+    """One line per home whose `plugins/omh` was a link to a path that is gone."""
+    homes = [("the Hermes home", primary), *((f"bot profile {row.get('profile')}", row) for row in profile_results)]
+    for label, entry in homes:
+        pointed = entry.get("replaced_dangling_link") if isinstance(entry, dict) else None
+        if pointed:
+            print(
+                f"  Repaired {label}: its plugins/omh linked to {pointed}, which no longer exists; "
+                "it now holds the released OMH plugin bundle."
+            )
 
 
 def _print_registration_migrations(
@@ -1312,6 +1448,38 @@ def _refresh_installed_plugin_bundle(args: argparse.Namespace) -> dict[str, obje
     return result
 
 
+def _refresh_tui_home(args: argparse.Namespace) -> dict[str, object] | None:
+    """Rebuild the TUI's own runtime profile (`tui/own_runtime.py`) from the root Hermes home this update targets.
+
+    Unless the OMH home's saved choice is `shared` (None then, so a profile
+    left behind by `omh theme runtime shared` is not refreshed), and not on
+    Windows, where the OMH TUI does not run. The plugin bundle the profile
+    links moved with this update, and a skill or credential the root gained
+    since the last launch is carried now rather than at the next `omh`. A
+    failure is noted and never fails the update: the next bare `omh` builds
+    the profile again, or opens on the shared gateway saying why.
+    """
+    from ..skin_pack import RUNTIME_OWN, effective_runtime
+    from ..tui.own_runtime import build_tui_home, tui_home_path
+
+    paths = _paths(args)
+    if os.name == "nt" or effective_runtime(paths.omh_home) != RUNTIME_OWN:
+        return None
+    home = tui_home_path(Path(paths.hermes_home))
+    if getattr(args, "dry_run", False):
+        return {"status": "dry_run", "tui_home": str(home)}
+    try:
+        built = build_tui_home(paths.omh_home, Path(paths.hermes_home))
+    except (OSError, ValueError) as exc:
+        print(f"note: the TUI's own runtime home was not refreshed: {exc}", file=sys.stderr)
+        return {"status": "failed", "tui_home": str(home), "reason": str(exc)}
+    return {
+        "status": "refreshed" if built.refreshed else "current", "tui_home": str(home),
+        "refreshed": list(built.refreshed), "skills": len(built.skills), "scrubbed": list(built.scrubbed),
+        "overwritten": list(built.overwritten), "config_platform_credentials": list(built.config_platform_credentials),
+    }
+
+
 def _refresh_installed_menubar_app(args: argparse.Namespace) -> dict[str, object] | None:
     """Bring an already-installed native menu bar helper up to date."""
     configured_omh_home = getattr(args, "omh_home", None)
@@ -1401,10 +1569,9 @@ def _configured_omh_home_link_refusal(args: argparse.Namespace, paths: OmhPaths)
 
 
 def _command_package_self_update_plan(args: argparse.Namespace) -> dict[str, object]:
+    # A dry run plans like a real run, so its card can say what the real run would do to the command package.
     if bool(getattr(args, "command_package_updated", False)):
         return {"should_update": False, "reason": "command package update already observed"}
-    if bool(getattr(args, "dry_run", False)):
-        return {"should_update": False, "reason": "dry run does not update the command package"}
     if os.environ.get(SELF_UPDATE_REENTRY_ENV):
         return {"should_update": False, "reason": "already re-entered after command package update"}
     if os.environ.get(SELF_UPDATE_SKIP_ENV):
@@ -1432,6 +1599,14 @@ def _command_package_self_update_plan(args: argparse.Namespace) -> dict[str, obj
             raise OmhError(
                 "package-manager installs accept the default published update only; "
                 "use the owning manager directly for an explicit version or package URL"
+            )
+        if args.channel == "preview":
+            # The package ships one release wheel, so the manager can only
+            # reinstall a release; recording `preview` afterwards would claim
+            # a main build that was never installed.
+            raise OmhError(
+                f"{package_manager} installs follow published releases and cannot track main; "
+                "to track main, reinstall with the installer and OMH_CHANNEL=preview"
             )
         if launcher is not None:
             manager_command = COMMAND_PACKAGE_EXECUTABLES[package_manager]
@@ -1494,17 +1669,36 @@ def _command_package_self_update_plan(args: argparse.Namespace) -> dict[str, obj
     managed = _managed_command_runtime()
     if not managed["managed"]:
         return {"should_update": False, "reason": managed["reason"]}
+    target = _installer_self_update_release(args, release)
+    if isinstance(target, str):
+        return {"should_update": False, "reason": target}
     return {
         "should_update": True,
         "method": "installer",
-        "release": release,
+        "release": target,
         "python": managed["python"],
         "venv_dir": managed["venv_dir"],
         "reason": "running from installer-managed command package venv",
     }
 
 
+def _self_update_target_label(plan: dict[str, object]) -> str:
+    """What a planned command package update would install, for the dry-run card."""
+    release = plan.get("release")
+    if isinstance(release, ReleaseSelection):
+        if release.channel == "stable" and release.version:
+            return f"v{release.version.removeprefix('v')}"
+        return release.source_label or release.package_url
+    return f"the {plan.get('package_manager')} package" if plan.get("package_manager") else ""
+
+
 def _run_command_package_self_update(args: argparse.Namespace, plan: dict[str, object]) -> int:
+    # Imported before the update changes the files under this process: the gateway question runs after it.
+    try:
+        from . import update_gateway  # noqa: F401
+    except ImportError:  # `_offer_gateway_restart` then offers nothing; the update itself does not need it
+        pass
+
     if plan.get("method") == "package_manager":
         return _run_package_manager_self_update(args, plan)
     # Installer-owned packages are never mutated in place.  The transaction
@@ -1512,17 +1706,116 @@ def _run_command_package_self_update(args: argparse.Namespace, plan: dict[str, o
     from ..install.self_update import run_installer_self_update
 
     result = run_installer_self_update(args, plan, runner=subprocess.run)
+    profiles_need_repair = bool((result.get("post_activation") or {}).get("profiles_need_repair"))
+    recovery = result.get("recovery") or {}
     if _wants_json(args):
         _print_json(result)
     elif result.get("ok"):
         print("OMH update complete: command and workflow pack activated together.")
+        change = result.get("identity_change")
+        if isinstance(change, dict):
+            print(f"  {_identity_change_line(change, language=_resolve_language(args))}")
+        if recovery.get("action") == "completed_pending_restore":
+            print(f"  note: first finished restoring generation {recovery.get('selected')}, which an earlier update left pending")
+        if profiles_need_repair:
+            print("  warning: some bot profiles were not refreshed (see the warnings above); this update stays active. Repair them, then rerun `omh update`.")
+        kept = str((result.get("cleanup") or {}).get("reason") or "")
+        if kept:
+            print(f"  note: {kept}")
     else:
-        for line in _self_update_stop_lines(result):
+        for line in _self_update_stop_lines(result, root=_managed_root_from_plan(plan)):
             print(line)
-    return 0 if result.get("ok") else 1
+    if not _wants_json(args):
+        for line in _skill_refresh_lines(result.get("hermes_skill_refresh") or []):
+            if line.startswith("warning: "):
+                print(f"  {line}")
+    if not result.get("ok"):
+        return 1
+    return _offer_gateway_restart(args, PROFILE_REPAIR_EXIT_CODE if profiles_need_repair else 0)
 
 
-def _self_update_stop_lines(result: dict[str, Any]) -> list[str]:
+def _offer_gateway_restart(args: argparse.Namespace, code: int) -> int:
+    """After an update in the process the person started: ask about, or restart, each running Hermes gateway still on
+    the old OMH plugin code (`update_gateway`); the exit code to return."""
+    try:
+        from .update_gateway import NO_DESCRIPTION, SKIP, YES_DESCRIPTION, restart_after_update, restart_mode
+    except ImportError:  # the update replaced these files under this process: not offered, and its code stands
+        return code
+
+    if not hasattr(args, "omh_home"):
+        return code
+    to_stderr = _wants_json(args)  # stdout holds the JSON payload, printed already
+    mode = restart_mode(args, terminal=_stdin_is_tty() and sys.stdout.isatty() and not to_stderr, environ=os.environ)
+    if mode == SKIP:
+        return code
+
+    def say(line: str) -> None:
+        print(line, file=sys.stderr if to_stderr else sys.stdout, flush=True)
+
+    def ask(question: str) -> bool:
+        try:
+            return _ask_yes_no(question, default=False, use_color=_use_color(), language=_resolve_language(args),
+                               yes_description=YES_DESCRIPTION, no_description=NO_DESCRIPTION)
+        except KeyboardInterrupt:  # Ctrl+C at the question is a no: the update has finished and stays
+            print()
+            return False
+
+    def run(argv: list[str], env: dict[str, str]) -> int:
+        # Its own session: a Ctrl+C here ends the wait, never Hermes' restart half done.
+        child = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=sys.stderr if to_stderr else None,
+                                 start_new_session=True)
+        return int(child.wait())
+
+    return restart_after_update(code, _paths(args).hermes_home, mode=mode, ask=ask, run=run,
+                                hermes=shutil.which("hermes"), environ=os.environ, say=say)
+
+
+def _managed_root_from_plan(plan: dict[str, object]) -> Path | None:
+    venv_dir = str(plan.get("venv_dir") or "")
+    return Path(venv_dir).parent if venv_dir else None
+
+
+def _generation_label(root: Path | None, name: str) -> str:
+    """`name (4.0.5 main@1a2b3c4d)`, or the bare name when the generation records nothing."""
+    from ..install.self_update import generation_identity, identity_label
+
+    if root is None or not name:
+        return name
+    described = identity_label(generation_identity(root / "generations" / name))
+    return f"{name} ({described})" if described else name
+
+
+def _identity_change_line(change: dict[str, Any], *, language: str) -> str:
+    """One line naming what the update moved between, e.g. `4.0.6 main@a -> main@b`.
+
+    The commit is the news when the release version did not move: a preview
+    update between two `main` commits used to read as nothing happening.
+    """
+    previous = change.get("previous") if isinstance(change.get("previous"), dict) else {}
+    current = change.get("current") if isinstance(change.get("current"), dict) else {}
+
+    def commit(identity: dict[str, Any]) -> str:
+        short = str(identity.get("commit_sha") or "")[:8]
+        ref = str(identity.get("ref") or "")
+        return f"{ref}@{short}" if ref and short else short
+
+    previous_version = str(previous.get("version") or "") or tr(language, "update_identity_not_recorded")
+    current_version = str(current.get("version") or "") or tr(language, "update_identity_not_recorded")
+    status = str(change.get("status") or "")
+    if status == "unchanged":
+        return tr(language, "update_identity_current", version=current_version, identity=commit(current))
+    if status == "changed" and previous_version == current_version:
+        return f"oh-my-hermes {current_version} {commit(previous)} → {commit(current)}"
+    if status == "changed":
+        return f"oh-my-hermes {previous_version} {commit(previous)} → {current_version} {commit(current)}"
+    if status == "previous_unrecorded":
+        return f"oh-my-hermes {previous_version} → {current_version} {commit(current)}"
+    if status == "version_changed":
+        return f"oh-my-hermes {previous_version} → {current_version}"
+    return tr(language, "update_identity_unrecorded", version=current_version)
+
+
+def _self_update_stop_lines(result: dict[str, Any], *, root: Path | None = None) -> list[str]:
     """Say why the transaction stopped, not only where.
 
     The phase alone was the whole report, and "stopped during post_activation"
@@ -1530,16 +1823,29 @@ def _self_update_stop_lines(result: dict[str, Any]) -> list[str]:
     error, but nothing tied that error to the rollback. The failing phase's
     recorded reason closes that gap; its last line is the one that names the
     cause, and the full text stays in the JSON result.
+
+    A rollback and a failed restore each lead the report. A failed restore
+    used to read "the known-good generation remains active" on every run while
+    each later update only retried that restore, so nothing new ever installed.
     """
     phase = str(result.get("phase") or "unknown")
-    lines = [f"OMH update stopped during {phase}; the known-good generation remains active."]
+    rollback = result.get("rollback") or {}
+    recovery = result.get("recovery") or {}
+    restored = str(rollback.get("restored") or "")
+    if recovery.get("status") == "required":
+        lines = [
+            f"OMH update stopped during {phase} and could not restore the previous generation: recovery is required.",
+            "  Until the restore succeeds, every `omh update` only retries it and installs nothing new.",
+        ]
+    elif restored:
+        lines = [f"OMH update stopped during {phase} and rolled back to generation {_generation_label(root, restored)}."]
+    else:
+        lines = [f"OMH update stopped during {phase}; the known-good generation remains active."]
     detail = result.get(phase)
     reason = str(detail.get("reason") or "").strip() if isinstance(detail, dict) else ""
+    reason = reason or str(recovery.get("reason") or rollback.get("reason") or "").strip()
     if reason:
         lines.append(f"  reason: {reason.splitlines()[-1].strip()}")
-    restored = str((result.get("rollback") or {}).get("restored") or "")
-    if restored:
-        lines.append(f"  rolled back to generation {restored}")
     lines.append("  Resolve the reason above, then rerun `omh update`.")
     return lines
 
@@ -1581,7 +1887,7 @@ def _run_package_manager_self_update(
     env = dict(os.environ)
     env[SELF_UPDATE_REENTRY_ENV] = "1"
     rerun = subprocess.run([*reentry_command, *argv], env=env)
-    return int(rerun.returncode)
+    return _offer_gateway_restart(args, int(rerun.returncode))
 
 
 def _validated_command_package_launcher(
@@ -1686,7 +1992,7 @@ def _bounded_command_error(value: str, *, limit: int = 2_000) -> str:
 
 
 def _reentry_argv_with_command_package_updated() -> list[str]:
-    argv = list(sys.argv[1:])
+    argv = [item for item in sys.argv[1:] if not names_flag(item, RESTART_FLAGS)]  # the started process's alone
     if "--command-package-updated" not in argv:
         argv.append("--command-package-updated")
     return argv
@@ -1728,12 +2034,16 @@ def _command_package_status_for_install(
     source: str,
     dry_run: bool,
     command_package_updated: bool = False,
+    would_update_to: str = "",
 ) -> dict[str, object]:
     package_manager, update_instruction = _command_package_update_guidance()
     status = "unchanged"
     reason = "managed skills were refreshed from the currently installed command package"
     updated = False
-    if command_package_updated:
+    if dry_run and would_update_to:
+        status = "would_update"
+        reason = f"a real run would first update the OMH command package to {would_update_to}"
+    elif command_package_updated:
         status = "would_update" if dry_run else "updated"
         updated = not dry_run
         reason = (
@@ -1748,7 +2058,7 @@ def _command_package_status_for_install(
         reason = "managed skills were refreshed, but the omh command package was not updated in this run"
     elif source != "builtin":
         reason = "managed skills were refreshed from an explicit skill source; the command package was not changed"
-    return {
+    result: dict[str, object] = {
         "schema_version": COMMAND_PACKAGE_STATUS_SCHEMA_VERSION,
         "operation": operation,
         "status": status,
@@ -1758,6 +2068,9 @@ def _command_package_status_for_install(
         "package_manager": package_manager,
         "update_instruction": update_instruction,
     }
+    if status == "would_update" and would_update_to:
+        result["would_update_to"] = would_update_to
+    return result
 
 
 def _command_package_source(*, command_package_updated: bool, source: str) -> str:
@@ -2126,7 +2439,7 @@ def _doctor_operator_summary(checks: list[object]) -> dict[str, object]:
             _doctor_group("command", check_dicts, ("command_path",)),
             _doctor_group("managed_skills", check_dicts, ("manifest", "manifest_skills_dir", "local_modifications", "skill_freshness", "skills_dir", "skill:", "route_hint_skills", "guidance_projection", "hermes_skill_edits", "missing_managed_skills")),
             _doctor_group("runtime", check_dicts, ("runtime_artifacts", "workflow_state", "runtime_state")),
-            _doctor_group("hermes_registration", check_dicts, ("hermes_config", "external_dir", "identity_conflicts", "runtime_context")),
+            _doctor_group("hermes_registration", check_dicts, ("hermes_config", "external_dir", "identity_conflicts", "runtime_context", "hermes_skill_visibility")),
             _doctor_group("targets", check_dicts, ("target_registry", "target_topology")),
             _doctor_group("model_routing", check_dicts, ("hermes_model_routing", "provider_entitlements")),
             _doctor_group("optional_surfaces", check_dicts, ("plugin_", "team_profile_packs", "structural_search", "trigger_language_packs")),
@@ -2685,6 +2998,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     profile_results = [] if blocked else _uninstall_hermes_profiles(
         args, remove_all=remove_all, record=record, primary=paths
     )
+    tui_runtime_result = _uninstall_tui_runtime(paths, remove_all=remove_all and not blocked, dry_run=bool(args.dry_run))
     if not blocked and (remove_all or args.remove_files):
         detached = () if args.dry_run or not remove_all else tuple(
             paths.hermes_home / "profiles" / str(row["profile"])
@@ -2742,6 +3056,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     )
     if profile_results:
         result["hermes_profiles"] = profile_results
+    result["tui_runtime"] = tui_runtime_result
     result["command_package"] = _command_package_status_for_uninstall(result)
     code = 1 if blocked or any(row.get("status") == "failed" for row in profile_results) else 0
     result.update({"status": "failed" if blocked else "partial" if code else "ok", "exit_code": code})
@@ -4416,14 +4731,19 @@ def _ask_update_check_choice(args: argparse.Namespace, paths: OmhPaths, language
     print(tr(language, "update_check_recorded", mode=mode))
 
 
-def _ask_yes_no(prompt: str, *, default: bool, use_color: bool, note: str = "", language: str = "en") -> bool:
+def _ask_yes_no(
+    prompt: str, *, default: bool, use_color: bool, note: str = "", language: str = "en", yes_description: str = "",
+    no_description: str = "",
+) -> bool:
     if _keyboard_menu_available():
         value = _ask_single_choice(
             prompt,
             [note] if note else [],
             [
-                {"choice": "1", "value": "yes", "label": tr(language, "yes"), "description": tr(language, "yes_desc")},
-                {"choice": "2", "value": "no", "label": tr(language, "no"), "description": tr(language, "no_desc")},
+                {"choice": "1", "value": "yes", "label": tr(language, "yes"),
+                 "description": yes_description or tr(language, "yes_desc")},
+                {"choice": "2", "value": "no", "label": tr(language, "no"),
+                 "description": no_description or tr(language, "no_desc")},
             ],
             default_choice="1" if default else "2",
             use_color=use_color,
@@ -5367,6 +5687,9 @@ def _print_uninstall_summary(payload: dict[str, object], *, language: str = "en"
             if isinstance(entry, dict)
         )
         print(f"  {tr(language, 'hermes_profiles_uninstalled', summary=summary)}")
+    tui_runtime = payload.get("tui_runtime")
+    if isinstance(tui_runtime, dict) and tui_runtime.get("status") in ("removed", "would_remove", "kept", "failed"):
+        print(f"  {tr(language, 'tui_runtime_uninstalled', status=str(tui_runtime.get('status')), path=str(tui_runtime.get('path', '')))}")
     print(_color(tr(language, "next"), "1;32", use_color))
     command_removed = payload.get("command_package_removed_paths", [])
     command_would_remove = payload.get("command_package_would_remove", [])
@@ -5590,8 +5913,11 @@ def _print_update_release_card(
     dry_run = bool(payload.get("dry_run", False))
     command_package = payload.get("command_package", {})
     command_updated = isinstance(command_package, dict) and bool(command_package.get("updated"))
+    would_update = isinstance(command_package, dict) and command_package.get("status") == "would_update"
     command_key = (
-        "update_card_command_preview"
+        "update_card_command_would_update"
+        if dry_run and would_update
+        else "update_card_command_preview"
         if dry_run
         else "update_card_command_updated"
         if command_updated
@@ -5620,7 +5946,8 @@ def _print_update_release_card(
     print("")
     print(f"  {tr(language, notes_label)}")
     print(f"    - {tr(language, workflows_label, count=workflow_count)}")
-    print(f"    - {tr(language, command_key)}")
+    command_target = command_package.get("would_update_to", "") if isinstance(command_package, dict) else ""
+    print(f"    - {tr(language, command_key, target=command_target)}")
     workflow_content = payload.get("workflow_content", {})
     if isinstance(workflow_content, dict) and workflow_content.get("known"):
         content_key = (
@@ -6505,8 +6832,12 @@ def _add_common_install_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--channel",
         choices=RELEASE_CHANNELS,
+        type=normalize_release_channel,
         default=None,
-        help="Release channel metadata for this install/update; defaults to what the installed package records, else preview.",
+        help=(
+            "Release channel metadata for this install/update; defaults to what the installed package records, "
+            "else preview. `main` is an alias of preview, the channel that tracks branch main."
+        ),
     )
     p.add_argument("--version", default="", help=f"Stable release version such as {__version__} or v{__version__}.")
     p.add_argument("--package-url", default="", help="Explicit release archive URL for support and audit metadata.")
@@ -6690,9 +7021,27 @@ def _add_top_level_commands(sub) -> None:
     update = sub.add_parser("update", help="Refresh OMH from a preview, stable, local, or explicit package source.")
     _add_common_install_options(update)
     update.add_argument("--json", action="store_true", help="Print the full machine-readable update payload.")
-    update.add_argument("--yes", action="store_true", help="Accepted for compatibility; update asks nothing.")
-    update.add_argument("--interactive", action="store_true", help="Accepted for compatibility; update asks nothing.")
-    update.add_argument("--no-interactive", action="store_true", help="Accepted for compatibility; update asks nothing.")
+    update.add_argument("--yes", action="store_true", help="Ask nothing, the gateway restart question included.")
+    update.add_argument("--interactive", action="store_true", help="Accepted for compatibility.")
+    update.add_argument("--no-interactive", action="store_true", help="Ask nothing, the gateway restart question included.")
+    restart = update.add_mutually_exclusive_group()
+    restart.add_argument(
+        "--restart-gateway",
+        dest="restart_gateway",
+        action="store_true",
+        default=None,
+        help=(
+            "After the update, restart each running Hermes gateway still on the old OMH plugin code without asking "
+            "(it interrupts what that gateway runs). Without this flag a terminal is asked, defaulting to no."
+        ),
+    )
+    restart.add_argument(
+        "--no-restart-gateway",
+        dest="restart_gateway",
+        action="store_false",
+        default=None,
+        help="After the update, neither ask about nor restart a Hermes gateway.",
+    )
     update.add_argument("--recover-known-good", action="store_true", help="Atomically restore the retained known-good installer generation.")
     update.add_argument(
         "--no-omh-tui",

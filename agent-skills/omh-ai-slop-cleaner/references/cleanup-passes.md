@@ -10,10 +10,10 @@ one mistake reverts all three.
 | Category | What it looks like | Default treatment |
 | --- | --- | --- |
 | Duplication | The same decision encoded twice; near-identical helpers with drifted edges. | Keep one owner, delete the copies; lookalikes encoding different decisions stay. |
-| Dead code | Unused symbols and imports; unreachable branches; commented-out blocks (version control preserves history); feature flags nothing reads. | Delete outright; no deprecation shims for code with zero callers. |
-| Needless abstraction | Single-use helpers, single-implementation interfaces, layers that only forward, config for values that never vary. | Inline and delete; re-extract only when a real second caller exists. |
-| Boundary violation | Reaching into another module's internals; circular imports; logic in the wrong layer. | Repair the boundary with the existing surface; a boundary-CHANGING fix routes to `ralplan` first. |
-| Missing tests | Behavior with no lock; tests asserting implementation details or nothing at all. | Add the behavior lock in the test-reinforcement pass; delete assert-nothing tests as dead code. |
+| Dead code | Unused symbols and imports; unreachable branches; commented-out blocks (version control preserves history); feature flags nothing reads. | Delete outright once the caller check below clears it; no deprecation shims for code with zero callers. |
+| Needless abstraction | Layers and wrappers that only forward, rename, or re-wrap; single-implementation interfaces; config for values that never vary. | Run the deletion test first: inline only when deleting the module makes its complexity vanish. When the same complexity would reappear at the call sites, the module stays, whatever its caller count. A single-implementation interface stays only when the tests use a second adapter. |
+| Boundary violation | Reaching into another module's internals; circular imports; logic in the wrong layer. | Repair the boundary with the existing surface; a boundary-CHANGING fix routes to `omh-refactor-plan` when the direction is decided; when it is still contested it goes to `ulw-plan`. |
+| Missing tests | Behavior with no lock; tests asserting implementation details or nothing at all. | Add the behavior lock in pass 0, before any edit; delete assert-nothing tests as dead code in pass 4. |
 | Templated defaults | Boilerplate comments restating the code, placeholder docstrings, copy-pasted config blocks nothing uses. | Delete; a comment survives only when it states what the code cannot. |
 
 ## Detection, when no smell was named
@@ -31,17 +31,31 @@ prepared_not_observed until their exit status and output are seen:
   imports is the first deletion candidate.
 
 Detector output is a candidate list, not a verdict: every candidate gets a
-caller check before it enters the inventory.
+caller check before it enters the inventory. No in-repo caller does not mean
+dead. Rule out each of these before a symbol is deletable, and otherwise list it
+under remaining risks:
+
+- a public export of a published package or library;
+- an entry point or plugin registration in the manifest (`pyproject.toml`,
+  `package.json`, `setup.cfg`);
+- a string or reflective lookup (`getattr`, a registry keyed by name): grep the
+  name as a string too;
+- a name a framework discovers (route handlers, signal receivers, test
+  fixtures, ORM models, serializers);
+- callers in another repository.
 
 ## The passes, in order
 
+0. **Lock** - for every file in scope, name the check that goes red if its
+   behavior changes. Where none exists, write a characterization test first or
+   cut the scope to code that has one. No pass below runs on unlocked code.
 1. **Dead code** - deletion only. No renames, no moves. The diff should be
    almost entirely red. Re-verify.
 2. **Duplicates** - collapse each duplicated decision to one owner; call sites
    move to the survivor. Re-verify.
 3. **Naming and error handling** - rename what misleads, surface what is
    swallowed; no structural moves in this pass. Re-verify.
-4. **Test reinforcement** - add the missing behavior locks found in pass 1-3,
+4. **Test reinforcement** - add the extra locks the cleaned shape needs,
    delete tests that assert nothing. Re-verify.
 
 Stop between passes when the regression checks fail: fix or revert that pass
@@ -78,7 +92,7 @@ per taxonomy category:
 Then one more question that belongs to no category: does any hunk change
 behavior the plan did not say it would? That finding outranks every other.
 
-Findings use the `code-review` shape: each carries `priority` (`P0`-`P3`),
+Findings use the `omh-code-review` shape: each carries `priority` (`P0`-`P3`),
 `confidence`, `evidence`, `path`, and `line_range`, and the review closes with
 one `ship` or `no_ship` verdict. No new verdict vocabulary is invented here, so
 a reader who knows one review knows this one.
@@ -94,3 +108,9 @@ behavior preservation is claimed only from the observed before/after
 verification, and a cleanup diff is never review, CI, or merge evidence.
 A review-mode verdict is a model's judgement of the evidence it was shown,
 not a run of the checks.
+
+## Attribution
+
+The deletion test for needless abstraction adapts an idea from Matt Pocock's
+`codebase-design` skill at `mattpocock/skills@7739eaed7f8f3915437a8def198a6d0d7206dbc7`,
+MIT License, Copyright 2026 Matt Pocock.

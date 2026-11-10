@@ -21,6 +21,7 @@ from _local_package import load_local_package
 load_local_package()
 
 from _cli_harness import run_cli  # noqa: E402
+from _verification_python import verification_python, verification_python_path  # noqa: E402
 from _fanout_interrupt_flag import InterruptFlagIsolatedTestCase  # noqa: E402
 
 from omh.coding.executor_readiness import (  # noqa: E402
@@ -1581,14 +1582,10 @@ class FanoutDispatchEngineTests(unittest.TestCase):
             self.assertIn(("codex", "exec"), heads)
             claude_argv = next(argv for argv in runner.spawned if argv[0] == "claude")
             self.assertEqual(claude_argv[1], "-p")
-            # No unit here routes a model, and neither profile ships a
-            # dispatch-model default (see _SHIPPED_DISPATCH_MODEL_DEFAULTS
-            # and test_codex_dispatch_model_ships_with_no_default /
-            # test_claude_code_unit_ships_with_no_default_dispatch_model), so
-            # the base template shows through byte-identical with no
-            # appended `--model`.
+            # No model is routed here; the only appended permission is this
+            # invocation's sidecar directory, outside Claude's cwd.
             self.assertEqual(
-                claude_argv[3:],
+                claude_argv[3:-2],
                 [
                     "--permission-mode",
                     "acceptEdits",
@@ -1596,6 +1593,7 @@ class FanoutDispatchEngineTests(unittest.TestCase):
                     "Bash(git add:*),Bash(git commit:*)",
                 ],
             )
+            self.assertEqual(claude_argv[-2:], ["--add-dir", str(_prompted_sidecar(claude_argv).parent)])
             self.assertIn("Work unit:", claude_argv[2])
 
     def test_missing_cli_maps_to_exit_127(self) -> None:
@@ -2977,7 +2975,7 @@ class FanoutDispatchTelemetryTests(unittest.TestCase):
             )
             spawned = {argv[0]: argv for argv in runner.spawned}
             self.assertIn("--config", spawned["codex"])
-            self.assertIn("model_reasoning_effort=high", spawned["codex"])
+            self.assertIn("model_reasoning_effort=xhigh", spawned["codex"])
             self.assertIn("--model", spawned["claude"])
             self.assertIn("opus", spawned["claude"])
             by_unit = {entry["unit_id"]: entry for entry in summary["units"]}
@@ -3724,7 +3722,7 @@ class FanoutBriefCliTests(unittest.TestCase):
             by_unit = {entry["unit_id"]: entry for entry in brief["units"]}
             core = by_unit["core"]
             self.assertEqual(core["owner"], "codex")
-            self.assertEqual(core["model"], "gpt-6.1-sol")
+            self.assertEqual(core["model"], "gpt-6-astra")
             self.assertEqual(core["status"], "completed")
             self.assertEqual(core["session_ref"], "unknown")
             self.assertEqual(core["tokens_total"], "unknown")
@@ -3743,9 +3741,9 @@ class FanoutBriefCliTests(unittest.TestCase):
             root = Path(tmp)
             paths = OmhPaths(omh_home=root / ".omh", hermes_home=root / ".hermes")
             units = [
-                # The codex brain chain is a single entry since GPT-6 Sol took
-                # both GPT-5.6 slots (2026-09-23; GPT-6.1 Sol since 2026-10-01), so the alternative is held
-                # on the Claude Code brain chain (Opus 5.5 -> Fable 5.1 -> opus since 2026-10-13).
+                # The alternative is held on the Claude Code brain chain
+                # (Opus 5.5 -> Fable 5.1 -> opus since 2026-10-13, at the
+                # ultrabrain head's xhigh since 2026-11-09).
                 {"unit_id": "core", "title": "Core", "owner": "claude-code", "file_scope": ["src/r/"], "role": "brain"},
                 {"unit_id": "docs", "title": "Docs", "owner": "codex", "file_scope": ["docs/"], "role": "docs"},
             ]
@@ -3758,10 +3756,11 @@ class FanoutBriefCliTests(unittest.TestCase):
             by_unit = {entry["unit_id"]: entry for entry in brief["units"]}
             # Behavior change #3 (display consequence of the chain head): the
             # model field is a concrete id, no longer executor_default, and the
-            # alternative is the second chain entry (brain = deep > standard).
+            # alternative is the second chain entry (brain = ultrabrain > deep
+            # > unspecified-low, deduplicated by model).
             core = by_unit["core"]
             self.assertEqual(core["model"], "claude-opus-5-5")
-            self.assertEqual(core["model_label"], "claude-opus-5-5 high")
+            self.assertEqual(core["model_label"], "claude-opus-5-5 xhigh")
             self.assertEqual(core["model_alternative"], "claude-fable-5-1")
             # Single-entry chain (docs on codex): no alternative, empty string.
             self.assertEqual(by_unit["docs"]["model_alternative"], "")
@@ -3773,7 +3772,7 @@ class FanoutBriefCliTests(unittest.TestCase):
             # Owner and model read as ONE field, matching the status board's
             # bullet convention; a standalone "— (model)" field doubled the
             # separator around a parenthetical.
-            self.assertIn("claude-code (claude-opus-5-5 high, alt: claude-fable-5-1)", stdout)
+            self.assertIn("claude-code (claude-opus-5-5 xhigh, alt: claude-fable-5-1)", stdout)
             self.assertNotIn(" — (", stdout)
             self.assertNotIn("(gpt-6.1-sol, alt:", stdout)
 
@@ -3931,7 +3930,7 @@ class FanoutBriefTextCeilingTests(unittest.TestCase):
         self.assertTrue(text.endswith("Boundary text."))
 
 
-_PY = shlex.quote(sys.executable)
+_PY = verification_python()
 _PASSING_COMMAND = f"{_PY} -c pass"
 _FAILING_COMMAND = f"{_PY} -c 'import sys; sys.stdout.write(\"boom\"); sys.exit(3)'"
 _ENV_COMMAND = f"OMH_VERIFY=1 {_PY} -c 'import os,sys; sys.exit(0 if os.environ.get(\"OMH_VERIFY\") else 1)'"
@@ -4449,7 +4448,7 @@ class FanoutDispatchPlannedVerificationTests(unittest.TestCase):
 
             def runner(argv, **kwargs):
                 completed = original_runner(argv, **kwargs)
-                if argv[:2] == [sys.executable, "-c"]:
+                if argv[:2] == [verification_python_path(), "-c"]:
                     verification_envs.append(dict(kwargs.get("env") or {}))
                 return completed
 

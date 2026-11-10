@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -57,9 +58,11 @@ def add_top_level_options(parser: argparse.ArgumentParser) -> None:
         "-r",
         "--resume",
         dest="tui_resume",
+        nargs="?",
+        const="",
         default=None,
         metavar="SESSION",
-        help="Bare launch only: reopen this Hermes session id in the terminal.",
+        help="Bare launch only: reopen this Hermes session id in the terminal, or pick one when no id is given.",
     )
     parser.add_argument(
         "-c",
@@ -335,8 +338,12 @@ def _print_exit_card(
     ended_at: float,
     returncode: int,
     closed: tuple[str, str, tuple[str, ...]] = ("", "", ()),
+    hermes_home: Path | None = None,
 ) -> None:
     """Print the OMH exit card after the TUI's own epilogue: the session's title and the `omh` way back.
+
+    `hermes_home` is the home the TUI opened on when it is not the resolved
+    one (the TUI's own runtime home, `tui/own_runtime.py`).
 
     When the OMH TUI closed the session it exited `CLOSED_EXIT`, so Hermes'
     launcher printed no exit summary and the card is the only one: the title
@@ -375,12 +382,13 @@ def _print_exit_card(
     )
 
     profile = getattr(args, "tui_profile", None) or None
-    session_id, hermes_home, earlier = closed
+    session_id, recorded_home, earlier = closed
+    hermes_home = Path(recorded_home) if session_id else hermes_home
     try:
         if session_id:
             db_path = Path(hermes_home) / "state.db"
         else:
-            db_path = hermes_state_db_path(paths.hermes_home, profile)
+            db_path = hermes_state_db_path(hermes_home or paths.hermes_home, profile)
             session_id = resumable_session_id(db_path, started_at, ended_at) or ""
         lines = exit_card_lines(db_path, session_id, profile)
         for opened in reversed(earlier) if lines == [NOTHING_SAID_LINE] else ():
@@ -425,14 +433,146 @@ def _launch_hermes_tui(args: argparse.Namespace) -> int | None:
         return None
     _run_startup_update_check(args)
     paths = _paths(args)
+    tui_home = _own_runtime_home(args, paths)
     started_at = time.time()
     closed: list[tuple[str, str, tuple[str, ...]]] = []
+    relaunch: list[tuple[Path, str]] = []
+    # What runs after the TUI exits, imported now: `sys.path` may go through `current`, which an update can move
+    # under the TUI, and an import after that would load the new generation's files beside this one's.
+    from ..install import generation_hold, self_update  # noqa: F401
+    from ..maintenance import hermes_resume  # noqa: F401
+
     try:
-        returncode = _run_terminal(hermes, args, paths, closed)
+        returncode = _run_terminal(hermes, args, paths, closed, relaunch, hermes_home=tui_home)
     except (OSError, KeyboardInterrupt):
         return None
-    _print_exit_card(args, paths, started_at, time.time(), returncode, closed[0] if closed else ("", "", ()))
+    if relaunch:
+        # The TUI asked to restart on the generation `omh update` installed under it: that one prints the card.
+        generation, updated = relaunch[0]
+        return _relaunch_installed(args, generation, closed[0] if closed else ("", "", ()), updated)
+    _print_exit_card(args, paths, started_at, time.time(), returncode, closed[0] if closed else ("", "", ()),
+                     hermes_home=tui_home)
     return returncode
+
+
+def _own_runtime_home(args: argparse.Namespace, paths) -> Path | None:
+    """The TUI's own Hermes runtime home when this launch opens there, built or refreshed; None for the shared gateway.
+
+    `own` is the default; `omh theme runtime shared` saves the other choice.
+    An explicit `--hermes-home` or `--profile` names a home of its own and
+    stays on the shared gateway. `--resume <id>` opens where the session is,
+    whatever the choice: a session only the shared store knows opens on the
+    shared gateway, one only the TUI home's store knows opens there (the way
+    back the exit card printed, after `omh theme runtime shared` too), and
+    one line says so when that differs from the choice. The id is matched as
+    the TUI recorded it; Hermes' title and prefix lookups are not consulted. A
+    home that cannot be built, or whose root config names a messaging token
+    under `platforms:` (the TUI runtime must never poll a bot's token), says
+    why in one line and opens on the shared gateway. Not on Windows, where
+    the OMH TUI does not run.
+    """
+    if os.name == "nt" or getattr(args, "hermes_home", None) or getattr(args, "tui_profile", None):
+        return None
+    from ..skin_pack import RUNTIME_OWN, effective_runtime
+    from ..tui.own_runtime import build_tui_home, tui_home_path
+
+    own = effective_runtime(paths.omh_home) == RUNTIME_OWN
+    home = tui_home_path(Path(paths.hermes_home))
+    resume = getattr(args, "tui_resume", None)
+    if resume and (home / "state.db").is_file():
+        from ..maintenance.hermes_resume import session_known
+
+        in_own = session_known(home / "state.db", resume)
+        in_shared = session_known(Path(paths.hermes_home) / "state.db", resume)
+        if own and in_shared and not in_own:
+            print(f"omh: session {resume} lives on the shared Hermes gateway; opening it there.", file=sys.stderr)
+            return None
+        if not own and in_own and not in_shared:
+            print(f"omh: session {resume} lives on the TUI's own Hermes runtime; opening it there.", file=sys.stderr)
+            own = True
+    if not own:
+        return None
+    try:
+        built = build_tui_home(paths.omh_home, Path(paths.hermes_home))
+    except (OSError, ValueError) as error:
+        print(f"omh: could not prepare the TUI's own runtime home ({error}); opening on the shared gateway.",
+              file=sys.stderr)
+        return None
+    if built.config_platform_credentials:
+        print(f"omh: the root config.yaml connects a messaging platform ({', '.join(built.config_platform_credentials)}), "
+              "which the TUI's own runtime must not poll beside the bots' gateway; opening on the shared gateway.",
+              file=sys.stderr)
+        return None
+    for name in built.overwritten:
+        print(f"omh: {name} in the TUI's own runtime home had been changed; the root's copy replaced it.", file=sys.stderr)
+    return built.path
+
+
+def _installer_generation() -> Path | None:
+    """The generation this `omh` runs from (`<root>/generations/<name>`), read before the TUI starts: `sys.prefix` may
+    go through `current`, which an update moves. None for a checkout, pip, or the npm and Bun launcher, which have no
+    `current` pointer to relaunch through."""
+    from ..install.generation_hold import generation_of
+
+    return generation_of(Path(sys.prefix))
+
+
+def _relaunch_argv(args: argparse.Namespace, closed: tuple[str, str, tuple[str, ...]]) -> list[str]:
+    """The bare launch that reopens the session the TUI left for an update: this launch's homes, scope and profile,
+    then `--resume <id>`; no `--resume` when nothing was said in it (Hermes keeps no such session to reopen) or the
+    TUI recorded none, so a new session opens as at the first launch. `--continue` is not carried: the id is."""
+    argv: list[str] = []
+    for value, flag in ((args.omh_home, "--omh-home"), (args.hermes_home, "--hermes-home"),
+                        (getattr(args, "scope", None), "--scope"), (getattr(args, "tui_profile", None), "--profile")):
+        if value:
+            argv += [flag, str(value)]
+    session_id, hermes_home, _earlier = closed
+    if session_id and not _nothing_said(Path(hermes_home) / "state.db", session_id, args):
+        argv += ["--resume", session_id]
+    return argv
+
+
+def _nothing_said(db_path: Path, session_id: str, args: argparse.Namespace) -> bool:
+    """Whether Hermes' state database says the session has no messages; False when it cannot tell."""
+    from ..maintenance.hermes_resume import NOTHING_SAID_LINE, exit_card_lines
+
+    try:
+        return exit_card_lines(db_path, session_id, getattr(args, "tui_profile", None) or None) == [NOTHING_SAID_LINE]
+    except (OSError, ValueError):
+        return False
+
+
+def _relaunch_installed(args: argparse.Namespace, generation: Path, closed: tuple[str, str, tuple[str, ...]],
+                        updated: str = "1") -> int:
+    """Open the OMH TUI again on the generation `<root>/current` names, as `omh --resume <id>` would, and return its
+    exit code. `generation` is the one this `omh` runs from. It runs as `python -P -m omh.cli` on the current one
+    (`self_update.current_omh_cli`), with `UPDATED_ENV` set so its TUI offers `/gateway restart` once when the shared
+    gateway still runs the old OMH plugin code. It is waited on as the first launch's child is: SIGHUP and SIGTERM end
+    this `omh`, and Ctrl+C, which the new one reads itself, does not end the wait. This `omh` waits for a whole session
+    on its own generation's files, so it goes on holding that one, by path: its `sys.prefix` may now resolve to the new
+    one. `updated` is the value `UPDATED_ENV` carries (`relaunch_updated_value`). A new OMH that ended in failure
+    with a session to go back to names it, since it may be a generation that cannot run."""
+    from ..install.generation_hold import hold_running_generation
+    from ..install.self_update import current_omh_cli
+    from ..tui.launch import UPDATED_ENV, exit_on_signals
+
+    command = current_omh_cli(generation.parent.parent, *_relaunch_argv(args, closed))
+    again = f"omh --resume {closed[0]}" if closed[0] else "omh"
+    try:
+        with exit_on_signals(), hold_running_generation(str(generation / "venv")):
+            child = subprocess.Popen(command, env={**os.environ, UPDATED_ENV: updated})
+            while True:
+                try:
+                    code = int(child.wait())
+                    break
+                except KeyboardInterrupt:
+                    continue
+    except OSError as error:
+        print(f"omh: could not start the installed OMH ({error}); run `{again}`.", file=sys.stderr)
+        return 1
+    if code and closed[0]:
+        print(f"omh: the installed OMH exited {code}; run `{again}` to open the session again.", file=sys.stderr)
+    return code
 
 
 def _omh_tui_blocker(paths) -> str:
@@ -477,12 +617,25 @@ def _node_available(paths) -> bool:
 
 
 def _run_terminal(
-    hermes: str, args: argparse.Namespace, paths, closed: list[tuple[str, str, tuple[str, ...]]] | None = None
+    hermes: str, args: argparse.Namespace, paths, closed: list[tuple[str, str, tuple[str, ...]]] | None = None,
+    relaunch: list[tuple[Path, str]] | None = None, hermes_home: Path | None = None,
 ) -> int:
     """Run the OMH TUI through `hermes --tui`, or Hermes' own terminal when it cannot start.
 
+    `hermes_home`, when given, is the TUI's own runtime home (`_own_runtime_home`):
+    `HERMES_HOME` for Hermes' launcher and the TUI, while the resolved home stays
+    the bots' (`BOTS_HOME_ENV`). Otherwise the resolved home is both.
+
     `closed`, when given, receives the session the OMH TUI had open as it
     exited (`closed_session`), read before its private directory goes.
+
+    `relaunch`, when given and this `omh` runs from an installer generation,
+    lets the TUI ask to be opened again on the generation `omh update`
+    installed under it: the launch names a marker file
+    (`RELAUNCH_FILE_ENV`), and `RELAUNCH_EXIT` with that file appends this
+    `omh`'s generation and what the file holds (`relaunch_updated_value`) to
+    `relaunch` for the caller (`_relaunch_installed`). A 78 without the file
+    is an exit code like any other.
 
     `CLOSED_EXIT` is the OMH TUI saying the person closed the session; it is
     returned as 0, after Hermes' launcher has skipped its own epilogue for it.
@@ -509,23 +662,47 @@ def _run_terminal(
         fallback_sentinel,
         omh_import_root,
         omh_tui_environment,
+        relaunch_requested,
+        relaunch_updated_value,
     )
+
+    from ..install.generation_hold import hold_running_generation
 
     blocker = _omh_tui_blocker(paths)
     said: list[str] = []
+    launch_home = hermes_home or Path(paths.hermes_home)
     if not blocker:
-        with exit_on_signals(), fallback_sentinel() as sentinel:
+        # The TUI and its gateway attach import from this generation until
+        # they exit; the hold keeps `omh update`'s GC off it meanwhile. Known
+        # gap: a SIGTERM sent to `omh` alone ends this block (and the hold)
+        # while the child runs on, as described above; waiting for the child
+        # there would make `omh` ignore that SIGTERM.
+        generation = _installer_generation() if relaunch is not None else None
+        with exit_on_signals(), fallback_sentinel() as sentinel, hold_running_generation():
+            marker = sentinel.with_name("relaunch")
+            # On the TUI's own runtime, a messaging token exported in this shell must not reach its gateway either
+            # (Hermes ranks the environment above `.env`): the same names the home's `.env` leaves out.
+            base = dict(os.environ)
+            if hermes_home is not None:
+                from ..tui.own_runtime import scrub_environment
+
+                base, _ = scrub_environment(base)
             environment = omh_tui_environment(
-                {**os.environ, "HERMES_HOME": str(paths.hermes_home)},
+                {**base, "HERMES_HOME": str(launch_home)},
                 python=sys.executable,
                 site=omh_import_root(),
                 omh_home=_tui_omh_home(args, paths),
                 fallback_sentinel=sentinel,
                 session_file=sentinel.with_name("session"),
+                pick_session=getattr(args, "tui_resume", None) == "",
+                relaunch_file=marker if generation is not None else None,
+                bots_home=Path(paths.hermes_home) if hermes_home is not None else None,
             )
             child = subprocess.Popen([hermes, *_hermes_passthrough_argv(args, tui=True)], env=environment)
             returncode = int(child.wait())
             fell_back = fallback_requested(returncode, sentinel)
+            if generation is not None and relaunch is not None and relaunch_requested(returncode, marker):
+                relaunch.append((generation, relaunch_updated_value(marker)))
             said = fallback_reason(sentinel) if fell_back else []
             if closed is not None and not fell_back:
                 closed.append(closed_session(sentinel.with_name("session")))
@@ -533,11 +710,23 @@ def _run_terminal(
             # The person closed the session: Hermes printed no epilogue, and the shell sees the 0 it always did.
             return 0 if returncode == CLOSED_EXIT else returncode
         blocker = "the OMH TUI did not start (its reason is above)"
-    return _run_hermes_fallback(hermes, args, paths, blocker, said)
+    return _run_hermes_fallback(hermes, args, paths, blocker, said, hermes_home=launch_home,
+                                scrub=hermes_home is not None)
+
+
+def _fallback_environment(scrub: bool) -> dict[str, str]:
+    """The shell's environment for Hermes' own terminal; on the TUI's own runtime (`scrub`) without the messaging
+    names its gateway must never see, as the OMH TUI's own launch strips them."""
+    if not scrub:
+        return dict(os.environ)
+    from ..tui.own_runtime import scrub_environment
+
+    return scrub_environment(dict(os.environ))[0]
 
 
 def _run_hermes_fallback(
-    hermes: str, args: argparse.Namespace, paths, reason: str, said: list[str] | None = None
+    hermes: str, args: argparse.Namespace, paths, reason: str, said: list[str] | None = None,
+    hermes_home: Path | None = None, scrub: bool = False,
 ) -> int:
     """Hermes' own TUI when only the OMH TUI is ruled out, else plain `hermes`.
 
@@ -559,7 +748,7 @@ def _run_hermes_fallback(
     print(f"omh: {reason}; opening {target}.", file=sys.stderr)
     returncode = int(subprocess.run(
         [hermes, *_hermes_passthrough_argv(args, tui=with_tui)],
-        env={**os.environ, "HERMES_HOME": str(paths.hermes_home)},
+        env={**_fallback_environment(scrub), "HERMES_HOME": str(hermes_home or paths.hermes_home)},
     ).returncode)
     if said:
         print(f"omh: {target} opened because the OMH TUI did not start; it said:", file=sys.stderr)

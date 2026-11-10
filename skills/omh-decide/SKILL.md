@@ -10,7 +10,7 @@ metadata:
     phase: brief
     role: operator
     quality_tier: decision-gated
-    related_skills: [omh-product-discovery-validation, omh-people-ops, omh-jev-ask]
+    related_skills: [omh-decision-prototype, omh-plan, omh-adversarial-consensus, omh-product-discovery-validation, omh-people-ops, omh-jev-ask]
 ---
 
 # Strategy Brief
@@ -19,10 +19,11 @@ This is a Hermes-native `strategy-brief` workflow skill.
 
 ## Why This Exists
 
-`strategy-brief` exists to keep `strategy` work explicit, evidence-backed, and inside the Hermes/executor boundary instead of relying on ad hoc chat narration.
+`strategy-brief` exists so a team decision ends as a recommendation whose options are priced in one unit with their lag (and, when hard to reverse, a proposed ADR), not a discussion where each option is argued in different terms.
 
 ## Do Not Use When
 
+- A technical choice one cheap experiment can settle; use `omh-decision-prototype`. A technical choice inside a plan being written; use `omh-plan`. A technical choice the user wants attacked; use `omh-adversarial-consensus`. Use this skill for the decision note and ADR once the options are known.
 - The strategic question is whether an early idea's customer problem and segment are real, and no validated discovery receipt exists yet; use `omh-product-discovery-validation`.
 - The question is how to run a hiring process — scorecards, interview loops, candidate comparison — rather than whether to hire at all; use `omh-people-ops`.
 - The user wants Jev's typed probabilities for a yes/no, pick-one, or scored question over supplied text rather than tradeoffs and a recommendation; use `omh-jev-ask`.
@@ -49,13 +50,13 @@ Bad example:
 
 ## Recovery Notes
 
-- If evidence is mostly assumption, label it and recommend a research or feedback-triage pass.
-- If the decision owner is missing, keep the output as options rather than accepted strategy.
+- If demand and capacity cannot be compared in one unit or hiring ramp lag is unknown, retain the stated constraints and options, mark the recommendation tentative, and hand back the missing capacity and timing inputs.
+- If a drafted decision record lacks write approval, retain the options, tradeoffs, and proposed decision note, mark persistence not_observed, and hand back the draft for approval without writing docs/adr/.
 
 ## Workflow Lane
 
-- Current lane: **Research and company ops** (`product-docs`, `source-finder`, `web-research`, `research`, `model-optimization`, `inference-serving`, `model-finetuning`, `research-brief`, `+27 more`) - research, signals, ops, and briefings.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Research and company ops** - research, signals, ops, and briefings.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -80,7 +81,7 @@ Quality bar:
 - When the decision is a resourcing one — hire, outsource, or cut scope — quantify demand and capacity against each other in one unit before comparing options, and price each option with the lag before it lands; a gap that exists this quarter is not closed by a hire that ramps next quarter. The worked example is `omh-decide/references/capacity-planning.md`.
 - Ask whether the decision deserves a durable record - hard to reverse, surprising without its context, and carrying a real trade-off; all three or no record, a decision note in chat is enough.
 - When a record is warranted, draft it per `omh-decide/references/decision-records.md` - the `docs/adr/` convention with Context, Drivers, Considered Options, Decision, Consequences with mitigations, and Related - and stop for the user's approval before any file is written.
-- Never edit an accepted record: status moves Proposed to Accepted to Deprecated or Superseded, supersession is a new record pointing back at the old one, and a Rejected record is kept - it is what `decision-recall` reads later.
+- Never edit an accepted record: status moves Proposed to Accepted to Deprecated or Superseded, supersession is a new record pointing back at the old one, and a Rejected record stays in the decision log for later readers; `omh-decision-recall` covers memory candidates a person rejected, not these records.
 
 Handoff policy:
 
@@ -123,7 +124,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

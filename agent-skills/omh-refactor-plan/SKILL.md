@@ -37,7 +37,7 @@ Good example:
 Bad example:
 
 - Prompt: Should we even split billing out of orders?
-- Expected behavior: Route to `ralplan`: the direction is not decided, so consensus planning comes before phase planning.
+- Expected behavior: Route to `ulw-plan`: the direction is not decided, so consensus planning comes before phase planning.
 - Why: A phase plan for a contested direction launders a decision through logistics.
 
 ## Completion Checklist
@@ -52,7 +52,9 @@ Bad example:
 
 - If the import graph is unavailable, build the codegraph first or reduce the plan's confidence and say which files are unverified.
 - If a phase cannot be made independently green, split it further; two half-phases beat one unabortable one.
-- If reconnaissance finds the direction itself is unsettled, route back to `ralplan` before ordering phases.
+- If no regression gate covers the affected files, open the plan with a Phase 0 of characterization tests, or say each phase is unverified and stop at the approval gate.
+- If reconnaissance finds the direction itself is unsettled, route back to `ulw-plan` before ordering phases.
+- If the module to deepen is chosen but its interface is not, shape it under contrasting constraints and recommend one design before phase 1; that is not a contested direction.
 
 
 
@@ -80,7 +82,7 @@ Quality bar:
 
 Required inputs:
 
-- the decided target shape (what moves where), or a pointer to the accepted plan that decided it
+- the decided target shape (what moves where), or a pointer to the accepted plan that decided it; for a chosen deepening candidate whose interface is still open, shape it first per `omh-refactor-plan/references/interface-shaping.md`
 - the affected-file evidence: import graph, codegraph handoff, or an observed file inventory
 - the regression gates that exist today (test suite, typecheck, generated-artifact checks)
 
@@ -101,7 +103,7 @@ Safety rules:
 - The plan comes from observed repo evidence, never from memory of the tree.
 - An upgrade plan is not ready while any breaking change lacks its call sites or an observed empty search, or any stage lacks its rollback; name the open rows instead of calling the bump safe to merge.
 - Every phase ends at a commit that could ship; a phase that cannot end green is split further.
-- Nothing is deleted before the cleanup phase, and cleanup starts from a tagged rollback point.
+- No production code is deleted before the cleanup phase (phase 4 may delete a test only when an interface-level test covers the same behavior, named in the plan), and cleanup starts from a tagged rollback point.
 - Do not begin implementing any phase without the user's explicit approval of the plan.
 
 ## Runtime Evidence

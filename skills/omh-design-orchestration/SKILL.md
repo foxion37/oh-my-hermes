@@ -39,7 +39,7 @@ Good example:
 Bad example:
 
 - Prompt: design-orchestration already rendered and visually passed the new page.
-- Expected behavior: Keep rendering and visual PASS not_observed; route the required capture and verdict work to visual-qa.
+- Expected behavior: Keep rendering and visual PASS not_observed; route the required capture and verdict work to `omh-visual-qa`.
 - Why: A prepared orchestration contract cannot create implementation or rendered evidence.
 
 ## Completion Checklist
@@ -55,8 +55,8 @@ Bad example:
 
 ## Workflow Lane
 
-- Current lane: **Materials and visual summaries** (`show-reel`, `sprite-forge`, `design-orchestration`, `apple-design`, `design-quality-gate`, `award-bar-score`, `frontend`, `accessibility-audit`, `+8 more`) - web, accessibility, visual QA, files, and packages.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Materials and visual summaries** - web, accessibility, visual QA, files, and packages.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -96,7 +96,7 @@ Expected outputs:
 - design_direction_set/v1 when the direction is still open
 - design intent and opaque context-reference boundary
 - prepared direction vocabulary
-- downstream composition: design-quality-gate, frontend, accessibility-audit, visual-qa
+- downstream composition: `omh-design-quality-gate`, `omh-frontend`, `omh-accessibility-audit`, `omh-visual-qa`
 - executor-neutral handoff with executor_selection_required
 - visual evidence requirements with visual_verdict not_observed
 
@@ -110,7 +110,7 @@ Artifact expectations:
 
 Safety rules:
 
-- Preserve the existing direct owners: design-quality-gate for premium multi-format quality, frontend for web implementation/design-system work, accessibility-audit for semantic access review, and visual-qa for fresh rendered verdicts.
+- Preserve the existing direct owners: `omh-design-quality-gate` for premium multi-format quality, `omh-frontend` for web implementation/design-system work, `omh-accessibility-audit` for semantic access review, and `omh-visual-qa` for fresh rendered verdicts.
 - Do not use a prepared direction to claim code, screenshots, browser QA, accessibility PASS, review, CI, deployment, or merge.
 - Keep free-form briefs in Hermes conversation context; persist only closed vocabulary and opaque reference metadata in the deterministic artifact.
 - Do not call Claude Design, Figma, Open Design, an image provider, browser, network service, daemon, or executor from OMH core.
@@ -127,7 +127,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

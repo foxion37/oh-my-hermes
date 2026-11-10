@@ -61,6 +61,7 @@ class ClientMethodTests(unittest.TestCase):
         # `confirm_expensive_model` goes only with a model the person said to switch to anyway.
         self.assertEqual(contract.CLIENT_METHODS["config.set"], {"key", "value", "session_id", "confirm_expensive_model"})
         self.assertEqual(contract.CLIENT_METHODS["session.steer"], {"session_id", "text"})
+        self.assertEqual(contract.CLIENT_METHODS["session.redirect"], {"session_id", "text"})  # same params model
         self.assertEqual(set(contract.CONFIG_SET_VALUES), {"yolo", "reasoning"})
         self.assertEqual(contract.CONFIG_SET_VALUES["yolo"], {"on", "off"})
         # hermes_constants.VALID_REASONING_EFFORTS in 6c61c3e27d, plus none (parse_reasoning_effort: thinking off).
@@ -139,9 +140,19 @@ class ClientMethodTests(unittest.TestCase):
         self.assertEqual(contract.undeclared_params("voice.toggle", {"on": True}), ["on"])
 
     def test_only_the_calls_a_session_does_without_are_optional(self) -> None:
-        optional = {"commands.catalog", "config.get", "model.options", "session.list", "skills.reload"}
+        optional = {"commands.catalog", "config.get", "image.render", "model.options", "session.list", "skills.reload"}
         self.assertEqual(contract.OPTIONAL_METHODS, optional)
         self.assertLessEqual(contract.OPTIONAL_METHODS, set(contract.CLIENT_METHODS))
+
+    def test_image_render_is_declared_with_its_five_keys_and_is_optional(self) -> None:
+        self.assertEqual(
+            contract.CLIENT_METHODS["image.render"],
+            frozenset({"path", "cols", "rows", "graphics", "terminal"}),
+        )
+        self.assertIn("image.render", contract.OPTIONAL_METHODS)
+        params = {"path": "/p.png", "cols": 40, "rows": 8, "graphics": True, "terminal": "kitty"}
+        self.assertEqual(contract.call_problem("image.render", params), "")
+        self.assertIn("session_id", contract.call_problem("image.render", {**params, "session_id": "live-1"}))
 
     def test_drift_errors_are_param_rejection_and_unknown_method_only(self) -> None:
         self.assertTrue(contract.is_drift_error({"code": 4000, "message": "extra fields"}))
@@ -257,9 +268,10 @@ class InboundTests(unittest.TestCase):
                 self.assertEqual(folded == [], event_type in contract.APP_EVENTS)
 
     def test_every_event_type_is_declared_once_and_every_recorded_one_is_declared(self) -> None:
-        # 77: `len(tui_gateway.contracts.registry.EVENTS)` in Hermes 6c61c3e27d.
+        # 77: `len(tui_gateway.contracts.registry.EVENTS)` in Hermes 6c61c3e27d, plus the two newer ones the app takes
+        # (`skills.changed`, `session.replay_gap`).
         self.assertEqual(contract.HANDLED_EVENTS & contract.UNREAD_EVENTS, frozenset())
-        self.assertEqual(len(contract.HANDLED_EVENTS | contract.UNREAD_EVENTS), 77)
+        self.assertEqual(len(contract.HANDLED_EVENTS | contract.UNREAD_EVENTS), 77 + 2)
         recorded = {
             kind
             for name in ("session", "approval", "subagent_relay", "notifications", "parity")

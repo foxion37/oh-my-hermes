@@ -37,19 +37,21 @@ Good example:
 Bad example:
 
 - Prompt: Explain the attached machine-learning paper for a beginner.
-- Expected behavior: Route to `paper-learning`, not `curriculum-design`.
+- Expected behavior: Route to `omh-paper-learning`, not `curriculum-design`.
 - Why: A supplied paper explanation is not a curriculum-design request.
 
 ## Completion Checklist
 
-- The plan names goals, non-goals, assumptions, acceptance criteria, and verification shape.
-- Draft recommendations, accepted decisions, and executor handoffs are separate states.
-- Rejected options or unresolved tradeoffs are recorded before handoff.
+- Every outcome states performance, conditions and criterion; each has assessment evidence and rubric criteria, and the alignment map lists orphan outcomes and orphan assessments.
+- The sequence shows diagnosis, modeling, guided practice, feedback and independent transfer, with the hours per week totalled against the stated schedule.
+- Each accessibility adaptation names the learner barrier and an equivalent demonstration path.
+- Validation is PASS, REVISE or BLOCKED per criterion; learner review and pilot stay prepared until observed.
 
 ## Recovery Notes
 
-- If acceptance criteria or verification are missing, route back to clarification before handoff.
-- If assumptions materially affect the plan, keep them visible and avoid treating the plan as accepted.
+- If an outcome lacks acceptable assessment evidence, retain curriculum_learner_outcome_brief/v1, mark curriculum_alignment_map/v1 tentative, and hand back the orphan outcomes or assessment mismatches for revision.
+- If an access or technology barrier has no equivalent demonstration path, retain the aligned outcomes and assessments, mark curriculum_sequence_design/v1 unresolved, and hand back the barrier and required adaptation.
+- If learner review or pilot evidence is absent, return the alignment and sequence as unvalidated drafts, mark validation unresolved, and hand back curriculum_validation_disposition/v1 with required reviews and revalidation checks.
 
 
 

@@ -16,12 +16,17 @@ from ..awareness import (
     awareness_context_matches_message,
     awareness_route_hint,
     awareness_route_hint_context_from_payload,
+    capability_family_verdict,
+    capability_off_block,
     route_hint_for_installed_skills,
+    route_hint_without_disabled_skills,
     route_hint_without_engine_workflows,
     search_helper_hint,
 )
+from ..console_choices import console_choices_line
 from ..context_brief import build_context_brief
 from ..degradation import (
+    COMPONENT_CAPABILITY_POLICY_READ,
     COMPONENT_LOCALIZED_ROUTING_TEXT,
     COMPONENT_RUNTIME_STATUS_READ,
     degradation_payload,
@@ -38,10 +43,14 @@ from ..dag_open_run_nudge import open_run_line
 from ..hermes_session_commands import host_command_turn, host_context_removed, person_request_text
 from ..host_context import record_active_main_agent_model
 from ..host_observation import observe_plugin_hook_call
-from ..installed_skills import installed_skill_names
+from ..capability_off import read_disabled_family_ids, skill_families_for
+from ..owner_preference_record import setup_profile_owner
+from ..installed_skills import hermes_loadable_skill_names, routable_skill_names
 from ..kanban_board_reader import conversation_session_ids, kanban_db_path, read_kanban_lanes
 from ..native_todo import held_native_write_note
+from ..named_owner_choice import clear_turn_owners, note_turn_owners
 from ..omh_roles import extract_role_marker, role_context_payload
+from ..plan_follow_on import DAG_ULW, acceptance_line, plan_turn_line
 from ..omh_identities import extract_identity_marker, identity_context_payload
 from ..dispatch_outcomes import unacknowledged_outcomes
 from ..runtime_reader import read_omh_activity, read_omh_hud, read_omh_status, read_omh_todo
@@ -49,9 +58,12 @@ from ..skill_shortlist import claim_candidate_line, skill_candidate_line, skill_
 from .session_attendance import note_session_platform
 from .verify_hooks import clear_round_end_answer
 from ..consistency_trigger import note_turn_posture
+from ..test_expectation_check import note_request as note_test_request
 from .nudge_budget import session_is_delegated
 from ..remote_wait_nudge import failed_wait_context
 from ..jev_consent import MESSAGING_ATTENDED_PLATFORMS
+from ..messenger_gate import GATED_PLATFORMS, session_room_key
+from ..messenger_judgement import turn_instruction
 from ..jev_consent import clear_turn as clear_jev_turn
 from ..jev_consent import note_turn as note_jev_turn
 from ..todo_reconciliation import (
@@ -511,6 +523,44 @@ def _reset_board_card_state() -> None:
         _board_card_sessions.clear()
 
 
+# The package modules a session's first turns import: the capability families the first turn's
+# brief reads (`context_brief._capability_family_cards`) and the router a later turn's route hint
+# asks (`awareness._user_trigger_pack_route_decision`). Importing them costs 80-300 ms, paid by the
+# first user turn that reaches each. `register()` starts this thread so they load while the person
+# types; `pre_llm_call` waits for it before doing anything, so no turn imports the same modules from
+# another thread at the same time (two threads entering one import cycle from different sides is
+# what CPython's deadlock detection fails one of). Both call sites keep their own guarded import,
+# so a host without `omh`, or an import that fails here, is still reported where it was before.
+_import_warmup: threading.Thread | None = None
+
+
+def _warm_imports() -> None:
+    try:
+        from omh.capabilities.families import capability_family_cards  # noqa: F401
+        from omh.routing.chat import user_trigger_pack_route_hint  # noqa: F401
+    except Exception:  # noqa: BLE001 - the call sites import again and report the failure themselves
+        return
+
+
+def start_import_warmup() -> None:
+    """`register()`: import the first turns' package modules on a daemon thread, once per process copy."""
+    global _import_warmup
+    if _import_warmup is not None:
+        return
+    thread = threading.Thread(target=_warm_imports, name="omh-import-warmup", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:  # no thread to spare: the first turns import as they did
+        return
+    _import_warmup = thread
+
+
+def _await_import_warmup() -> None:
+    thread = _import_warmup
+    if thread is not None:
+        thread.join()
+
+
 def _tracker_event_is_present(kwargs: dict) -> bool:
     """Recognize a host-labelled tracker event without inspecting its text."""
     for key in ("tracker_event", "github_event"):
@@ -523,7 +573,11 @@ def _tracker_event_is_present(kwargs: dict) -> bool:
 
 
 def _rendered_route_hint(
-    payload: dict[str, object], installed: frozenset[str] | None, *, delegated: bool
+    payload: dict[str, object],
+    installed: frozenset[str] | None,
+    *,
+    delegated: bool,
+    disabled: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """The route hint this turn renders: installed skills only, no orchestrating engine for a child.
 
@@ -537,12 +591,51 @@ def _rendered_route_hint(
     included. Only the rendered block is cut -- the payload the brief and the
     candidate line read still records what the message named.
     """
-    hint = route_hint_for_installed_skills(payload, installed)
+    hint = route_hint_without_disabled_skills(route_hint_for_installed_skills(payload, installed), disabled or {})
     return route_hint_without_engine_workflows(hint) if delegated else hint
 
 
 def pre_llm_call(**kwargs) -> dict[str, object] | None:
-    """Inject bounded OMH role/status context without storing prompts."""
+    """Inject bounded OMH role/status context without storing prompts.
+
+    The turn's OMH context, plus, in a Slack or Discord room where the model
+    judges "be quiet" and "not for me" (`messenger_judgement`), the short
+    marker instruction, inside the same fence.
+    """
+    return _with_room_instruction(_turn_context(**kwargs), _room_instruction(kwargs))
+
+
+def _room_instruction(kwargs: dict) -> str:
+    """The judged room's instruction for this turn, or "".
+
+    Only the room's own turn gets it. A delegated child inherits the parent's
+    session ContextVars (`copy_context`), so its room key alone would name the
+    person's thread, and its ``[SHUTUP]`` would mute it. A child runs under
+    ``platform="subagent"`` and names a parent, as a detached fork does.
+    """
+    if str(kwargs.get("parent_session_id") or "").strip():
+        return ""
+    if str(kwargs.get("platform") or "").strip().casefold() not in GATED_PLATFORMS:
+        return ""
+    return turn_instruction(kwargs.get("turn_id"), session_room_key())
+
+
+def _with_room_instruction(payload: dict[str, object] | None, note: str) -> dict[str, object] | None:
+    if not note:
+        return payload
+    payload = dict(payload or {})
+    context = payload.get("context")
+    if isinstance(context, str) and context.endswith(OMH_CONTEXT_FENCE_CLOSE):
+        payload["context"] = f"{context[: -len(OMH_CONTEXT_FENCE_CLOSE)]}\n{note}\n{OMH_CONTEXT_FENCE_CLOSE}"
+    elif isinstance(context, str) and context.strip():
+        payload["context"] = f"{context}\n\n{fence_omh_context([note])}"
+    else:
+        payload["context"] = fence_omh_context([note])
+    return payload
+
+
+def _turn_context(**kwargs) -> dict[str, object] | None:
+    """The turn's OMH context: role, status, route hint and the rest."""
     # A detached fork is not one of the session's turns, and gets nothing.
     # Hermes builds its background review and the `/btw` side question as a
     # fork of the live agent that keeps the parent's session id and names
@@ -563,14 +656,22 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
     # asked for Jev until its own request is read below. A marker left from
     # the previous turn must never survive a degraded turn.
     clear_jev_turn(kwargs.get("session_id"))
+    # The same for the coding owners a dag-ulw request named: a choice counts only for the request it was made in.
+    clear_turn_owners(kwargs.get("session_id"))
     # The same for the round-end answer stash: one left by the previous turn
     # (a sentinel never came) must not be swappable in this one. Detached
     # forks never reach this line, so a background review cannot clear the
     # live turn's stash.
     clear_round_end_answer(kwargs.get("session_id"))
+    # Only after both clears: a wait the host abandons at its hook timeout must not keep either.
+    _await_import_warmup()
     # Whether this session's platform can get the round-end check at all: one that cannot (a
     # delegated child) takes no workspace index in `pre_tool_call`, which is given no platform.
     note_turn_posture(kwargs.get("session_id"), kwargs.get("platform"))
+    # And what this turn's request said about keeping behaviour and changing tests, for the round-end
+    # test check: set here, before anything can return early, so a previous turn's facts never apply.
+    note_test_request(kwargs.get("session_id"),
+                      "" if _tracker_event_is_present(kwargs) else kwargs.get("user_message"))
     # Bind before any observer or awareness I/O. A failed root must not reach
     # downstream defaults as None, or fail before the status classifier runs.
     try:
@@ -662,18 +763,50 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
     )
     message_matches_awareness = False
     degraded: list[tuple[str, str]] = []
-    # The skills this home installed. The route hint and the candidate line
-    # rank the whole catalog, and a `--core` home holds ten of its skills, so
-    # both are cut to this set before they are rendered (#1954). `None` --
-    # the set could not be read -- renders the whole catalog, as before.
-    # `route_hint_payload` itself stays unfiltered: its direct-invocation
-    # hint records that the person named a workflow, installed or not.
-    installed_skills = installed_skill_names(omh_home) if include_awareness else None
+    # Only a person's main-session request names external owners, and only for this turn's dag-ulw run.
+    # Host-written turns have no request here; a child cannot choose for its parent.
+    if request_message and not delegated:
+        note_turn_owners(session_id, request_message)
+    # The skills this home installed and this Hermes can load by name. The
+    # route hint and the candidate line rank the whole catalog, and a
+    # `--core` home holds ten of its skills, so both are cut to this set
+    # before they are rendered (#1954); a skill Hermes resolves to no
+    # directory, or to two, is cut too, since `skill_view` answers it "not
+    # found" or refuses it. `None` -- the set could not be read -- renders
+    # the whole catalog, as before. `route_hint_payload` itself stays
+    # unfiltered: its direct-invocation hint records that the person named a
+    # workflow, installed or not.
+    installed_skills = hermes_loadable_skill_names(omh_home) if include_awareness else None
+    # The skills of a capability family this home turned off (`omh
+    # capability-policy disable`) are cut the same way, read per turn from the
+    # setup profile the memory tool reads. Nothing off leaves the set as is.
+    disabled_skills: dict[str, str] = {}
+    if include_awareness:
+        disabled_families, policy_error = read_disabled_family_ids(omh_home)
+        disabled_skills = skill_families_for(disabled_families)
+        if policy_error:
+            # Routing goes ahead as though every family were on; say so.
+            degraded.append((COMPONENT_CAPABILITY_POLICY_READ, safe_error_type(policy_error)))
+    installed_skills = routable_skill_names(installed_skills, disabled_skills)
+    # One router pass decides. A request it answers "this family is off"
+    # gets that block and nothing else; one it asks openly about because its
+    # best match is off gets no block, and in both the route hint and the
+    # candidate line are withheld, since either would name a stand-in skill.
+    # A child's brief is its orchestrator's words, not a request for the family.
+    capability_verdict = (
+        capability_family_verdict(request_message, disabled_skills) if disabled_skills and not delegated else {}
+    )
+    capability_off_context = capability_off_block(capability_verdict)
     rendered_route_hint: dict[str, object] = {}
     if include_awareness:
         if is_first_turn:
-            route_hint_payload = awareness_route_hint(request_message, context_removed=host_context_removed(user_message))
-            rendered_route_hint = _rendered_route_hint(route_hint_payload, installed_skills, delegated=delegated)
+            route_hint_payload = awareness_route_hint(
+                request_message, context_removed=host_context_removed(user_message),
+                profile_owner=setup_profile_owner(omh_home),
+            )
+            rendered_route_hint = _rendered_route_hint(
+                route_hint_payload, installed_skills, delegated=delegated, disabled=disabled_skills
+            )
             route_hint_context = awareness_route_hint_context_from_payload(rendered_route_hint)
             message_matches_awareness = bool(route_hint_context)
             route_degradation = route_hint_payload.get("degradation")
@@ -691,9 +824,19 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
             if match_error:
                 degraded.append((COMPONENT_LOCALIZED_ROUTING_TEXT, match_error))
         if message_matches_awareness and route_hint_payload is None:
-            route_hint_payload = awareness_route_hint(request_message, context_removed=host_context_removed(user_message))
-            rendered_route_hint = _rendered_route_hint(route_hint_payload, installed_skills, delegated=delegated)
+            route_hint_payload = awareness_route_hint(
+                request_message, context_removed=host_context_removed(user_message),
+                profile_owner=setup_profile_owner(omh_home),
+            )
+            rendered_route_hint = _rendered_route_hint(
+                route_hint_payload, installed_skills, delegated=delegated, disabled=disabled_skills
+            )
             route_hint_context = awareness_route_hint_context_from_payload(rendered_route_hint)
+        if capability_verdict:
+            # The best match is off; a next hint would hand the work to
+            # another workflow after all.
+            rendered_route_hint = {}
+            route_hint_context = ""
         if route_hint_context:
             route_fingerprint = hashlib.sha256(route_hint_context.encode("utf-8")).hexdigest()
             if not claim_route_guidance_delivery(
@@ -791,7 +934,11 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
     # workflow themselves, and it reads `request_message`, so a host-written
     # notice gets none. A session is shown a given candidate set once; the
     # line comes back only when the set changes.
-    if include_awareness:
+    if capability_off_context:
+        # The person asked for work whose family this home turned off: the
+        # turn says so, and lists no other skill in its place.
+        context_parts.append(capability_off_context)
+    elif include_awareness and not capability_verdict:
         candidates = skill_candidates_for_turn(
             request_message, route_hint_payload=route_hint_payload, installed=installed_skills
         )
@@ -900,6 +1047,29 @@ def pre_llm_call(**kwargs) -> dict[str, object] | None:
         if workflow_context:
             payload["omh_active_workflow"] = workflow_context
             context_parts.append(render_active_workflow_context(workflow_context))
+        # `dag-ulw` as one option beside carrying a plan out, on `/plan`'s own
+        # turn and, conditionally, on the turn right after a plan was made
+        # (`plan_follow_on`). A child is never offered dag-ulw, nor a home
+        # that cannot load it.
+        if not delegated and (installed_skills is None or DAG_ULW in installed_skills):
+            follow_on = plan_turn_line(user_message) or acceptance_line(
+                request_message, kwargs.get("conversation_history"), workflow_context, session_id
+            )
+            if follow_on:
+                context_parts.append(follow_on)
+        # In a console session, a choice the reply stops on goes through
+        # Hermes' `clarify` picker rather than a prose list: on the session's
+        # first turn, and on the person's next turn after a clarify timed out
+        # (`console_choices`). A messaging platform and a child get nothing.
+        if not delegated:
+            console_choices = console_choices_line(
+                kwargs.get("platform"),
+                kwargs.get("conversation_history"),
+                is_first_turn=is_first_turn,
+                person_turn=bool(request_message),
+            )
+            if console_choices:
+                context_parts.append(console_choices)
         budget_context = context_budget_continuation(
             omh_home, session_id, str(kwargs.get("model", "") or "")
         )

@@ -5,7 +5,7 @@ import hashlib
 from importlib.resources import files
 import json
 
-from .catalog_types import ExpertQuestion, ProcedureCheck, ProcedureStep, SkillDefinition, SkillExample
+from .catalog_types import ExpertQuestion, ProcedureCheck, ProcedureBail, ProcedureStep, SkillDefinition, SkillExample
 
 TOOLKIT_RESOURCES = (
     "README.md", "LICENSE.upstream", "scripts/analyze.py",
@@ -24,14 +24,17 @@ DEFINITION = SkillDefinition(
     delegation_boundary="retained-catalog-intent", progressive_disclosure=True,
     reasoning_demand="heavy",
     required_inputs=_INPUTS, expected_outputs=_OUTPUTS,
-    expert_questions=tuple(ExpertQuestion(key, question, question) for key, question in (
-        (_INPUTS[0], "Which two polygon layers, source permissions, and study extent define the overlap question?"),
-        (_INPUTS[1], "What are the authoritative source CRS declarations and an appropriate projected metre CRS for measurement?"),
-        (_INPUTS[2], "Which new directory receives outputs, which optional backend is installed, and what host timeout bounds execution?"),
+    expert_questions=tuple(ExpertQuestion(key, question, korean) for key, question, korean in (
+        (_INPUTS[0], "Which two polygon layers, source permissions, and study extent define the overlap question?",
+         "겹침을 구할 두 폴리곤 레이어는 무엇이고, 사용 권한과 분석 범위는 어떻게 되나요?"),
+        (_INPUTS[1], "What are the authoritative source CRS declarations and an appropriate projected metre CRS for measurement?",
+         "각 레이어의 공식 좌표계(CRS) 선언은 무엇이고, 면적을 잴 미터 단위 투영 좌표계는 무엇으로 할까요?"),
+        (_INPUTS[2], "Which new directory receives outputs, which optional backend is installed, and what host timeout bounds execution?",
+         "결과를 쓸 새 폴더는 어디이고, 어떤 선택 백엔드가 설치되어 있으며, 실행 제한 시간은 얼마인가요?"),
     )),
     opening_steps=(
         "Read `toolkit/README.md` and `references/execution-and-qa.md` before executing `toolkit/scripts/analyze.py`; installation and skill discovery never run it.",
-        "Confirm the two layers, explicit EPSG declarations, study extent, projected metre CRS, output directory and finite host timeout; never guess a missing CRS.",
+        "Confirm the two layers, explicit EPSG declarations, study extent, projected metre CRS, output directory and finite host timeout; never guess a missing CRS. The helper reads GeoJSON only: for a shapefile, GeoPackage or KML ask for a GeoJSON export with the CRS stated, or offer a separately approved conversion (for example `ogr2ogr`).",
         "Use the original synthetic rectangle fixture only for backend QA; do not describe it as a public flood, facility or site-suitability finding.",
     ),
     handoff_policy="Hermes retains domain framing and evidence interpretation. Invoke the optional standalone helper only within accepted file and execution scope; use a selected coding owner for code changes. A prepared command is not observed spatial computation.",
@@ -47,9 +50,21 @@ DEFINITION = SkillDefinition(
         ProcedureStep("gis_validate", "analysis", (_INPUTS[0], _INPUTS[1]), (_OUTPUTS[2],), ("gis_input_check",),
                       "Inspect source rights, coordinate ordering and extent; require explicit EPSG identifiers and an appropriate projected metre CRS before preparing computation."),
         ProcedureStep("gis_intersect", "production", _INPUTS, _OUTPUTS, ("gis_input_check", "gis_backend_check"),
-                      "Run the standalone helper with a finite host timeout in an isolated optional environment; record real stdout, stderr and exit without fallback values."),
+                      "Run the standalone helper with a finite host timeout in an isolated optional environment; record real stdout, stderr and exit without fallback values.",
+            on_fail=ProcedureBail(
+                still_stands=('replay and provenance manifest',),
+                downgrade_to='not_observed',
+                handback='Return the replay and provenance manifest, captured stdout, stderr and exit or timeout, and the dependency or input blocker for a retry in a new output directory without claiming zero overlap.',
+            ),
+        ),
         ProcedureStep("gis_reconcile", "validation", _INPUTS, _OUTPUTS, ("gis_output_check", "gis_backend_check"),
-                      "Read back every promised artifact, check hashes and independent area/count expectations, and report observed results separately from public-world interpretation."),
+                      "Read back every promised artifact, check hashes and independent area/count expectations, and report observed results separately from public-world interpretation.",
+            on_fail=ProcedureBail(
+                still_stands=('replay and provenance manifest',),
+                downgrade_to='tentative',
+                handback="Return result GeoJSON and measured summary JSON with failed hash, count or pair-sum versus union-area checks and fixture limits; retain only the manifest's validated input provenance, not a verified overlap result.",
+            ),
+        ),
     ),
     artifact_expectations=(
         "Actual `result.geojson` in longitude/latitude OGC:CRS84; each positive-area pair carries source indices, original namespaced properties, area_m2 and perimeter_m.",
@@ -61,7 +76,8 @@ DEFINITION = SkillDefinition(
         "Refuse geographic-degree area/distance and non-metre targets; choose a suitable local/equal-area projected CRS rather than treating map units as ground truth.",
         "Do not auto-install optional libraries, import the companion on skill load, open a network connection, silently repair invalid geometry or overwrite existing outputs.",
         "No result is observed until the actual domain backend exits successfully and its output files are inspected. Missing backend, validation failure and timeout are not zero-overlap findings.",
-        "Keep confidential locations and source data out of shared reports; carry only permitted evidence references. No map, raster/NoData, buffer, spatial statistics or nearest-distance capability is promised.",
+        "Keep confidential locations and source data out of shared reports; carry only permitted evidence references. No map, raster/NoData, buffer, spatial statistics or nearest-distance capability is promised: for point, line, distance or buffer work, say the helper does not cover it and offer a separately approved Shapely/GeoPandas script under the same rules (explicit CRS, metre target, recorded versions).",
+        "Web Mercator (EPSG:3857) and Mercator distort area (about 1.6x at 38 degrees latitude) and the helper refuses them for real layers: choose an equal-area CRS for the extent (for example EPSG:6933 or a regional Albers/LAEA) or the local UTM zone or national projected grid for a small extent, and state the choice in the report. Never add or edit `data_class` or `fixture_id` on a real layer to pass the guard; World Equidistant Cylindrical (EPSG:4087) is not equal-area either.",
     ),
     quality_tier="execution-evidence-gated",
     quality_bar=(
@@ -112,7 +128,11 @@ promised. Skill loading and resource materialization only read inert text.
 - Choose an appropriate projected metre CRS. Area and perimeter are planar in
   that CRS, not automatically equal-area, geodesic or ground-truth measurements.
   EPSG:3857 is used only for the declared local synthetic fixture, not a general
-  recommendation for public-world measurement. Geographic and feet-based target
+  recommendation for public-world measurement: the helper refuses Web Mercator and
+  Mercator for any layer that is not one of the shipped example files (checked by digest), because they
+  inflate area by 1/cos^2(latitude); never add or edit `data_class` or `fixture_id`
+  on a real layer to pass that check. Use an equal-area CRS for the extent or the
+  local UTM zone / national grid. Geographic and feet-based target
   CRS are refused. Geographic inputs must be reprojected before measurement.
 - Require finite 2D Polygon/MultiPolygon coordinates, closed rings, nonempty
   valid geometry and a bounded candidate-pair budget. No automatic `make_valid`

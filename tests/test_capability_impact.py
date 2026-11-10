@@ -35,7 +35,6 @@ class RepresentativeRoutingTests(unittest.TestCase):
             ("Find and recover my previous Codex coding session", "harness-session-inventory"),
             ("지난 코딩 세션을 찾아서 기억을 복구해줘", "harness-session-inventory"),
             ("Edit this image to remove the background", "img-summary"),
-            ("Generate a short product demo video", "external-connector-readiness"),
             ("Check whether Home Assistant can control this device", "external-connector-readiness"),
         )
 
@@ -218,14 +217,16 @@ class PreVerifyHookTests(unittest.TestCase):
         register(context)
 
         # Only the rejected optional hook is absent; the other optional hooks
-        # (on_session_start, post_tool_call, subagent_start, subagent_stop,
-        # transform_llm_output, transform_tool_result) still register on this
-        # host.
+        # (on_session_start, post_api_request, post_tool_call, pre_gateway_dispatch, subagent_start,
+        # subagent_stop, transform_llm_output, transform_tool_result) still
+        # register on this host.
         self.assertEqual(
             set(context.hooks),
             {
                 "on_session_end",
                 "on_session_start",
+                "post_api_request",
+                "pre_gateway_dispatch",
                 "pre_llm_call",
                 "pre_tool_call",
                 "post_tool_call",

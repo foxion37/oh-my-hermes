@@ -19,7 +19,7 @@ This is a Hermes-native `application-threat-model` workflow skill.
 
 ## Why This Exists
 
-`application-threat-model` exists because the nearest neighbour does not merely miss this request. `security-safety-review` maps the agent's own prompt, tool, credential, and dependency surface, so an application threat-model request came back as an agent tool inventory under a near-identical name — a confident wrong artifact rather than a miss, in the one domain where that costs most.
+`application-threat-model` exists because the nearest neighbour does not merely miss this request. `omh-security-safety-review` maps the agent's own prompt, tool, credential, and dependency surface, so an application threat-model request came back as an agent tool inventory under a near-identical name — a confident wrong artifact rather than a miss, in the one domain where that costs most.
 
 ## Do Not Use When
 
@@ -40,7 +40,7 @@ Good example:
 Bad example:
 
 - Prompt: application-threat-model check whether this agent can be prompt-injected through its file tool
-- Expected behavior: Route to `security-safety-review`: prompts, tools, and credentials are the agent's runtime surface, not an application this workflow models.
+- Expected behavior: Route to `omh-security-safety-review`: prompts, tools, and credentials are the agent's runtime surface, not an application this workflow models.
 - Why: The two surfaces share vocabulary and nothing else; modeling the agent's runtime here is how the artifacts get confused.
 
 ## Completion Checklist
@@ -56,12 +56,12 @@ Bad example:
 - If the architecture is not described, ask for the component map and the data flows before modeling; never substitute a generic checklist for the real system.
 - If a scenario has no boundary and no asset, drop it with the reason rather than carrying an unreachable threat.
 - If the user asks for exploit code, give the precondition and the detection signal instead, then hand remediation to an executor.
-- If the request turns out to be about the agent's own prompts, tools, or credentials, stop and hand it to `security-safety-review`.
+- If the request turns out to be about the agent's own prompts, tools, or credentials, stop and hand it to `omh-security-safety-review`.
 
 ## Workflow Lane
 
-- Current lane: **Coding handoff** (`idea-to-deploy`, `llm-app-dev`, `cto-loop`, `deploy-and-monitor`, `code-review`, `build-failure-triage`, `verification-gate`, `security-safety-review`, `+28 more`) - coding owners, handoffs, review, CI, and merge evidence.
-- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Current lane: **Coding handoff** - coding owners, handoffs, review, CI, and merge evidence.
+- If intent belongs to another lane, hand back to `omh-routing` or name the adjacent workflow.
 - Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
 
 ## When to Use
@@ -81,10 +81,11 @@ Reasoning demand: `standard`
 Quality bar:
 
 - Name every component, data store, and external dependency of the real system before naming one threat; a model of a system nobody described is a checklist.
-- Give each asset a data class and exactly one loss: disclosure, corruption, unavailability, or fraud.
+- Give each asset a data class and its primary loss: disclosure, corruption, unavailability, or fraud.
 - For each trust boundary, state what crosses it, what authenticates the crossing, and what the receiver assumes without checking.
 - Run all six STRIDE prompts from `omh-application-threat-model/references/threat-model-method.md` per boundary; drop an unreachable scenario with its reason instead of carrying it.
 - Resolve every scenario to one decision (mitigate, transfer, accept, eliminate) with an owner, and give every mitigating control a test whose observable fails when the control is removed.
+- Rank scenarios by likelihood times impact; accept only below the owner's limit.
 
 Handoff policy:
 
@@ -109,7 +110,7 @@ Expert clarification questions:
 Expected outputs:
 
 - application_threat_model/v1
-- asset register: data class plus the one loss that makes each asset worth defending
+- asset register: data class plus the loss that makes each asset worth defending
 - trust boundaries: what crosses, what authenticates the crossing, what the receiver assumes unchecked
 - attack scenarios: entry point, path, precondition, impact
 - one decision per scenario (mitigate, transfer, accept, eliminate) with an owner
@@ -124,7 +125,7 @@ Safety rules:
 
 - Never write working exploit code, a payload, or a runnable attack script; a scenario names the entry point, the path, and the precondition, not the weapon.
 - Do not record a control as deployed because the architecture describes it; an unobserved control is `unverified` until configuration or a passing test says otherwise.
-- Do not model the agent's own prompts, tools, credentials, or dependencies here; that surface belongs to `security-safety-review`.
+- Do not model the agent's own prompts, tools, credentials, or dependencies here; that surface belongs to `omh-security-safety-review`.
 - Never print secrets, tokens, keys, connection strings, or live customer records pulled in as examples.
 - A model is not a penetration test, a scan, or a compliance attestation; name which of the three the user still needs.
 
@@ -134,7 +135,7 @@ Record observed delegation results; otherwise return `not_available` or `not_obs
 Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
 - Treat wrapper memory/context summaries as advisory local context, not proof of opaque Hermes memory reads or changes.
 Preserve workflow intent and stop conditions; verify before claiming completion.
-Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only. When the requested output is delivered, put any open points inside the result and end with no question or offer; only when the person asked to choose or decide and that choice is still theirs, end with one specific question about it, not a list, a generic offer, or a footer; the shared rail's Reply Language And Host Voice and Turn Ending sections hold the full rule.
 
 Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
 

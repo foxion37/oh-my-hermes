@@ -59,7 +59,10 @@ the machine-readable `surface_efforts`. A ladder can also move between
 generations of one tier: GPT-6.1 Sol's API page drops the `none` rung GPT-6
 Sol documents, so 6.1 Sol takes Astra's shape (`low` floor, `off` and
 `minimal` raised on record) while GPT-6 Sol keeps sending `none`; copy the
-ladder from the new page, never from the predecessor's contract. Record the API ladder and limits as the contract and put each
+ladder from the new page, never from the predecessor's contract, unless the
+new page documents no ladder and the vendor names the model's base (GPT-6
+Cyber is a variant of GPT-6 Astra, §4): then inherit the base's ladder and
+record where it came from in `effort_ladder_source`. Record the API ladder and limits as the contract and put each
 other surface in `surface_notes`, labeled; do not average them and do not
 let the narrowest surface overwrite the API record.
 
@@ -182,10 +185,10 @@ What does apply, and what this step therefore produces:
   otherwise the tier it could read (installed, enabled, credential name
   present) with one note per plugin quoting what that plugin's catalog entry
   declares and where OMH read it, and a note naming any hook the plugin
-  declares that OMH also registers. It reads names only, never a credential
-  value, and it never says what a plugin does at runtime, because OMH did not
-  observe that. `omh doctor --json` carries the full `jev_sidekick_posture/v1`
-  payload under the check's `detail`.
+  declares that OMH also registers. It reports names only, never copies a
+  credential value, and it never says what a plugin does at runtime, because
+  OMH did not observe that. `omh doctor --json` carries the full
+  `jev_sidekick_posture/v1` payload under the check's `detail`.
 - OMH's own route to the model, where one exists. For Jev that is the opt-in
   `omh_jev_ask` plugin tool and the six default-installed `omh-jev-*` skills
   that call it (`omh-jev-ask`, `omh-jev-route`, `omh-jev-failure-triage`,
@@ -414,21 +417,42 @@ Rules that have held across every onboarding so far:
   `EXACT_CONTRACT_POINTER_ALIASES` (source and plugin mirror) so the plugin's
   `mixture_category_for` projects in both directions and a child observed
   under either spelling keeps its category label; a mode or tier variant is
-  not a pointer and only projects forward. Read the Hermes provider
+  not a pointer and only projects forward. A declared second spelling
+  whose row equals a pointer's own row (`deepseek-v4.1-flash-1017`, the
+  snapshot the pointer serves) also labels the pointer's category; it is
+  not a pointer itself, so nothing reaches it in reverse. Read the Hermes provider
   profile for the family before choosing the alias — it is the one place
   that shows what the wire will carry.
 - An access-restricted sibling (Mythos 5.1 = Fable 5.1 under Project
   Glasswing) stays out of every shipped chain: naming a model most accounts
   cannot reach reads as a second model in the public tables. Keep it
   recognized, priced, and routable for a user who asks for it by name.
+  GPT-6 Cyber (2026-11-05, Daybreak Red only) is the second case, onboarded
+  as an exact contract because its price, access, and endpoints differ from
+  its base, GPT-6 Astra. When the vendor names the base but documents no
+  ladder for the sibling, inherit the base's ladder and calibration and say
+  so in the record (`effort_ladder_source`). Price it only from a published
+  list price; GPT-5.6 Cyber and GPT-6 Rosalind publish one but no ladder,
+  so they get a price row and the family block, without a contract. A
+  provider row answers False for every family it omits, so when no vendor
+  page says whether a surface serves a gated model, leave the row out rather
+  than refuse an approved account on a guess; GPT-5.6 Cyber and GPT-6 Rosalind
+  have none for that reason. A probe
+  refusal from a subscription route proves nothing about gating when an
+  unknown id gets the same wording; probe a made-up id beside it.
 - The Claude vendor order inside any chain is Opus 5.5 → Fable 5.1 (owner
   decision, 2026-10-13), which reverses the 2026-09-06 Fable → Opus order.
   The Hermes lane and the Maestro lane are different surfaces and both
-  follow it. The Maestro lane's Claude Code frontier chain is
-  `claude-opus-5-5` → `claude-fable-5-1` → `opus` (owner decision,
-  2026-10-13): the pinned Opus 5.5 id heads it, Fable 5.1 is the
-  fall-through, and the `opus` alias is the always-resolving tail. The setup
-  interview seeds the Claude Code `--model` preference with that head.
+  follow it, with one explicit exception: the Hermes-lane `ultrabrain`
+  chain is Fable 5.1 → GPT-6 Astra → Opus 5.5. It was GPT-6 Astra alone,
+  so the Claude entries give a user without OpenAI access a frontier
+  fallback; putting Fable 5.1 ahead of Astra is the owner's choice
+  (2026-11-09) and covers that category only. The Maestro lane's Claude
+  Code frontier chain is `claude-opus-5-5` → `claude-fable-5-1` → `opus`
+  (owner decision, 2026-10-13): the pinned Opus 5.5 id heads it, Fable
+  5.1 is the fall-through, and the `opus` alias is the always-resolving
+  tail. The setup interview seeds the Claude Code `--model` preference
+  with that head.
 - Know whether a slot names a pinned id or a vendor-tracking alias before
   deciding it needs an edit. The Hermes lane names pinned ids
   (`claude-opus-5-5`), so a generation bump is a repo change, and since

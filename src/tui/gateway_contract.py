@@ -10,7 +10,7 @@ rejection (4000) or an unknown method (-32601), which the client treats as
 calls in OPTIONAL_METHODS, where it is a notice and the session goes on. Inbound: the event
 names, fields and values the TUI keys on that the OMH TUI v2 batch added (the
 subagent events, `session.info`'s yolo and effort, `subagent.tail`'s result,
-`session.steer`'s status), read from here by the app and the roster, and every
+`session.redirect`'s and `session.steer`'s status), read from here by the app and the roster, and every
 event type, split into the ones the TUI handles and the ones it reads nothing
 from. An event type the TUI does not handle is ignored; a submitted turn that
 brings no transcript, subagent or error event, and three of types neither set
@@ -33,6 +33,7 @@ DECLARED_AGAINST_HERMES = "6c61c3e27d"
 PARAM_REJECTED = 4000  # Pydantic `extra="forbid"`: a key this Hermes does not know
 METHOD_NOT_FOUND = -32601  # also the client's own answer to a request it does not support
 NOT_MINE = 4018  # `slash.exec` refusing a command that `command.dispatch` owns
+REDIRECT_UNSUPPORTED = 4010  # `session.redirect` to an agent without active-turn redirect: it may still take a steer
 
 DRIFT_ERROR_CODES = frozenset({PARAM_REJECTED, METHOD_NOT_FOUND})
 # Calls a session does without: on these a drift error is a notice and the session goes on. On every other call
@@ -41,8 +42,11 @@ DRIFT_ERROR_CODES = frozenset({PARAM_REJECTED, METHOD_NOT_FOUND})
 # `config.get` is answered after the first frame and only sets the busy mode, which has a default (queue).
 # `session.list` is asked unprompted at the start of a fresh session, only to name the last one, and
 # `model.options` only fills `/model`'s picker and reads Hermes' configured default model, while
-# `/model <name>` still switches.
-OPTIONAL_METHODS = frozenset({"commands.catalog", "config.get", "model.options", "session.list", "skills.reload"})
+# `/model <name>` still switches. `image.render` only draws a preview under the prompt: a Hermes without it answers
+# METHOD_NOT_FOUND, the TUI keeps the label row, and the session goes on.
+OPTIONAL_METHODS = frozenset(
+    {"commands.catalog", "config.get", "image.render", "model.options", "session.list", "skills.reload"}
+)
 
 # Methods the TUI calls, with the only keys it ever sends. Sending a key outside
 # this map is a bug: a Hermes that does not know it rejects the whole call.
@@ -57,8 +61,11 @@ CLIENT_METHODS: dict[str, frozenset[str]] = {
     "session.resume": frozenset({"session_id", "cols"}),
     "session.close": frozenset({"session_id"}),
     "session.interrupt": frozenset({"session_id"}),
-    # Typed text into the running turn; see STEER_STATUSES for the answer. A refusal (`rejected`, or an error)
-    # puts the text in the TUI's queue while a turn runs, and sends it as a prompt only when the session is idle.
+    # Typed text into the running turn, sent now; see STEER_STATUSES for the answer. A refusal (`rejected`, or an
+    # error) puts the text in the TUI's queue while a turn runs, and sends it as a prompt only when the session is
+    # idle. `session.redirect` is what the send-now key sends; `session.steer` is `/steer`'s, and the send-now key's
+    # where the agent answers REDIRECT_UNSUPPORTED or a redirect is `rejected` while its turn still runs.
+    "session.redirect": frozenset({"session_id", "text"}),
     "session.steer": frozenset({"session_id", "text"}),
     # See CONFIG_SET_VALUES: `scope` is deliberately not declared. `confirm_expensive_model` goes only with a model,
     # once the person picked "switch anyway" after Hermes answered `confirm_required`.
@@ -90,6 +97,10 @@ CLIENT_METHODS: dict[str, frozenset[str]] = {
     # file and answers its path, which `image.detach` then names).
     "image.attach_bytes": frozenset({"session_id", "filename", "content_base64"}),
     "image.detach": frozenset({"session_id", "path"}),
+    # Read-only inline preview of an image Hermes staged for the person (Hermes' `image.render`, `ImageRenderParams`
+    # in `tui_gateway/contracts/config_free_tier_control.py`, added in Hermes d4ac2edd5d). The gateway caps it at
+    # 64 columns by 16 rows and applies `display.inline_images`.
+    "image.render": frozenset({"path", "cols", "rows", "graphics", "terminal"}),
     "clipboard.paste": frozenset({"session_id"}),
     "input.detect_drop": frozenset({"session_id", "text"}),
     "slash.exec": frozenset({"command", "session_id"}),
@@ -192,6 +203,10 @@ APP_EVENTS = (
     "request.cancel", "approval.cancelled", "session.info", "session.usage", "connection.request", "error",
     "notification.show", "notification.clear", "session.title", "todo.updated", "review.summary",
     "session.control.update", "background.complete", "btw.complete",
+    # Newer than 6c61c3e27d: `skills.changed` (a skill root moved; Ink refetches the catalog) and
+    # `session.replay_gap` (`gateway/session_events.py`, sent raw: the gateway dropped this viewer's subscription for
+    # falling behind and sends nothing more for the session until it resumes; Ink resumes it).
+    "skills.changed", "session.replay_gap",
 )
 TRANSCRIPT_EVENTS = (
     "message.start", "message.delta", "message.interim", "message.complete", "thinking.delta", "reasoning.delta",
@@ -307,13 +322,19 @@ TAIL_AVAILABLE = "available"
 TAIL_TEXT = "text"
 TAIL_TRUNCATED = "truncated"
 
-# `session.steer`'s `status` (`contracts/sessions.py` `CorrectionStatus`; `redirected` is `session.redirect`'s
-# only). `queued` means the running turn took the text, or, while Hermes compresses the context, that Hermes
-# queued it as the next prompt (`tui_gateway/methods_session_interrupt.py`); the answer is the same for both.
-# `rejected` means the session is idle, or the agent refused it.
+# `session.redirect`'s and `session.steer`'s `status` (`contracts/sessions.py` `CorrectionStatus`;
+# `tui_gateway/methods_session_interrupt.py`, `agent/interrupt_control.py`). `redirected` is `session.redirect`'s
+# only: during a model request Hermes cancelled that request and retries it with the text as a user message, and
+# during a tool batch it holds the text for that batch's results, so the turn has it now either way. `queued` from
+# `session.steer` means the running turn holds the text until a tool batch ends or the next model call (when the
+# model is writing its final answer, until after the turn, as the next prompt); from either, while the turn is
+# still being built or Hermes compresses the context, it means Hermes queued the text as its next prompt (a stop
+# clears that queue). `rejected` means the session is idle, the model's answer completed first, or the agent
+# refused it.
 STEER_QUEUED = "queued"
+STEER_REDIRECTED = "redirected"
 STEER_REJECTED = "rejected"
-STEER_STATUSES = frozenset({STEER_QUEUED, "redirected", STEER_REJECTED})
+STEER_STATUSES = frozenset({STEER_QUEUED, STEER_REDIRECTED, STEER_REJECTED})
 
 # Environment the TUI removes before spawning the gateway. The sidecar URL makes
 # the gateway tee every event to a socket; the gateway URL is the launcher's

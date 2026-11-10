@@ -12,10 +12,12 @@ Hermes' default of 10), and the calls in flight are this process's running
 units in ``state.db`` ``async_delegations``. A call over the pool would run
 blocking, so `ready` never hands out more calls than there are free slots.
 
-Export to an external coding owner (`export`) is only for a person who has
-already chosen one: it reads the explicit-choice record the router writes
-(`coding_owner_preference/v1`), and without one every node stays on
-`delegate_task`.
+Export to external coding owners (`export`) requires the owner to be named
+in the request that defined the run: `define` copies the owners that turn's
+request named (`named_owner_choice`) into the run, and only a coding node that
+names one of them goes out. An earlier request's choice, an `omh chat` or
+`omh coding` choice, or a recorded preference counts for nothing, and a node
+without a chosen owner stays on `delegate_task`.
 
 On a Docker or SSH terminal a child's `write_file` lands inside that
 backend, not on this host. `define` records the backend Hermes resolves
@@ -28,6 +30,12 @@ Hermes' own live environment for the child (`backend_handoff`), under the
 host check's rule; when that cannot be read, the node is accepted with
 ``handoff_checked: false``, and an interrupted read settles nothing. A
 local backend, or one this does not read, keeps the host check alone.
+
+With Hermes' `delegation.worktree_isolation` on and a local terminal, each
+child would work in a worktree of its own made from the parent's HEAD,
+without the earlier nodes' edits. `define` is then refused
+(`worktree_isolation_on`), and for a run defined before, `ready` hands out no
+`delegate_task` call and `status` says why (`worktree_isolation_on`).
 """
 from __future__ import annotations
 
@@ -44,21 +52,25 @@ import time
 from typing import Any
 
 from .. import dag_run, runtime_paths
+from ..delegation_graph import closing_usage, run_usage_text
 from ..delegation_ledger import oneshot_children_spawned, read_ledger, with_unjoined_stop
 from ..delegation_snapshot import dag_added_clause, shown_lanes
-from ..owner_preference_record import (
-    OWNER_PREFERENCE_EXPLICIT_CHOICE_PROVENANCES,
-    OWNER_PREFERENCE_PATH_SEGMENTS,
-    OWNER_PREFERENCE_SCHEMA_VERSION,
-    explicit_choice,
+from ..delegation_backend_mode import (
+    DEFAULT_BACKEND,
+    Quoted,
+    _Unsupported,
+    category_local_options,
+    category_options,
+    delegation_section,
+    read_backend_mode,
 )
-from ..delegation_backend_mode import DEFAULT_BACKEND, category_options, read_backend_mode
-from ..delegation_routing import read_delegation_settings
+from ..delegation_routing import _config_path, _read_config_snapshot, read_delegation_settings
 from ..hermes_delegation import effective_mixture_category_chains, load_model_provider_routes
 from ..host_observation import host_session_id
 from ..host_process import process_alive
+from ..named_owner_choice import turn_owners
 from ..sqlite_readonly import connect_readonly
-from ..iso_datetime import strict_fromisoformat
+from .lsp_nav_tool import _workspace_root
 
 DEFAULT_MAX_CONCURRENT_CHILDREN = 10  # Hermes' `_DEFAULT_MAX_CONCURRENT_CHILDREN` (tools/delegate_tool_config.py)
 # Hermes' default for `delegation.oneshot_max_children`: a finite one-shot session gets this many children at most.
@@ -67,16 +79,10 @@ MAX_CONCURRENT_ENV = "DELEGATION_MAX_CONCURRENT_CHILDREN"
 UNREAD_SLOTS = 1  # when Hermes' state cannot be read: one call at a time, never a guessed wider wave
 ACTIVE_UNIT_STATES = ("running", "stalling")
 _UNIT_SUFFIX = re.compile(r"-\d+$")
-# The explicit-choice record, read through the one validator the router uses (`owner_preference_record`). The route
-# family and the owners are the router's and the executor table's, held equal by `tests/test_dag_tool.py`.
-OWNER_PREFERENCE_FILE = OWNER_PREFERENCE_PATH_SEGMENTS
-OWNER_PREFERENCE_SCHEMA = OWNER_PREFERENCE_SCHEMA_VERSION
-OWNER_ROUTE_FAMILY = "ulw-coding-delivery"
-OWNER_PROVENANCES = OWNER_PREFERENCE_EXPLICIT_CHOICE_PROVENANCES
-EXTERNAL_OWNERS = ("claude-code", "codex")
-# dag-ulw's own rule, not the record's: an external coding CLI spends the person's money and quota, so a choice
-# older than a day (or dated in the future) does not start one; the person names the owner again.
-OWNER_CHOICE_MAX_AGE_SECONDS = 24 * 3600
+# The owners are the executor table's, held equal by `tests/test_dag_tool.py`. An external coding CLI spends the
+# person's money and quota, so a choice counts only for the request it was made in: the run keeps the owners its
+# defining request named, and a later run asks again.
+EXTERNAL_OWNERS = dag_run.EXTERNAL_OWNERS
 SPAWN_PLAN_THRESHOLD = 4  # `fanout_contracts.FANOUT_SPAWN_PLAN_THRESHOLD`, held by the same test
 SPAWN_PLAN_FIELDS = ("why_parallel", "why_not_single_unit", "independence", "expected_evidence_shape")
 # A call that names no run, before this conversation has one: the next call to make, never only a refusal.
@@ -97,6 +103,21 @@ TERMINAL_FIRST = ("No node was handed out: the children write their handoff file
                   "`pwd`; a file tool brings it up too), then call omh_dag action=ready.")
 TERMINAL_INTERRUPTED = ("No node was handed out: reading where the children write their handoff files in the {backend} "
                         "terminal was interrupted. Call omh_dag action=ready again.")
+# Hermes' `delegation.worktree_isolation` gives each delegated child its own git worktree and branch from the parent's
+# HEAD (`tools/subagent_worktree.py`). A dag run's dependents and its verify node read the earlier nodes' edits from
+# one shared tree, so with it on a verify node could pass a tree without the work: `define` is refused and `ready`
+# hands out nothing. OMH never writes the setting.
+WORKTREE_ISOLATION_WHY = (
+    "dag-ulw needs its delegated nodes to share one worktree, and this profile turns on Hermes' "
+    "delegation.worktree_isolation: each node would start from the last commit without the earlier nodes' edits, so "
+    "the verify node could pass a tree without the work. Ask the person to turn it off for this profile with "
+    "`hermes config set delegation.worktree_isolation false` (or in the profile's config.yaml); OMH never changes it.")
+WORKTREE_ISOLATION_REFUSED = WORKTREE_ISOLATION_WHY + " Then define the run again, or do the work without dag-ulw."
+WORKTREE_ISOLATION_HELD = "No node was handed out: " + WORKTREE_ISOLATION_WHY + " Then call omh_dag action=ready."
+# The plain scalars PyYAML (YAML 1.1) reads as false or as a zero number. Hermes reads the key with `bool()`, so every
+# other value is on: a quoted one ('false' too), `y`, `enabled`, `1.0`, a non-empty list or mapping.
+_YAML_FALSE = ("false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF")
+_YAML_ZERO = re.compile(r"[-+]?(?:0[0_]*|0x[0_]+|0b[0_]+|0[0_]*\.[0_]*(?:[eE][-+][0-9]+)?|\.[0_]+(?:[eE][-+][0-9]+)?)")
 _HOME_LINE, _HOME_UNUSABLE = "OMH_BACKEND_HOME=", "OMH_BACKEND_HOME_UNUSABLE"
 # A home a handoff root may sit in: absolute, plain characters, and not one of the temp directories every user can
 # write, where another user could plant a handoff file.
@@ -114,7 +135,7 @@ OMH_DAG_SCHEMA = {
     "description": (
         "Keep a dag-ulw run: small nodes the parent dispatches via delegate_task. define records nodes "
         "(id, label, category, prompt with TASK / DELIVERABLE / SCOPE / VERIFY / STOP WHEN, depends_on, "
-        "write_scope, role) and refuses cycles, unknown or self-edges, write scopes shared without an edge, more "
+        "write_scope, role, owner, local) and refuses cycles, unknown or self-edges, write scopes shared without an edge, more "
         "than 48 nodes, and prompts naming none of the markers; a one-shot session caps nodes at "
         "delegation.oneshot_max_children. Lint is advice. ready returns delegate_task calls per category "
         "within the free slots: route each via omh_delegate_route, then delegate_task unchanged. After each "
@@ -144,6 +165,8 @@ OMH_DAG_SCHEMA = {
                         "depends_on": {"type": "array", "items": {"type": "string"}},
                         "write_scope": {"type": "array", "items": {"type": "string"}},
                         "role": {"type": "string", "enum": list(dag_run.ROLES)},
+                        "owner": {"type": "string", "enum": list(EXTERNAL_OWNERS)},
+                        "local": {"type": "boolean"},
                     },
                     "required": ["id", "label", "category", "prompt"],
                 },
@@ -161,7 +184,7 @@ OMH_DAG_SCHEMA = {
                 "description": "settle failed: the child died on a provider error (an HTTP 400, no model call).",
             },
             "owner": {"type": "string", "enum": list(EXTERNAL_OWNERS),
-                      "description": "export: the coding owner the person already chose."},
+                      "description": "export: a coding owner named in the run's request."},
             "spawn_plan": {"type": "object"},
         },
         "required": ["action"],
@@ -202,7 +225,7 @@ def omh_dag_handler(args: Mapping[str, object], **kwargs: object) -> str:
         task = str(kwargs.get("task_id") or "default")
         if action == "define":
             return _define(args, omh_home, hermes_home, durable, segments, now, shown, task, limits=limits,
-                           ignored=ignored)
+                           ignored=ignored, chosen=turn_owners(session))
         found = _find(omh_home, segments, args.get("run"))
         if found is None and not args.get("run"):
             return _refused(action, "run_not_found", NO_RUN_YET_SAY)
@@ -216,16 +239,37 @@ def omh_dag_handler(args: Mapping[str, object], **kwargs: object) -> str:
             children = _children(omh_home, segments, hermes_home)
             derived = dag_run.derive(record, children, now)
             if action == "status":
-                return _result(action, record, derived, shown, now=now, limits=limits, ignored=ignored)
+                # As `ready` would split them: a coding node the chosen owner takes is no delegate_task call.
+                offered = dag_run.offerable(record, derived, now, limits=limits)
+                exports, owner_say = _owner_exports(record, derived, offered)
+                coding = [node_id for entry in exports for node_id in entry["nodes"]]
+                say = WORKTREE_ISOLATION_HELD if _isolation_holds(record, offered, coding, hermes_home) else ""
+                say = " ".join(part for part in (say, _export_say(exports), owner_say) if part)
+                return _result(action, record, derived, shown, say=say, extra=_export_fields(exports),
+                               now=now, limits=limits, ignored=ignored, spent=(hermes_home, children))
             if action == "cancel":
+                # Derive reports a cancelled run's running nodes as `cancelled`, so the live children are
+                # read with the mark lifted: a repeated cancel names the same children the first one did.
+                unmarked = {**record, "cancelled_at": None}
+                live = dag_run.running_children(unmarked, dag_run.derive(unmarked, children, now), now)
                 if record.get("cancelled_at") is None:
                     record["cancelled_at"] = now
                     record["updated_at"] = now
                     dag_run.write_run(path, record)
                 derived = dag_run.derive(record, children, now)
-                return _result(action, record, derived, shown, say=(
-                    "The run is cancelled. Children already running keep running; stop them with "
-                    "delegate_task action=stop if they should not finish."), now=now, limits=limits, ignored=ignored)
+                if live:
+                    named = ", ".join(
+                        f"{row['id']} as subagent {row['subagent_id']} ({dag_run.age_text(row['open_for_s'])} open)"
+                        for row in live)
+                    say = (
+                        f"The run is cancelled. {len(live)} {'child is' if len(live) == 1 else 'children are'} "
+                        f"still running ({named}) and finish on their own unless stopped; stop each with "
+                        "delegate_task action=stop if it should not finish. The cancelled run never settles them.")
+                else:
+                    say = ("The run is cancelled. No child is still running.")
+                return _result(action, record, derived, shown, say=say,
+                               extra={"still_running": live} if live else None,
+                               now=now, limits=limits, ignored=ignored, spent=(hermes_home, children))
             if action == "ready":
                 return _ready(action, record, path, derived, children, omh_home, hermes_home, now, shown, task=task,
                               budget=budget, limits=limits, ignored=ignored)
@@ -262,8 +306,13 @@ def omh_dag_handler(args: Mapping[str, object], **kwargs: object) -> str:
                                        oneshot_remaining=_wave_budget(record, derived, budget, now, limits=limits))
                 dag_run.write_run(path, record)
                 derived = dag_run.derive(record, children, now)
+                group_node = next(item for item in record["nodes"] if item["id"] == added[0])
+                replan = (f"This is {group_node['repairs']}'s last repair cycle; its nodes are briefed to re-plan "
+                          "from the earlier failures."
+                          if group_node["cycle"] == dag_run.REPLAN_CYCLE else "")
                 return _ready(action, record, path, derived, children, omh_home, hermes_home, now, shown, task=task,
-                              settled={"node": node, "repair_nodes": added}, budget=budget, limits=limits, ignored=ignored)
+                              settled={"node": node, "repair_nodes": added}, budget=budget, limits=limits,
+                              ignored=ignored, note=replan)
             if action == "extend":
                 added = dag_run.extend(record, derived, args.get("nodes"), args.get("node"), now,
                                        oneshot_remaining=_wave_budget(record, derived, budget, now, limits=limits))
@@ -366,7 +415,9 @@ def _wave_budget(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, A
 
 def _define(args: Mapping[str, object], omh_home: Path, hermes_home: Path, durable: str, segments: list[str],
             now: float, shown: set[str] | None, task: str, *, limits: dag_run.Limits = dag_run.DEFAULT_LIMITS,
-            ignored: tuple[str, ...] = ()) -> str:
+            ignored: tuple[str, ...] = (), chosen: tuple[str, ...] = ()) -> str:
+    if worktree_isolation_on(hermes_home, terminal_backend()):
+        raise dag_run.DagRefusal("worktree_isolation_on", WORKTREE_ISOLATION_REFUSED)
     run = dag_run.valid_id(args.get("run"), "invalid_run_id", "Give the run a short lowercase id (a-z, 0-9, -).")
     budget = oneshot_budget(hermes_home, segments)
     record = dag_run.new_record(durable, run, args.get("name"), args.get("goal"), args.get("nodes"), now,
@@ -375,6 +426,10 @@ def _define(args: Mapping[str, object], omh_home: Path, hermes_home: Path, durab
     found = _find(omh_home, segments, run)
     if found is not None:
         existing, path = found
+        if existing.get("cancelled_at") is not None:
+            # Reusing it would hand back a run every later call refuses as cancelled, and keep its old owners.
+            raise dag_run.DagRefusal(
+                "run_cancelled", f"Run {run} was cancelled; define the work again under a new run id.")
         if existing.get("digest") != record["digest"]:
             raise dag_run.DagRefusal(
                 "run_exists",
@@ -382,7 +437,8 @@ def _define(args: Mapping[str, object], omh_home: Path, hermes_home: Path, durab
         children = _children(omh_home, segments, hermes_home)
         derived = dag_run.derive(existing, children, now)
         return _result("define", existing, derived, shown, say="This run was already defined; nothing changed.",
-                       extra={"reused": True}, now=now, limits=limits, ignored=ignored)
+                       extra={"reused": True}, now=now, limits=limits, ignored=ignored,
+                       spent=(hermes_home, children))
     dag_run.require_named_roles(args["nodes"])  # a new definition names the role of a node that reads like a check
     if not dag_run.make_room(omh_home, durable, _children(omh_home, segments, hermes_home), now):
         raise dag_run.DagRefusal(
@@ -395,6 +451,15 @@ def _define(args: Mapping[str, object], omh_home: Path, hermes_home: Path, durab
         backend = terminal_backend()
         if backend:
             record["backend"] = backend  # where the children's handoff files land; `settle` reads them there
+        owners = sorted(owner for owner in set(chosen) if owner in EXTERNAL_OWNERS)
+        if owners:
+            # The coding owners this turn's request named: the run keeps them, and nothing else chooses one.
+            record["owners"] = owners
+        workspace = _workspace_root(task)
+        if workspace:
+            # The root a node's write_scope is read against (`dag_scope_guard`), fixed here so a child's `cd` cannot
+            # move it.
+            record["workspace_root"] = os.path.realpath(workspace)
         dag_run.write_run(path, record)
         derived = dag_run.derive(record, [], now)
         return _ready("define", record, path, derived, [], omh_home, hermes_home, now, shown, task=task, budget=budget,
@@ -481,6 +546,53 @@ def free_slots(hermes_home: Path, *, pid: int | None = None) -> dict[str, Any]:
     free = max(0, cap - len(used)) if basis == "state_db" else min(UNREAD_SLOTS, cap)
     return {"cap": cap, "running_calls": len(used) if basis == "state_db" else None, "free": free, "basis": basis,
             "independent_completions": str(settings.get("independent_completions", "")).casefold() in ("true", "yes", "on")}
+
+
+def worktree_isolation_on(hermes_home: Path, backend: str = "") -> bool:
+    """Whether Hermes would give each delegated child a worktree of its own. Read-only.
+
+    Hermes' own answer first, imported at call time: `_get_worktree_isolation`
+    (its config loader, so the managed overlay, ``HERMES_IGNORE_USER_CONFIG``
+    and env expansion count) and `local_backend_active` (a Docker or SSH
+    terminal skips isolation). Outside Hermes, or when either moved or raised:
+    off on a Docker or SSH ``backend``, else this profile's config.yaml read
+    the way Hermes reads it (`_isolation_in_config`). Hermes also skips
+    isolation outside a git checkout; that is not told apart.
+    """
+    try:
+        from tools.delegate_tool import _get_worktree_isolation
+        from tools.subagent_worktree import local_backend_active
+
+        return bool(_get_worktree_isolation()) and bool(local_backend_active())
+    except Exception:
+        # Not Hermes (ImportError), or a Hermes whose getters moved or raised: the config file, read the same way.
+        pass
+    if backend in REMOTE_BACKENDS:
+        return False
+    return _isolation_in_config(hermes_home)
+
+
+def _isolation_in_config(hermes_home: Path) -> bool:
+    """`delegation.worktree_isolation` in this profile's config.yaml, as `bool()` over PyYAML's value.
+
+    Off when the key is absent, null, empty, or a plain false or zero scalar
+    (`_YAML_FALSE`, `_YAML_ZERO`); every other value is on. A config that
+    cannot be read counts as off (today's behaviour). A `delegation` section
+    this reader cannot place (a flow mapping, a block scalar, an anchor)
+    counts as on when the file names the key anywhere, since Hermes may read
+    it on.
+    """
+    text, _, error = _read_config_snapshot(_config_path(hermes_home))
+    if error:
+        return False
+    try:
+        section = delegation_section(text)
+    except _Unsupported:
+        return "worktree_isolation" in text
+    value = (section or {}).get("worktree_isolation")
+    if isinstance(value, Quoted) or not isinstance(value, str):
+        return bool(value)
+    return value not in _YAML_FALSE and _YAML_ZERO.fullmatch(value) is None
 
 
 def _cap(configured: object) -> int:
@@ -644,19 +756,18 @@ def _ready(
     action: str, record: dict[str, Any], path: Path, derived: Mapping[str, Mapping[str, Any]],
     children: list[dict[str, Any]], omh_home: Path, hermes_home: Path, now: float, shown: set[str] | None, *,
     task: str, say: str = "", settled: Mapping[str, Any] | None = None, budget: Mapping[str, int] | None = None,
-    limits: dag_run.Limits = dag_run.DEFAULT_LIMITS, ignored: tuple[str, ...] = (),
+    limits: dag_run.Limits = dag_run.DEFAULT_LIMITS, ignored: tuple[str, ...] = (), note: str = "",
 ) -> str:
+    """``note`` is appended after every instruction the reply builds, so it never stands in for one of them."""
     slots = free_slots(hermes_home)
     if budget is not None:
         slots["oneshot"] = dict(budget)  # only in a one-shot session: an interactive payload is unchanged
     task_budget = _wave_budget(record, derived, budget, now, limits=limits)
-    owner = owner_choice(omh_home, now=now)
     nodes = {str(node["id"]): node for node in record["nodes"]}
-    # With a coding owner the person chose, the ready coding nodes go to that owner's fanout, never to delegate_task;
-    # baseline, verification and review nodes, and every node without a write scope, stay native.
+    # Each ready coding node goes to its chosen owner's fanout, never to delegate_task; checks and readers stay native.
     offered = dag_run.offerable(record, derived, now, limits=limits)
-    coding = [node_id for node_id in offered
-              if derived[node_id]["state"] == "ready" and dag_run.is_coding(nodes[node_id])] if owner else []
+    exports, owner_say = _owner_exports(record, derived, offered)
+    coding = [node_id for entry in exports for node_id in entry["nodes"]]
     # A run on a Docker or SSH terminal pins where its handoff files live before its first node goes out, and with no
     # terminal up to ask, hands out nothing yet.
     pinned, waits = False, ""
@@ -665,9 +776,13 @@ def _ready(
         if root is not None:
             record["handoff_root"] = root
             pinned = True
-    calls, held = ([], []) if waits else dag_run.calls_for(
+    # A run defined before the person turned isolation on: nothing goes to a child while it is on.
+    isolated = not waits and _isolation_holds(record, offered, coding, hermes_home)
+    backend = delegation_backend(omh_home, hermes_home)
+    local_held = [node_id for node_id in dag_run.local_blocked(record, offered, backend) if node_id not in coding]
+    calls, held = ([], []) if waits or isolated else dag_run.calls_for(
         record, derived, free_slots=slots["free"], per_call=slots["cap"], omh_home=omh_home, now=now, skip=coding,
-        task_budget=task_budget, backend=delegation_backend(omh_home, hermes_home), limits=limits)
+        task_budget=task_budget, backend=backend, limits=limits)
     # With the one-shot budget spent, a held node never gets a child: once nothing else is out, it is the parent's.
     spent_out = task_budget is not None and held and task_budget - sum(len(call["tasks"]) for call in calls) <= 0
     mine: list[str] = []
@@ -687,20 +802,18 @@ def _ready(
         say = " ".join(part for part in (say, backend_say) if part)
     if held:
         extra["held_for_slots"] = held
+    if local_held and not (waits or isolated):
+        extra["held_for_local_model"] = local_held
+        say = " ".join(part for part in (say, _local_say(local_held, backend)) if part)
     if mine:
         extra["for_parent"] = mine
     if settled:
         extra["settled"] = dict(settled)
-    if coding:
-        extra["export"] = {"owner": owner, "nodes": coding, "next": {"tool": "omh_dag", "action": "export",
-                                                                     "owner": owner}}
-        say = say or (
-            f"Coding nodes {', '.join(coding)} go to {owner}, the coding owner the person chose: call omh_dag "
-            f"action=export owner={owner} and run the two commands it returns. The calls go to delegate_task as usual."
-        )
+    extra.update(_export_fields(exports))
+    say = " ".join(part for part in (say, _export_say(exports), owner_say) if part)
     if action in ("define", "repair", "extend"):
         extra["topology"] = record["topology"]
-        extra["lint"] = record["lint"]
+        extra["lint"] = served_lint(record["lint"], omh_home, hermes_home)
     if mine:
         say = " ".join(part for part in (say, (
             f"The one-shot child budget is spent (delegation.oneshot_max_children is {budget['limit']}, "
@@ -721,7 +834,16 @@ def _ready(
     if waits:
         instruction = TERMINAL_INTERRUPTED if waits == "interrupted" else TERMINAL_FIRST
         say = " ".join(part for part in (say, instruction.format(backend=record["backend"])) if part)
-    return _result(action, record, derived, shown, say=say, extra=extra, now=now, limits=limits, ignored=ignored)
+    elif isolated:
+        say = " ".join(part for part in (say, WORKTREE_ISOLATION_HELD) if part)
+    say = " ".join(part for part in (say, note) if part)
+    return _result(action, record, derived, shown, say=say, extra=extra, now=now, limits=limits, ignored=ignored,
+                   spent=(hermes_home, children))
+
+
+def _isolation_holds(record: Mapping[str, Any], offered: list[str], coding: list[str], hermes_home: Path) -> bool:
+    """Whether a node `ready` would hand to `delegate_task` is held because each child would get its own worktree."""
+    return bool(set(offered) - set(coding)) and worktree_isolation_on(hermes_home, str(record.get("backend") or ""))
 
 
 def _backend_say(calls: list[dict[str, Any]]) -> str:
@@ -742,6 +864,37 @@ def _backend_say(calls: list[dict[str, Any]]) -> str:
             "omh_delegate_route, and pass the tasks unchanged.")
 
 
+def _local_say(held: list[str], backend: Mapping[str, Any] | None) -> str:
+    """Why local nodes were not handed out, and what the person can do; OMH never sends them to another model."""
+    names = ", ".join(held)
+    tried = str((backend or {}).get("backend") or "") == "model_map" and any(
+        (backend or {}).get("local_options", {}).values())
+    reason = ("every local model_map option for them has failed" if tried
+              else "no local model is set up for them: they need a model_map option whose base_url is on this "
+                   "machine or its private network (localhost, 192.168.x, a .local host), or provider lmstudio "
+                   "or llamacpp")
+    return (f"Nodes {names} are local and were not handed out: {reason}. They never go to a cloud model. Tell the "
+            "person, who can add or fix a local option (`hermes delegation config`), or settle them blocked.")
+
+
+def served_lint(findings: list[str], omh_home: Path, hermes_home: Path) -> list[str]:
+    """The run's lint as the parent reads it, so the advice never moves a node to a category the user's options cannot
+    run: under Hermes' model_map backend, `review_not_review_category` is dropped where no option serves `review` but
+    some serve `unspecified-high`, and `no_judgement_node` where no option serves `ultrabrain`, the category its
+    advice names (an `architect` or `forensics` option does not run an `ultrabrain` node). The stored record keeps
+    both findings."""
+    marker = "review_not_review_category:"
+    if not any(finding.startswith(marker) or finding == "no_judgement_node" for finding in findings):
+        return findings
+    # Empty unless model_map options were read; once read, every category has a (possibly empty) list.
+    options = (delegation_backend(omh_home, hermes_home) or {}).get("options") or {}
+    drop_review = bool(options.get("unspecified-high")) and not options.get("review")
+    drop_judgement = bool(options) and not options.get("ultrabrain")
+    return [finding for finding in findings
+            if not (drop_review and finding.startswith(marker))
+            and not (drop_judgement and finding == "no_judgement_node")]
+
+
 def delegation_backend(omh_home: Path, hermes_home: Path) -> dict[str, Any] | None:
     """Hermes' delegation backend for `calls_for`; ``None`` under `default` (routes go through omh_delegate_route).
 
@@ -754,7 +907,8 @@ def delegation_backend(omh_home: Path, hermes_home: Path) -> dict[str, Any] | No
     routes, _status = load_model_provider_routes(omh_home)
     chains = effective_mixture_category_chains(omh_home, hermes_home)
     return {"backend": mode["backend"], "status": mode["status"],
-            "options": category_options(mode, chains, routes)}
+            "options": category_options(mode, chains, routes),
+            "local_options": category_local_options(mode, chains, routes)}
 
 
 # The profile settings that move `dag_run.Limits`: `plugins.entries.omh.settings.<name>`, in seconds or a count.
@@ -806,7 +960,9 @@ def dag_limits(hermes_home: Path) -> tuple[dag_run.Limits, tuple[str, ...]]:
 def _result(action: str, record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]],
             shown: set[str] | None, *, say: str = "", extra: Mapping[str, Any] | None = None,
             now: float | None = None, limits: dag_run.Limits = dag_run.DEFAULT_LIMITS,
-            ignored: tuple[str, ...] = ()) -> str:
+            ignored: tuple[str, ...] = (), spent: tuple[Path, list[dict[str, Any]]] | None = None) -> str:
+    """``spent`` is the Hermes home and the ledger children: with it, a finished run carries what its children
+    used (`closing_usage`)."""
     now = time.time() if now is None else now
     state = dag_run.run_state(record, derived)
     payload: dict[str, Any] = {
@@ -821,6 +977,7 @@ def _result(action: str, record: Mapping[str, Any], derived: Mapping[str, Mappin
         "status_line": dag_run.status_line(record, derived, added=dag_added_clause(record, derived, shown), now=now,
                                            limits=limits),
         "nodes": dag_run.node_rows(record, derived, now),
+        "exports": [],
         "claim_boundary": dag_run.DAG_CLAIM_BOUNDARY,
     }
     if state == "needs_repair":
@@ -836,6 +993,11 @@ def _result(action: str, record: Mapping[str, Any], derived: Mapping[str, Mappin
         verdict, reasons = dag_run.goal_verdict(record, derived)
         payload["verdict"] = verdict
         payload["verdict_reasons"] = reasons
+        if spent is not None:
+            usage = closing_usage(spent[0], record, spent[1])
+            if usage is not None:
+                payload["usage"] = usage
+                payload["usage_line"] = usage_line(record, usage)
     if state == "done":
         left = dag_run.extend_rounds_left(record)
         payload["extend_rounds_left"] = left
@@ -889,27 +1051,51 @@ def _result(action: str, record: Mapping[str, Any], derived: Mapping[str, Mappin
     return json.dumps(payload, sort_keys=True)
 
 
-def owner_choice(omh_home: Path, *, now: float) -> str:
-    """The external coding owner the person explicitly chose within the last day, or "".
+def usage_line(record: Mapping[str, Any], usage: Mapping[str, Any]) -> str:
+    """`DAG feat · 4 children · 182.4k tokens · cache 71.3% · $0.4210 (3/4 priced)`: the run's closing figures."""
+    return f"DAG {record['run']} · {run_usage_text(usage)}"
 
-    The record is read the way the router reads it (`explicit_choice`): a
-    missing, malformed, reset or hand-written record names no owner. The day
-    is dag-ulw's own rule (`OWNER_CHOICE_MAX_AGE_SECONDS`).
-    """
-    path = Path(omh_home).joinpath(*OWNER_PREFERENCE_FILE)
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 65_536:
-            return ""
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-        return ""
-    _provenance, owner = explicit_choice(raw, route_family=OWNER_ROUTE_FAMILY)
-    if owner not in EXTERNAL_OWNERS:
-        return ""
-    chosen = _timestamp(raw["routes"][OWNER_ROUTE_FAMILY]["last_choice_at"])
-    if chosen is None or not 0 <= now - chosen <= OWNER_CHOICE_MAX_AGE_SECONDS:
-        return ""
-    return owner
+
+def owner_choices(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """The external coding owners the request that defined this run named, sorted; () for any other run."""
+    owners = record.get("owners")
+    if not isinstance(owners, list):
+        return ()
+    return tuple(sorted({owner for owner in owners if owner in EXTERNAL_OWNERS}))
+
+
+def _owner_exports(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]],
+                   offered: list[str]) -> tuple[list[dict[str, Any]], str]:
+    """Split ready coding nodes by their chosen owner; an unchosen node owner stays on delegate_task."""
+    choices = owner_choices(record)
+    nodes = {str(node["id"]): node for node in record["nodes"]}
+    batches: dict[str, list[str]] = {}
+    native = []
+    for node_id in offered:
+        node = nodes[node_id]
+        if derived[node_id]["state"] != "ready" or not dag_run.is_coding(node) or "owner" not in node:
+            continue
+        owner = str(node["owner"])
+        if owner in choices:
+            batches.setdefault(owner, []).append(node_id)
+        else:
+            native.append(f"Node {node_id} names {owner}, which the request that defined this run did not name; "
+                          "it runs on delegate_task.")
+    return ([{"owner": owner, "nodes": batches[owner],
+              "next": {"tool": "omh_dag", "action": "export", "owner": owner}} for owner in sorted(batches)],
+            " ".join(native))
+
+
+def _export_fields(exports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Always expose exports, retaining the old export object only for a single owner batch."""
+    return {"exports": exports, **({"export": exports[0]} if len(exports) == 1 else {})}
+
+
+def _export_say(exports: list[dict[str, Any]]) -> str:
+    return " ".join(
+        f"Coding nodes {', '.join(entry['nodes'])} go to {entry['owner']}, the coding owner the person chose: "
+        f"call omh_dag action=export owner={entry['owner']} and run the commands it returns. "
+        "The calls go to delegate_task as usual." for entry in exports)
 
 
 def _flag(value: object) -> bool:
@@ -921,24 +1107,20 @@ def _flag(value: object) -> bool:
     raise dag_run.DagRefusal("invalid_provider_error", "provider_error is true or false.")
 
 
-def _timestamp(value: object) -> float | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return strict_fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
-def export_units(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]], owner: str) -> list[dict[str, Any]]:
+def export_units(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]], owner: str, *,
+                 default_owner: str | None = None) -> list[dict[str, Any]]:
     """The coding nodes that can go to ``owner`` now, as `fanout_contract/v2` units.
 
     The ready coding nodes, and the waiting ones whose every open parent goes
-    in the same batch (the contract keeps their order). A coding node that
-    waits on a native node goes in a later batch, once that node settled.
+    in the same owner's batch (the contract keeps their order). A coding node
+    that waits on a native or another owner's node goes in a later batch,
+    once that node settled.
     """
+    # The pure helper keeps its legacy single-owner default; the tool always passes "", so a node names its owner.
+    default_owner = owner if default_owner is None else default_owner
     candidates = {str(node["id"]): node for node in record["nodes"]
-                  if dag_run.is_coding(node) and derived[str(node["id"])]["state"] in ("ready", "waiting")}
+                  if dag_run.is_coding(node) and node.get("owner", default_owner) == owner
+                  and derived[str(node["id"])]["state"] in ("ready", "waiting")}
     chosen: set[str] = set()
     grew = True
     while grew:
@@ -981,12 +1163,14 @@ def _export(args: Mapping[str, object], record: dict[str, Any], path: Path,
     owner = args.get("owner")
     if owner not in EXTERNAL_OWNERS:
         raise dag_run.DagRefusal("invalid_owner", f"Name the coding owner: {', '.join(EXTERNAL_OWNERS)}.")
-    if owner_choice(omh_home, now=now) != owner:
+    if owner not in owner_choices(record):
         raise dag_run.DagRefusal(
             "owner_not_chosen",
-            "The person has not chosen this coding owner; every node runs on delegate_task unless they already did.",
+            "The request that defined this run did not name this coding owner, so its nodes run on delegate_task. "
+            "A choice counts only for the request it was made in: the person names the owner in a new dag-ulw "
+            "request.",
         )
-    units = export_units(record, derived, str(owner))
+    units = export_units(record, derived, str(owner), default_owner="")
     payload: dict[str, Any] = {"units": units}
     if len(units) > SPAWN_PLAN_THRESHOLD:
         plan = args.get("spawn_plan")
@@ -1009,22 +1193,40 @@ def _export(args: Mapping[str, object], record: dict[str, Any], path: Path,
         attempt["lane"] = "fanout"
     record["updated_at"] = now
     dag_run.write_run(path, record)
-    return _result("export", record, dag_run.derive(record, children, now), shown, say=(
-        f"These nodes go to {owner} through the fanout bridge; run the two commands, then settle each node from "
-        "the fanout result."), extra={
+    derived = dag_run.derive(record, children, now)
+    offered = dag_run.offerable(record, derived, now, limits=limits)
+    exports, owner_say = _owner_exports(record, derived, offered)
+    say = " ".join(part for part in (
+        f"These nodes go to {owner} through the fanout bridge; run the commands it returns, then settle each node "
+        "from the fanout result.", _export_say(exports), owner_say) if part)
+    return _result("export", record, derived, shown, say=say, extra={
+        **_export_fields(exports),
         "fanout": {
             "owner": owner, "fanout_id": fanout_id, "units_file": str(units_file), "goal_file": str(goal_file),
-            "commands": [
-                f'omh coding fanout prepare --goal "$(cat {goal_file})" --units {units_file} --record',
-                f"omh coding fanout dispatch {fanout_id} --goal-file {goal_file} --repo-root .",
-            ],
+            "commands": export_commands(str(owner), units, fanout_id, units_file, goal_file),
         },
     }, now=now, limits=limits, ignored=ignored)
 
 
+def export_commands(owner: str, units: list[dict[str, Any]], fanout_id: str, units_file: Path,
+                    goal_file: Path) -> list[str]:
+    """The commands that dispatch one export. `fanout prepare` freezes no contract for a single unit (it answers
+    `redirect_to_run`), so a one-node batch, the usual case once each owner exports its own nodes, goes through
+    `omh coding run` with the same goal file instead."""
+    if len(units) == 1:
+        unit = units[0]
+        scope = " ".join(f"--file-scope {shlex.quote(path)}" for path in unit["file_scope"])
+        return [f"omh coding run --owner {owner} --unit-id {shlex.quote(unit['unit_id'])} {scope} "
+                f"--goal-file {shlex.quote(str(goal_file))} --repo-root ."]
+    return [
+        f'omh coding fanout prepare --goal "$(cat {goal_file})" --units {units_file} --record',
+        f"omh coding fanout dispatch {fanout_id} --goal-file {goal_file} --repo-root .",
+    ]
+
+
 def _refused(action: str, reason: str, say: str, *, detail: str = "") -> str:
     payload: dict[str, object] = {"schema_version": dag_run.DAG_RESULT_SCHEMA_VERSION, "action": action,
-                                  "status": "refused", "reason": reason, "say": say}
+                                  "status": "refused", "reason": reason, "say": say, "exports": []}
     if detail:
         payload["detail"] = detail
     return json.dumps(payload, sort_keys=True)

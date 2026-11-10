@@ -34,20 +34,22 @@ Good example:
 
 Bad example:
 
-- Prompt: ultraqa: treat casual chat or unaccepted work as if this workflow already produced verified results.
-- Expected behavior: Ask a clarification question or route to a narrower workflow instead of forcing `ultraqa`.
-- Why: The request lacks the required inputs or would overclaim work that Hermes did not observe.
+- Prompt: ultraqa that the profile page looks right on mobile
+- Expected behavior: Route to `omh-visual-qa`; no changed behavior is being attacked.
+- Why: The question is how a rendered page looks, which the viewport and state matrix answers.
 
 ## Completion Checklist
 
 - The scenario, expected behavior, observed result, and pass/fail basis are named.
 - Proposed fixes are separated from observed QA evidence.
-- Missing or failed verification routes back to plan, fix, or a narrower test.
+- Missing or failed verification routes back to `omh-plan`, fix, or a narrower test; a failed scenario gets at most two fix-and-rerun rounds, then it is reported as an open finding with its evidence and is not redefined to pass.
+- Everything the hostile scenarios created or changed (accounts, rows, files, processes, ports) was listed before the first one ran and removed or restored afterwards, with the command and its observed result as the cleanup receipt, or what remains is named.
 
 ## Recovery Notes
 
-- If the expected behavior is unclear, route back to plan before running adversarial checks.
-- If verification fails, return to fix or research with the failed signal instead of advancing.
+- If a scenario needs a real install or external service the harness cannot reach, retain other observed pass/fail evidence, mark that scenario not_observed, and hand back its manual test guide with setup, do, expect, and broken signals.
+- If a hostile browser scenario would submit, buy, send, or delete on a live target without approval, retain read-only scenario results, mark that action not_observed, and hand back the target and exact action for user approval.
+- If a failing browser scenario has no screenshot or console readback, keep its observed failure, mark diagnosis tentative, and hand back the scenario, target, and missing capture for a bounded rerun.
 
 
 

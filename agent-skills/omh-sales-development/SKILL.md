@@ -38,19 +38,18 @@ Good example:
 Bad example:
 
 - Prompt: Write a LinkedIn launch post for our new feature.
-- Expected behavior: Route to `content-operator`, not `sales-development`.
+- Expected behavior: Route to `omh-content-operator`, not `sales-development`.
 - Why: A one-off social post has no account qualification or discovery objective.
 
 ## Completion Checklist
 
-- The decision, options, tradeoffs, assumptions, and rejected alternatives are named.
-- Observed signals are separated from strategic inference.
-- Accepted decisions and implementation follow-ups are not conflated.
+- Each claim is tagged observed, asserted, hypothesis or unknown, with a source for observed ones; sequence rows are unsent drafts and exist only with supplied consent, suppression and channel eligibility.
+- The disposition is ADVANCE, HOLD or DISQUALIFY with its deciding evidence; a next step is confirmed only from an observed buyer response; CRM changes stay proposals.
 
 ## Recovery Notes
 
-- If evidence is mostly assumption, label it and recommend a research or feedback-triage pass.
-- If the decision owner is missing, keep the output as options rather than accepted strategy.
+- If consent or suppression status is unknown, retain sales_opportunity_evidence_record/v1 and sales_qualification_state/v1, mark sequence eligibility unresolved with HOLD, and hand back the missing eligibility questions without drafting outreach.
+- If no observed buyer response supports a commitment, retain the eligible sales_draft_sequence/v1, mark confirmation not_observed, and hand back sales_handoff_disposition/v1 with proposed actions, owners, timing, and exit criteria.
 
 
 

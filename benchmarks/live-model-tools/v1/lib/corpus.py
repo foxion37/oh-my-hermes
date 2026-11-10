@@ -27,13 +27,18 @@ LSP_AB_SPLIT = "lsp-ab"
 LSP_AB_TEMPLATES = (("RENAME-ALIAS", "edit"), ("RENAME-SHADOW", "edit"), ("RENAME-EXPORTS", "edit"))
 # Separate split for the round-end checklist A/B, kept out of the pinned corpus the same way.
 CONSISTENCY_AB_SPLIT = "consistency-ab"
-CONSISTENCY_AB_TEMPLATES = (("DUPLICATE", "edit"), ("SCOPE-TRAP", "edit"), ("DECOY", "edit"))
+# TEST-UPDATE is the round-end test check's control: the task itself asks for an existing test's
+# expectation to change, names that test, and says every other unit stays the same.
+CONSISTENCY_AB_TEMPLATES = (("DUPLICATE", "edit"), ("SCOPE-TRAP", "edit"), ("DECOY", "edit"), ("TEST-UPDATE", "edit"))
 # Separate split for the impact-check A/B, kept out of the pinned corpus the same way.
 # Each edit template changes a definition whose callers sit in other modules (one through
 # an alias, one through the module, one through a package re-export or `**options`), and
 # only the definition's own module has a test in the workspace; CONTROL breaks nothing.
+# DEFAULTED is the caller check's control: a signature change every existing call still binds to,
+# reached the same four ways plus a `*args` forwarder, so a correct edit leaves every caller as it is.
 IMPACT_AB_SPLIT = "impact-ab"
-IMPACT_AB_TEMPLATES = (("SIGNATURE", "edit"), ("RETURN-SHAPE", "edit"), ("KWARG", "edit"), ("CONTROL", "edit"))
+IMPACT_AB_TEMPLATES = (("SIGNATURE", "edit"), ("RETURN-SHAPE", "edit"), ("KWARG", "edit"), ("CONTROL", "edit"),
+                       ("DEFAULTED", "edit"))
 SPLITS = ("development", "evaluation", LSP_AB_SPLIT, IMPACT_AB_SPLIT, CONSISTENCY_AB_SPLIT)
 
 @dataclass(frozen=True)
@@ -386,7 +391,37 @@ def _decoy_fixture(seed: int) -> tuple[dict[str, str], dict[str, Any]]:
     return files, golden
 
 
-_CONSISTENCY_AB_FIXTURES = {"DUPLICATE": _duplicate_fixture, "SCOPE-TRAP": _scope_trap_fixture, "DECOY": _decoy_fixture}
+def _test_update_params(seed: int) -> dict[str, Any]:
+    randomizer = random.Random(seed + 2)
+    return {"count": randomizer.choice((2, 3, 5, 7)), "padding": "\n" * randomizer.randint(0, 2)}
+
+
+def _test_update_fixture(seed: int) -> tuple[dict[str, str], dict[str, Any]]:
+    """A requested behaviour change whose existing test expects the old value: the task names the test
+    and asks for its expectation to change. Only the new kib, the test updated, and every other unit
+    left alone passes."""
+    params = _test_update_params(seed)
+    count = params["count"]
+    files = {
+        "src/benchapp/sizes.py": (
+            f'"""Byte sizes for the storage report."""\n{params["padding"]}import re\n\n'
+            '_UNIT_BYTES = {"b": 1, "kb": 1000, "kib": 1000, "mb": 1000**2, "mib": 1024**2}\n\n\n'
+            "def parse_size(text: str) -> int:\n"
+            "    \"\"\"Bytes in a size such as '512b', '4kb' or '2kib'.\"\"\"\n"
+            '    number, unit = re.match(r"^(\\d+)([a-z]+)$", text.strip().lower()).groups()\n'
+            "    return int(number) * _UNIT_BYTES[unit]\n"
+        ),
+        "tests/test_sizes.py": (
+            "from benchapp.sizes import parse_size\n\n\n"
+            f'def test_sizes():\n    assert parse_size("4kb") == 4000\n    assert parse_size("{count}kib") == {count * 1000}\n'
+        ),
+    }
+    golden = {"allowed_paths": ["src/benchapp/sizes.py", "tests/test_sizes.py"], "count": count, "min_tests": 1}
+    return files, golden
+
+
+_CONSISTENCY_AB_FIXTURES = {"DUPLICATE": _duplicate_fixture, "SCOPE-TRAP": _scope_trap_fixture, "DECOY": _decoy_fixture,
+                            "TEST-UPDATE": _test_update_fixture}
 def _signature_fixture(seed: int) -> tuple[dict[str, str], dict[str, Any]]:
     """A required parameter added to a function called from four modules: directly, through an
     alias, through the module, and through a package re-export under another name."""
@@ -525,11 +560,55 @@ def _control_fixture(seed: int) -> tuple[dict[str, str], dict[str, Any]]:
     return files, {"allowed_paths": sorted(files), "allowed_prefixes": ["tests/"]}
 
 
+def _defaulted_params(seed: int) -> dict[str, Any]:
+    randomizer = random.Random(seed)
+    return {"per_kg": randomizer.choice((40, 55, 70)), "alias": randomizer.choice(("cost_for", "ship_for", "calc_cost"))}
+
+
+def _defaulted_fixture(seed: int) -> tuple[dict[str, str], dict[str, Any]]:
+    """A keyword-only parameter with a default added to a function called directly, through an alias,
+    through the module (by a wrapper that forwards `*args`) and through a package re-export under
+    another name: every existing call still binds, so nothing outside the definition has to change."""
+    params = _defaulted_params(seed)
+    per_kg, alias = params["per_kg"], params["alias"]
+    files = {
+        "src/benchapp/__init__.py": "from .shipping import ship_cost as cost\n\n__all__ = [\"cost\"]\n",
+        "src/benchapp/shipping.py": (
+            '"""Shipping arithmetic."""\n\n\ndef ship_cost(weight_g: int, zone: int) -> int:\n'
+            '    """Cost in cents for a parcel of weight_g grams sent to a zone."""\n'
+            f"    return weight_g * zone * {per_kg} // 1000\n"
+        ),
+        "src/benchapp/orders.py": (
+            "from benchapp.shipping import ship_cost\n\n\n"
+            "def order_total(subtotal_cents: int, weight_g: int) -> int:\n"
+            "    return subtotal_cents + ship_cost(weight_g, 2)\n"
+        ),
+        "src/benchapp/labels.py": (
+            f"from benchapp.shipping import ship_cost as {alias}\n\n\n"
+            f"def label_cost(weight_g: int) -> int:\n    return {alias}(weight_g, zone=3)\n"
+        ),
+        "src/benchapp/express.py": (
+            "from benchapp import shipping\n\n\n"
+            "def express_cost(weight_g: int, *args: int) -> int:\n    return 2 * shipping.ship_cost(weight_g, *args)\n"
+        ),
+        "src/benchapp/cli.py": (
+            "from benchapp import cost\n\n\n"
+            "def cli_cost(argv: list[str]) -> int:\n    return cost(int(argv[0]), 1)\n"
+        ),
+        "tests/test_shipping.py": (
+            "from benchapp.shipping import ship_cost\n\n\n"
+            f"def test_ship_cost():\n    assert ship_cost(1000, 2) == {2 * per_kg}\n"
+        ),
+    }
+    return files, {"allowed_paths": sorted(files), "allowed_prefixes": ["tests/"], "per_kg": per_kg}
+
+
 _IMPACT_AB_FIXTURES = {
     "SIGNATURE": _signature_fixture,
     "RETURN-SHAPE": _return_shape_fixture,
     "KWARG": _kwarg_fixture,
     "CONTROL": _control_fixture,
+    "DEFAULTED": _defaulted_fixture,
 }
 
 
@@ -551,6 +630,7 @@ def _prompt(template_id: str, task_class: str, seed: int, decision: str) -> str:
         "RETURN-SHAPE": "Change build_quote in src/benchapp/quotes.py to return a frozen dataclass Quote, defined in quotes.py with fields units: int and total_cents: int, instead of a dict, and update the code that uses its result so behaviour stays the same. Return JSON with changed_paths.",
         "KWARG": "Rename the keyword-only parameter timeout of fetch in src/benchapp/http_client.py to timeout_s (do not keep timeout as an alias). What fetch returns stays the same, and every caller must keep its behaviour. Return JSON with changed_paths.",
         "CONTROL": "Make to_cents in src/benchapp/units.py raise ValueError('negative amount') for a negative amount, without changing its signature or its result for any other amount. Return JSON with changed_paths.",
+        "DEFAULTED": "ship_cost in src/benchapp/shipping.py must support a handling surcharge: add a keyword-only parameter handling_cents: int with default 0, and add it to the cost it returns. Existing callers pass no surcharge, so their results do not change. Return JSON with changed_paths.",
         "RENAME-EXPORTS": "Rename the function fetch_rows in src/benchapp/store/rows.py to load_rows everywhere it is referenced, including the store package's __all__, without changing behavior. Return JSON with changed_paths.",
         "RENAME-SHADOW": "Rename the function parse_limit defined in src/benchapp/limits.py to read_limit at its definition and every reference to that function, without changing behavior. Parameters or local variables that merely share the name are not references and must stay. Return JSON with changed_paths.",
     }
@@ -563,6 +643,11 @@ def _prompt(template_id: str, task_class: str, seed: int, decision: str) -> str:
         return (f"{params['first'].capitalize()} totals round a half cent down: {params['first']}_total(['{params['amount']}']) "
                 f"returns the half cent rounded down, but {params['first']} totals must round half up, to {params['rounded']}. "
                 "Fix it and add a regression test. Return JSON with changed_paths.")
+    if name == "TEST-UPDATE":
+        count = _test_update_params(seed)["count"]
+        return (f"parse_size in src/benchapp/sizes.py counts a kib as 1000 bytes, but a kib is 1024 bytes. Fix it, and "
+                f"update the existing kib assertion in tests/test_sizes.py, which expects the old value, to expect "
+                f"{count * 1024}. Every other unit stays the same. Return JSON with changed_paths.")
     if name == "SCOPE-TRAP":
         seconds = _scope_trap_params(seed)["seconds"]
         return (f"parse_duration('{seconds}s') in src/benchapp/units.py returns {seconds * 60}, but it must return {seconds} "

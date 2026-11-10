@@ -21,12 +21,23 @@ held by the invariants in `tests/test_handoff_safety_contract_enforcement.py`:
   opt-in; spawns local agent CLIs, which make their own network calls. Nothing
   runs without that command.
 - `omh_jev_ask`: POSTs typed questions to Jev with the user's own key, only
-  when the user named Jev in that turn and a key resolves (TypeSafe, or
-  OpenRouter only with the operator setting in `<omh_home>/jev/settings.json`).
-  Stdlib, HTTPS only, a fixed two-host route table, redirects refused.
-  `src/plugin_bundle/omh/jev_ask_client.py` is the only in-process network
-  client in `src/`, pinned by INVARIANT 2's `NETWORK_CLIENT_BRIDGES`.
-  Third-party Jev plugins are never called.
+  when the user named Jev in that turn and a key resolves (TypeSafe, at the
+  HTTPS `TYPESAFE_BASE_URL` API root when set, or OpenRouter only
+  with the operator setting in `<omh_home>/jev/settings.json`).
+  Stdlib, HTTPS only, redirects refused.
+  `src/plugin_bundle/omh/jev_ask_client.py` is one of the two in-process
+  network clients in `src/`, both pinned by INVARIANT 2's
+  `NETWORK_CLIENT_BRIDGES`. Third-party Jev plugins are never called.
+- The OMH TUI's update notice: GETs npm's latest `oh-my-hermes` version, at
+  most once a day per OMH home, on a background thread, and names a newer one
+  on the info line. Stdlib, HTTPS only, one fixed host (`registry.npmjs.org`),
+  redirects off it refused, only the version string kept, nothing about the
+  person sent. Off with `OMH_TUI_UPDATE_CHECK=0`, `omh theme update-check
+  off`, or an explicit `omh update-check` `off` (a stored mode, not the
+  default). `src/tui/update_notice.py` is the other client in
+  `NETWORK_CLIENT_BRIDGES`. Only `src/tui/app.py` and `src/commands/setup.py`
+  may import it; the latter reads `latest` once in an explicit `omh update` on
+  an installer-managed stable install to pick the release wheel to download.
 - The `show-reel` toolkit scripts `toolkit/scripts/eleven.py`, `narrate.py`
   (ElevenLabs, by spawning `curl` with the key on stdin) and
   `codex_ref_image.sh` (the user's codex CLI): package data the user runs with
@@ -40,6 +51,10 @@ held by the invariants in `tests/test_handoff_safety_contract_enforcement.py`:
   list of imports, names and name flows measured from the script. It is not a
   sandbox: an allowed Hermes function called with other arguments, and where
   the grant's url points, are beyond it.
+- omher, the desktop app under `apps/omher/`: not core. Its Python bridge
+  reaches only the person's own gateway over loopback, writes only to a bot's
+  main chat, and makes no model or API call; nothing in `src/` imports it.
+  `docs/OMHER-BOUNDARY.md` states it and `tests/test_omher_boundary.py` pins it.
 
 ## Build & Test
 
@@ -98,6 +113,7 @@ changed source.
 | `src/routing/lexical_shortlist.py` via `standalone_skill_shortlist_json()` in `src/routing/skill_shortlist_sidecar.py` | `src/plugin_bundle/omh/tools/skill_shortlist.json` | `uv run python -m omh.cli docs skill-shortlist` | `docs skill-shortlist --check`; ranking parity in `tests/test_skill_shortlist_sidecar.py` |
 | `ulw_inventory_payload()` in `src/skills/catalog.py` via `src/catalogs/ulw_surfaces.py` | marked ULW region of `README.md` | `uv run python -m omh.cli docs ulw-inventory` | `docs ulw-inventory --check`; `tests/test_ulw_inventory.py` |
 | Same producer | marked ULW region of `site/index.html` | `uv run python -m omh.cli docs ulw-site` | `docs ulw-site --check`; i18n parity in `tests/test_ulw_inventory.py` |
+| `skills/*/SKILL.md` (minus `ulw-*` and `dag-ulw`) via `tools/render_site_skills.py` | `site/docs/skills/index.html` (the public skill guide; Pages re-renders it on every deploy) | `uv run python tools/render_site_skills.py --write` | `tools/render_site_skills.py --check`; `tests/test_site_skills_guide.py` |
 | `SHIPPED_MODEL_RECOMMENDATIONS` in `src/coding/model_recommendations.py` via `src/catalogs/model_chain_table.py` | marked chain-table region of `docs/INSTALLATION.md` (the public chain table; the READMEs link to it) | `uv run python -m omh.cli docs chain-table` | `docs chain-table --check`; round-trip equality in `tests/test_model_chain_table.py` |
 
 - Never hand-edit `agent-skills/**`; regenerate the portable target without

@@ -3,19 +3,19 @@
 Expert clarification questions:
 - `decision and audience`
   - English: Which decision must this inform, for which audience and decision owner?
-  - Korean: Which decision must this inform, for which audience and decision owner?
+  - Korean: 이 조사가 뒷받침할 의사결정은 무엇이고, 대상 청중과 결정권자는 누구인가요?
 - `buyer segment and geography`
   - English: Which buyer versus user segment, geography, alternatives, and exclusions define the market?
-  - Korean: Which buyer versus user segment, geography, alternatives, and exclusions define the market?
+  - Korean: 시장을 정의하는 구매자와 사용자 구분, 지역, 대안, 제외 대상은 무엇인가요?
 - `period currency units and source cutoff`
   - English: Which observation period, currency/base year, units/denominator, and source cutoff apply?
-  - Korean: Which observation period, currency/base year, units/denominator, and source cutoff apply?
+  - Korean: 어떤 관측 기간, 통화와 기준 연도, 단위와 분모, 자료 기준일을 적용하나요?
 - `available evidence and source boundary`
   - English: Which evidence is supplied, which sources may be retrieved, and which access/privacy limits apply?
-  - Korean: Which evidence is supplied, which sources may be retrieved, and which access/privacy limits apply?
+  - Korean: 어떤 근거가 제공되었고, 어떤 출처를 조회할 수 있으며, 접근과 개인정보 제한은 무엇인가요?
 - `research budget and stop condition`
   - English: What time/source/cost budget and stop condition bound the work?
-  - Korean: What time/source/cost budget and stop condition bound the work?
+  - Korean: 시간, 출처, 비용 예산과 중단 조건은 무엇인가요?
 
 ## Procedure
 
@@ -62,6 +62,7 @@ When in scope, use references/market-sizing.md to construct sourced TAM/SAM/SOM 
 - Input refs: `buyer segment and geography`, `period currency units and source cutoff`, `available evidence and source boundary`
 - Output refs: `TAM SAM SOM model and sensitivity`
 - Check IDs: `market_size_check`
+- If this step fails: unresolved; still stands: `market scope and source ledger`; hand back: Return the market scope and source ledger with an unresolved TAM SAM SOM model and sensitivity, preserving unknown operands, unit gaps, calculation receipts, and unreconciled ranges.
 
 ### `analyze_customer_evidence` (analysis)
 
@@ -86,3 +87,4 @@ Use references/findings-template.md to deliver findings, calculations, assumptio
 - Input refs: `decision and audience`, `buyer segment and geography`, `period currency units and source cutoff`, `available evidence and source boundary`, `research budget and stop condition`
 - Output refs: `decision-ready market findings`
 - Check IDs: `market_source_check`, `market_findings_check`
+- If this step fails: tentative; still stands: `market scope and source ledger`, `TAM SAM SOM model and sensitivity`, `customer evidence and JTBD matrix`, `comparable competitor and pricing profiles`; hand back: Return tentative decision-ready market findings with the source ledger, calculation receipts, assumptions, contrary evidence, and unresolved retrieval gaps; name each next verification owner.
