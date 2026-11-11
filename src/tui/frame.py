@@ -60,7 +60,7 @@ from .git_status import GitState
 from .layout import BLANK, Budget, allocate, caret_row, compose, composer_cap
 from .style import TRUECOLOR, Line, Span, Style
 from .slash import slash_token_ranges
-from .theme import DEFAULT_THEME, KIND_FAMILIES, Theme, aura_moves
+from .theme import DEFAULT_THEME, KIND_FAMILIES, Theme, aura_moves, on_band  # fork q-design: on_band
 from .width import cell_width, truncate, truncate_line
 from .omp_look.chrome import SIDE_CELLS, PiChrome, inner_width  # fork q-design: the OMP look's composer chrome
 
