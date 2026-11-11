@@ -21,6 +21,20 @@ All notable changes will be documented here.
   HUD now reads the home `HERMES_HOME` names; the bot board alone keeps the
   bots' home.
 
+- **A Codex session in omher stays on your turn while Codex's subagents work.**
+  Codex streams its subagents' threads on the same connection, and omher
+  took their events as its own: when the first subagent finished, the chat
+  showed Ready and Send while Codex was still working; Stop sent the
+  subagent's turn id, which Codex refused, so nothing stopped and nothing
+  said so; and each subagent's answer ("done", "alpha line") showed and
+  notified as Codex's own. omher now keeps the session's own thread apart: a
+  subagent's turn never ends yours, Stop names your turn, a refused Stop
+  shows on the turn's line, and each subagent comes out as one `subagent`
+  record (name, model, current step, state, answer, time) that the chat's
+  subagent rows can show; an approval asked inside a subagent names it.
+  Tested on recorded Codex 0.167 streams with two subagents in parallel and
+  Stop while one runs.
+
 - **The OMH TUI no longer pins `↳ you: …` above the composer.** While a
   long turn ran, the prompt you sent was echoed as a `↳ you:` row over the
   working row once it had scrolled off; the owner found it noise. The prompt
@@ -104,6 +118,23 @@ All notable changes will be documented here.
 - **dag-ulw plans fewer, larger nodes.** It splits where work can run side by
   side and keeps a small follow-on step in the node it follows, so a run starts
   fewer children; a job with nothing to run side by side still runs as a graph.
+
+- **omher starts the agent you picked, not another program with its name, and
+  finds Grok and pi where their installers put them.** When Homebrew's `grok`
+  regex tool, or any other program called `claude`, `codex`, `omo`, `pi` or
+  `omp`, sits earlier on PATH, omher now starts the agent's own install (its
+  npm package, its installer's folder, its app or Homebrew cask) instead; a
+  real install in a place omher does not know is still found. If the program
+  it starts ends without answering in its chat mode, the session says
+  `<path> does not look like <agent>` and shows the install line, not the
+  other program's own error. The folders Grok's and pi's official installers
+  use (`~/.grok/bin`, `~/.pi/agent/bin`) are now searched, so an app opened
+  from the Dock finds them. The "Not installed" install lines follow each
+  product's docs: pi's npm package moved to `@earendil-works`, oh-my-pi's line
+  is its installer (its npm build needs Bun), and Grok's is its one-line
+  installer. Closing an oh-my-hermes session now ends its Hermes
+  conversation; it used to stay open, because the bridge called a gateway
+  method Hermes does not have.
 
 - **dag-ulw stops telling a parallel plan to split further.** Its advice to
   split a run into parallel lanes now looks only at the build nodes: it comes
