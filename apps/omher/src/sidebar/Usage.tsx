@@ -6,7 +6,8 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import type { UsageProvider } from "../lib/protocol";
 import { getStore, useStore } from "../state/store";
 import { AgentIcon } from "../ui";
-import { PROVIDER_NAME, meterDot, meterLabel, planText, ringLevel, stateText, topPercent, windowRow } from "./usageFormat";
+import { t } from "../i18n";
+import { PROVIDER_NAME, accountRow, meterDot, meterLabel, planText, ringLevel, stateText, topPercent, windowRow } from "./usageFormat";
 
 const REFRESH_MS = 60_000;
 const R = 11.5;
@@ -32,7 +33,7 @@ export function Ring({ p }: { p: UsageProvider }) {
 function Card({ p, now, caret }: { p: UsageProvider; now: number; caret: number }) {
   const plan = planText(p.plan);
   return (
-    <div className="usage-card ui-pop ui-pop-top ui-pop-left" role="dialog" aria-label={`${PROVIDER_NAME[p.id] ?? p.id} usage`}
+    <div className="usage-card ui-pop ui-pop-top ui-pop-left" role="dialog" aria-label={t("use.card", { name: PROVIDER_NAME[p.id] ?? p.id })}
       style={{ "--caret": `${caret}px` } as CSSProperties} data-testid="usage-card">
       <div className="uc-head">
         <AgentIcon id={p.id} size={14} />
@@ -63,6 +64,20 @@ function Card({ p, now, caret }: { p: UsageProvider; now: number; caret: number 
             </div>
           );
         })
+      )}
+      {p.accounts && p.accounts.length > 1 && (
+        <div className="uc-accts" data-testid="usage-accounts">
+          <div className="uc-ah">{t("use.logins", { n: p.accounts.length })}</div>
+          {p.accounts.map((a, i) => {
+            const [who, what] = accountRow(a, now);
+            return (
+              <div className="uc-a" key={i} data-testid="usage-account" data-source={a.source} data-state={a.state}>
+                <span className="uc-who" title={who}>{who}</span>
+                <span className={`uc-state st-${a.state}`}>{what}</span>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

@@ -106,6 +106,27 @@ class FakeClient:
             return {"attached": True, "text": f"[User attached PDF: {params['filename']} (2 page(s))]"}
         if method == "file.attach":
             return {"attached": True, "name": params["name"], "ref_text": f"@file:attachments/{params['name']}"}
+        if method == "cron.manage":
+            if params.get("action") == "add" and params.get("schedule") == "whenever":
+                return {"success": False, "error": "Invalid schedule 'whenever'. Use: 30m, every 2h, 0 9 * * *"}
+            if params.get("action") == "add":
+                return {"success": True, "job_id": "new1", "name": params.get("name")}
+            return {"success": True, "job": {"id": params.get("name")}}
+        if method == "plugins.manage":
+            act = params.get("action")
+            if act == "list":
+                return {"plugins": [
+                    {"name": "homeassistant", "key": "homeassistant", "version": "1.0", "description": "Home devices",
+                     "source": "user", "status": "enabled", "tools": ["ha_on", "ha_off"], "catalog_name": "homeassistant",
+                     "catalog_tier": "official", "settings_schema": []},
+                    {"name": "browserbase", "key": "browserbase", "description": "Cloud browser", "source": "bundled",
+                     "status": "not enabled", "tools": [], "settings_schema": [
+                         {"key": "api_key", "type": "secret", "env": "BROWSERBASE_API_KEY", "has_value": False}]}]}
+            if act == "inspect":
+                return {"ok": True, "agent": True, "desktop": False, "sha": "abc1234def", "warnings": []}
+            if act == "install":
+                return {"ok": True, "plugin_name": params.get("catalog_name"), "enabled": True, "restart_required": True}
+            return {"ok": True, "name": params.get("name") or params.get("key")}
         return {}
 
     def push(self, typ: str, payload: dict | None = None, sid: str = MAIN_RUNTIME, **extra) -> None:
@@ -423,6 +444,83 @@ class EventMapping(BridgeCase):
             running = [(e["status"], e["running"]) for e in s.events if e["event"] == "bot.status"]
             self.assertEqual(running[-2:], [("online", True), ("online", False)])
 
+    async def test_a_real_fan_out_becomes_subagent_events_clipped_with_no_thinking_text(self):
+        """kami's Bot Chat, one real turn asking two subagents for `date +%F` and `uname -s` (gateway frames as
+        recorded; the two `subagent.complete` frames came after the parent's turn ended and are rebuilt from the
+        children's own task logs, `rebuilt_from_task_log`)."""
+        frames = json.loads((HERE / "fixtures" / "real-subagent-turn.json").read_text(encoding="utf-8"))
+        async with Env() as env:
+            s = await self.open(env)
+            await s.req("chat.open", bot="kami")
+            c = env.clients["kami"]
+            for f in frames:
+                c.push(f["type"], f["payload"], execution_generation=1)
+            await s.until(lambda ev: sum(e["event"] == "subagent" and e.get("state") == "done" for e in ev) == 2)
+            ev = [e for e in s.events if e["event"] != "bot.status"]
+            sub = [e for e in ev if e["event"] == "subagent"]
+            # every subagent.* frame but none dropped: 2 spawn, 2 start, 3 thinking, 1 tool, 2 complete
+            self.assertEqual([e["state"] for e in sub], ["queued", "queued", "running", "running", "thinking", "thinking",
+                                                        "running", "thinking", "done", "done"])
+            self.assertEqual({e["id"] for e in sub}, {"sa-0-ab7aca17", "sa-1-0a3ce8a1"})
+            self.assertEqual({(e["index"], e["count"]) for e in sub}, {(0, 2), (1, 2)})
+            self.assertTrue(all(e["bot"] == "kami" and "session" not in e for e in sub))
+            first = sub[0]
+            self.assertEqual(set(first), {"event", "bot", "id", "index", "count", "goal", "model", "state"})
+            self.assertEqual(first["model"], "claude-fable-5-2")
+            started = [e for e in sub if e["state"] == "running" and "step" not in e]
+            self.assertEqual({e["delegation"] for e in started}, {"deleg_40dc82e8"})
+            # the goal, clipped: no frame's text runs past the caps
+            self.assertTrue(all(len(e["goal"]) <= ob.SUBAGENT_GOAL for e in sub))
+            self.assertTrue(first["goal"].startswith("Run the shell command `date +%F` in the terminal"))
+            tool = next(e for e in sub if e.get("tool"))
+            self.assertEqual((tool["id"], tool["tool"], tool["step"]), ("sa-1-0a3ce8a1", "terminal", "uname -s"))
+            # thinking: the state only, never a text field
+            self.assertTrue(all(set(e) & {"text", "step", "summary"} == set() for e in sub if e["state"] == "thinking"))
+            done = {e["id"]: e for e in sub if e["state"] == "done"}
+            self.assertEqual((done["sa-0-ab7aca17"]["summary"], done["sa-0-ab7aca17"]["seconds"]), ("2026-11-11", 8.8))
+            self.assertEqual((done["sa-1-0a3ce8a1"]["summary"], done["sa-1-0a3ce8a1"]["seconds"]), ("Darwin", 6.1))
+            # the parent's turn: one start, one end; the late subagent frames open no second turn
+            kinds = [e["event"] for e in ev]
+            self.assertEqual((kinds.count("turn.start"), kinds.count("turn.end")), (1, 1))
+            self.assertLess(kinds.index("turn.end"), max(i for i, k in enumerate(kinds) if k == "subagent"))
+            ts = next(e for e in ev if e["event"] == "tool.start")
+            self.assertEqual(ts["name"], "delegate_task")
+            self.assertLess(kinds.index("tool.start"), kinds.index("subagent"))
+
+    def test_subagent_fields_clip_every_text_and_take_the_dag_mark_off_the_goal(self):
+        long = "x" * 900
+        f = ob.subagent_fields("subagent.start", {"subagent_id": "sa-0", "task_index": 0, "task_count": 3,
+                                                  "goal": "[dag:docs-dark/contrast] Check the contrast " + long,
+                                                  "delegation_id": "deleg_1", "model": "m" * 300})
+        self.assertEqual(f["dag"], {"run": "docs-dark", "node": "contrast"})
+        self.assertTrue(f["goal"].startswith("Check the contrast"))
+        self.assertEqual((len(f["goal"]), len(f["model"])), (ob.SUBAGENT_GOAL, 80))
+        t = ob.subagent_fields("subagent.tool", {"subagent_id": "sa-0", "tool_name": "terminal", "text": long})
+        self.assertEqual(len(t["step"]), ob.SUBAGENT_STEP)
+        c = ob.subagent_fields("subagent.complete", {"subagent_id": "sa-0", "status": "failed", "summary": long,
+                                                     "duration_seconds": 12.345, "output_tail": [long]})
+        self.assertEqual((c["state"], len(c["summary"]), c["seconds"]), ("failed", ob.SUBAGENT_SUMMARY, 12.3))
+        self.assertNotIn("output_tail", c)
+        th = ob.subagent_fields("subagent.thinking", {"subagent_id": "sa-0", "text": "my secret chain of thought"})
+        self.assertNotIn("my secret", json.dumps(th))
+        pr = ob.subagent_fields("subagent.progress", {"subagent_id": "sa-0", "text": "🔀 [1] read_file, terminal"})
+        self.assertEqual(pr["step"], "[1] read_file, terminal")
+        self.assertIsNone(ob.subagent_fields("subagent.text", {"subagent_id": "sa-0", "text": "tok"}))
+        self.assertIsNone(ob.subagent_fields("subagent.start", {"goal": "no id"}))
+        self.assertEqual(ob.subagent_fields("subagent.complete", {"subagent_id": "s", "status": "interrupted"})["state"],
+                         "cancelled")
+
+    async def test_subagent_events_of_another_session_are_not_forwarded(self):
+        async with Env() as env:
+            s = await self.open(env)
+            await s.req("chat.open", bot="kami")
+            c = env.clients["kami"]
+            c.push("subagent.start", {"subagent_id": "sa-x", "goal": "elsewhere"}, sid="someone-else")
+            c.push("subagent.start", {"subagent_id": "sa-y", "goal": "mine"})
+            await s.until(lambda ev: any(e["event"] == "subagent" for e in ev))
+            await asyncio.sleep(0.05)
+            self.assertEqual([e["id"] for e in s.events if e["event"] == "subagent"], ["sa-y"])
+
     async def test_skill_view_also_emits_skill(self):
         async with Env() as env:
             s = await self.open(env)
@@ -707,6 +805,233 @@ class Routines(BridgeCase):
             self.write_jobs(env, [{**self.JOB, "last_run_at": "2026-11-10T09:00:02+09:00"},
                                   {"id": "j9", "name": "new", "last_run_at": "2026-11-10T10:00:00+09:00", "last_status": "ok"}])
             self.assertEqual([j["id"] for _, j in env.bridge.poll_routines()], ["j9"])
+
+
+class Automations(BridgeCase):
+    """The Automations page: jobs read from jobs.json; every change through the bot's own `cron.manage`."""
+
+    JOB = {"id": "j1", "name": "PR digest", "prompt": "Summarise open PRs\nin five lines", "schedule": {"kind": "cron",
+           "expr": "0 9 * * 1-5", "display": "0 9 * * 1-5"}, "schedule_display": "0 9 * * 1-5", "enabled": True,
+           "state": "scheduled", "deliver": "origin", "repeat": {"times": None, "completed": 4},
+           "origin": {"platform": "discord", "chat_id": "1", "chat_name": "OMH Community / #cron / thread"},
+           "created_at": "2026-11-03T09:00:00+09:00", "next_run_at": "2026-11-12T09:00:00+09:00",
+           "last_run_at": "2026-11-11T09:00:00+09:00", "last_status": "error", "last_error": "timeout"}
+
+    write_jobs = Routines.write_jobs
+
+    async def test_list_tags_each_bot_and_reads_detail_fields(self):
+        async with Env(profiles=("kami", "friren")) as env:
+            self.write_jobs(env, [dict(self.JOB), {"id": "j2", "name": "off", "enabled": False, "state": "paused",
+                                                   "deliver": "bot-chat:kami", "repeat": {"times": 1, "completed": 0}}])
+            s = await self.open(env)
+            rows = (await s.req("automations.list"))["result"]["automations"]
+            self.assertEqual([(r["bot"], r["id"]) for r in rows], [("kami", "j1"), ("kami", "j2")])
+            a = rows[0]
+            self.assertEqual((a["prompt"], a["deliver"], a["origin"], a["last_error"], a["repeat"], a["paused"]),
+                             ("Summarise open PRs\nin five lines", "origin", {"platform": "discord", "place": "#cron"},
+                              "timeout", {"times": None, "completed": 4}, False))
+            self.assertEqual((rows[1]["paused"], rows[1]["deliver"], rows[1]["repeat"]), (True, "bot-chat:kami", {"times": 1, "completed": 0}))
+            self.assertEqual((a["script"], rows[1]["script"]), (None, None))
+
+    async def test_a_script_job_names_its_script_file_only(self):
+        """A no-agent job has no prompt; the page shows the script's file name, never its folder."""
+        async with Env() as env:
+            self.write_jobs(env, [{"id": "s1", "name": "sso", "prompt": "", "script": "/Users/x/scripts/refresh.sh", "no_agent": True}])
+            s = await self.open(env)
+            row = (await s.req("automations.list"))["result"]["automations"][0]
+            self.assertEqual((row["prompt"], row["script"]), ("", "refresh.sh"))
+            self.assertEqual(env.connects, [])  # a file read, no gateway
+
+    async def test_writes_go_only_through_cron_manage_with_the_job_id(self):
+        async with Env() as env:
+            self.write_jobs(env, [dict(self.JOB)])
+            s = await self.open(env)
+            for op in ("automations.pause", "automations.resume", "automations.remove"):
+                self.assertTrue((await s.req(op, bot="kami", job="j1"))["ok"], op)
+            r = await s.req("automations.add", bot="kami", name="Digest", schedule="every weekday at 9",
+                            prompt="Summarise PRs", deliver="bot-chat:kami")
+            self.assertEqual(r["result"], {"job": "new1", "name": "Digest"})
+            calls = [(m, p) for m, p in env.clients["kami"].calls if m not in ("client.capabilities",)]
+            self.assertEqual(calls, [
+                ("cron.manage", {"action": "pause", "name": "j1"}), ("cron.manage", {"action": "resume", "name": "j1"}),
+                ("cron.manage", {"action": "remove", "name": "j1"}),
+                ("cron.manage", {"action": "add", "name": "Digest", "schedule": "every weekday at 9",
+                                 "prompt": "Summarise PRs", "deliver": "bot-chat:kami"})])
+
+    async def test_refusals_and_bad_input_come_back_as_one_line(self):
+        async with Env() as env:
+            self.write_jobs(env, [dict(self.JOB)])
+            s = await self.open(env)
+            r = await s.req("automations.add", bot="kami", name="x", schedule="whenever", prompt="y")
+            self.assertEqual(r["error"]["code"], "cron_refused")
+            self.assertIn("Invalid schedule 'whenever'", r["error"]["message"])
+            for bad in ({"job": "nope"}, {"job": "../j1"}, {}):
+                self.assertFalse((await s.req("automations.pause", bot="kami", **bad))["ok"], bad)
+            r = await s.req("automations.add", bot="kami", name="x", schedule="30m", prompt="y", deliver="discord:1")
+            self.assertEqual(r["error"]["code"], "bad_request")
+            self.assertEqual([p["action"] for m, p in env.clients["kami"].calls if m == "cron.manage"], ["add"])
+
+    async def test_an_offline_bot_is_one_short_error(self):
+        async with Env(fail=("kami",)) as env:
+            self.write_jobs(env, [dict(self.JOB)])
+            s = await self.open(env)
+            r = await s.req("automations.pause", bot="kami", job="j1")
+            self.assertEqual(r["error"]["code"], "bot_offline")
+
+    async def test_poll_emits_update_and_added_for_new_ids_but_not_for_omher_own(self):
+        async with Env() as env:
+            self.write_jobs(env, [dict(self.JOB)])
+            s = await self.open(env)
+            env.bridge.poll_routines()  # baseline
+            self.write_jobs(env, [dict(self.JOB), {"id": "j7", "name": "Made in chat", "schedule_display": "every 30m",
+                                                   "deliver": "bot-chat:kami", "created_at": "2026-11-11T10:00:00+09:00"}])
+            await env.bridge.poll_routines_once()
+            await s.until(lambda ev: any(e["event"] == "routine.added" for e in ev))
+            added = [e for e in s.events if e["event"] == "routine.added"]
+            self.assertEqual([(e["bot"], e["routine_id"], e["name"], e["schedule"], e["deliver"]) for e in added],
+                             [("kami", "j7", "Made in chat", "every 30m", "bot-chat:kami")])
+            self.assertIn("routines.update", s.kinds())
+            # a job omher added itself through cron.manage is not announced as the bot's
+            env.bridge._own_jobs.add(("kami", "j8"))
+            self.write_jobs(env, [dict(self.JOB), {"id": "j7", "name": "Made in chat"}, {"id": "j8", "name": "mine"}])
+            await env.bridge.poll_routines_once()
+            await asyncio.sleep(0.05)
+            self.assertEqual(len([e for e in s.events if e["event"] == "routine.added"]), 1)
+
+    async def test_cron_changed_from_the_gateway_triggers_a_reread(self):
+        async with Env() as env:
+            self.write_jobs(env, [dict(self.JOB)])
+            s = await self.open(env)
+            env.bridge.poll_routines()
+            await s.req("chat.open", bot="kami")
+            self.write_jobs(env, [dict(self.JOB), {"id": "j5", "name": "fresh"}])
+            env.clients["kami"].push("cron.changed", sid="")
+            await s.until(lambda ev: any(e["event"] == "routine.added" for e in ev))
+
+    def test_jobs_json_is_never_opened_for_writing(self):
+        """BOUNDARY rule 24: the bridge reads jobs.json and never writes it; changes go through cron.manage."""
+        src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
+        import ast
+        tree = ast.parse(src)
+        jobs_fns = {fn.name for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and any(isinstance(c, ast.Constant) and c.value == "jobs.json" for c in ast.walk(fn))}
+        self.assertEqual(jobs_fns, {"_read_jobs", "poll_routines"})
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name in jobs_fns:
+                body = ast.unparse(fn)
+                for bad in ("write_text", "write_bytes", "open(", "unlink", "rename", "replace(", "os.remove"):
+                    self.assertNotIn(bad, body, f"{fn.name}: {bad}")
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "cron"
+            p.mkdir()
+            (p / "jobs.json").write_text(json.dumps({"jobs": [dict(self.JOB)]}))
+            real_open = open
+            modes = []
+
+            def spy(file, mode="r", *a, **k):
+                modes.append((str(file), mode))
+                return real_open(file, mode, *a, **k)
+            with mock.patch("builtins.open", spy), mock.patch("io.open", spy):
+                ob.read_automations(Path(tmp))
+                ob.read_routines(Path(tmp))
+            self.assertTrue(all("w" not in m and "a" not in m and "+" not in m for _, m in modes), modes)
+
+    def test_the_only_gateway_writes_are_cron_and_plugins_manage_with_allowed_actions(self):
+        """Every `cron.manage` / `plugins.manage` call site goes through `_cron` / `_plugins`, which refuse any
+        action outside the allow-lists (no run, update_all, settings, install from a Git URL)."""
+        import ast
+        src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        owners = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for c in ast.walk(fn):
+                    if isinstance(c, ast.Constant) and c.value in ("cron.manage", "plugins.manage"):
+                        owners.setdefault(c.value, set()).add(fn.name)
+        self.assertEqual(owners, {"cron.manage": {"_cron"}, "plugins.manage": {"_plugins"}})
+        self.assertEqual(ob.CRON_ACTIONS, {"add", "pause", "resume", "remove"})
+        self.assertEqual(ob.PLUGIN_ACTIONS, {"list", "toggle", "inspect", "install", "update", "remove"})
+        for name in ("identifier", "repo", "settings", "update_all", "auto_update", "force", "install_desktop"):
+            self.assertNotIn(f'"{name}"', src[src.index("async def _cron("):src.index("def poll_routines(")], name)
+
+
+class Plugins(BridgeCase):
+    CATALOG = {"generated_at": "2026-11-11T00:00:00Z", "entries": [
+        {"name": "babysit", "repo": "https://github.com/x/babysit", "sha": "a" * 40, "description": "Watches logs",
+         "tier": "community", "category": "automation", "version": "0.2.0",
+         "capabilities": {"provides_tools": ["watch_log", "stop_watch"], "provides_hooks": ["on_end"], "requires_env": []}},
+        {"name": "homeassistant", "repo": "r", "description": "Home devices", "tier": "official", "category": "platform",
+         "capabilities": {"provides_tools": ["ha_on"], "provides_hooks": [], "requires_env": ["HASS_TOKEN"]}},
+        {"name": "or-picker", "description": "gone", "tier": "community", "category": "models"}],
+        "removed": [{"name": "or-picker", "reason": "folded"}]}
+
+    def write_catalog(self, env: Env, where="profile"):
+        d = (env.home / "profiles" / "kami" / "cache") if where == "profile" else (env.home / "cache")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "plugin-catalog.json").write_text(json.dumps(self.CATALOG))
+
+    async def test_catalog_reads_the_cache_drops_removed_and_ranks_official_first(self):
+        async with Env() as env:
+            s = await self.open(env)
+            r = (await s.req("plugins.catalog", bot="kami"))["result"]
+            self.assertEqual((r["total"], r["entries"]), (0, []))  # no cache: empty, the page asks the bot
+            self.write_catalog(env, "root")
+            r = (await s.req("plugins.catalog", bot="kami"))["result"]
+            self.assertEqual([e["name"] for e in r["entries"]], ["homeassistant", "babysit"])
+            self.assertEqual(r["categories"]["automation"], 1)
+            self.assertEqual((await s.req("plugins.catalog", bot="kami", query="logs"))["result"]["matched"], 1)
+            self.assertEqual((await s.req("plugins.catalog", bot="kami", category="platform"))["result"]["matched"], 1)
+            self.assertFalse((await s.req("plugins.catalog", bot="kami", category="nope"))["ok"])
+            self.assertEqual(env.connects, [])
+
+    async def test_install_inspects_first_and_passes_the_inspected_sha(self):
+        async with Env() as env:
+            self.write_catalog(env)
+            s = await self.open(env)
+            ins = (await s.req("plugins.inspect", bot="kami", catalog_name="babysit"))["result"]
+            self.assertEqual((ins["sha"], ins["entry"]["tools"], ins["entry"]["hooks"]), ("abc1234def", ["watch_log", "stop_watch"], ["on_end"]))
+            r = (await s.req("plugins.install", bot="kami", catalog_name="babysit", inspected_sha=ins["sha"]))["result"]
+            self.assertEqual((r["name"], r["restart_required"]), ("babysit", True))
+            self.assertFalse((await s.req("plugins.install", bot="kami", catalog_name="babysit"))["ok"])  # no sha
+            self.assertFalse((await s.req("plugins.inspect", bot="kami", catalog_name="not-there"))["ok"])
+            # a Git URL or `owner/repo` never reaches Hermes: the catalog by name only (BOUNDARY rule 25)
+            for src in ("https://github.com/x/babysit", "x/babysit", "git@github.com:x/babysit.git"):
+                r = await s.req("plugins.install", bot="kami", catalog_name=src, inspected_sha="abc1234")
+                self.assertEqual(r["error"]["code"], "bad_request", src)
+                self.assertEqual((await s.req("plugins.inspect", bot="kami", catalog_name=src))["error"]["code"], "bad_request")
+            calls = [p for m, p in env.clients["kami"].calls if m == "plugins.manage"]
+            self.assertEqual(calls, [{"action": "inspect", "catalog_name": "babysit"},
+                                     {"action": "install", "catalog_name": "babysit", "enable": True, "inspected_sha": "abc1234def"}])
+
+    async def test_list_toggle_update_remove_through_plugins_manage(self):
+        async with Env() as env:
+            self.write_catalog(env)
+            s = await self.open(env)
+            rows = (await s.req("plugins.list", bot="kami"))["result"]["plugins"]
+            self.assertEqual([(r["name"], r["enabled"], r["tier"], r["needs_env"]) for r in rows],
+                             [("homeassistant", True, "official", []), ("browserbase", False, "bundled", ["BROWSERBASE_API_KEY"])])
+            self.assertTrue((await s.req("plugins.toggle", bot="kami", key="homeassistant", enable=False))["ok"])
+            self.assertFalse((await s.req("plugins.toggle", bot="kami", key="homeassistant"))["ok"])
+            self.assertTrue((await s.req("plugins.update", bot="kami", name="homeassistant"))["ok"])
+            self.assertTrue((await s.req("plugins.remove", bot="kami", name="homeassistant"))["ok"])
+            acts = [p for m, p in env.clients["kami"].calls if m == "plugins.manage"]
+            self.assertEqual(acts, [{"action": "list"}, {"action": "toggle", "key": "homeassistant", "enable": False},
+                                    {"action": "update", "name": "homeassistant"}, {"action": "remove", "name": "homeassistant"}])
+
+    async def test_a_new_plugin_folder_emits_plugin_added_once(self):
+        async with Env() as env:
+            self.write_catalog(env)
+            s = await self.open(env)
+            env.bridge.poll_plugins()  # baseline
+            (env.home / "profiles" / "kami" / "plugins" / "babysit").mkdir(parents=True)
+            self.assertEqual(await env.bridge.poll_plugins_once(), 1)
+            await s.until(lambda ev: any(e["event"] == "plugin.added" for e in ev))
+            ev = [e for e in s.events if e["event"] == "plugin.added"][0]
+            self.assertEqual((ev["bot"], ev["name"], ev["tools"], ev["hooks"]), ("kami", "babysit", 2, 1))
+            self.assertEqual(await env.bridge.poll_plugins_once(), 0)
+            env.bridge._own_plugins.add(("kami", "mine"))
+            (env.home / "profiles" / "kami" / "plugins" / "mine").mkdir()
+            self.assertEqual(await env.bridge.poll_plugins_once(), 0)
 
 
 class ReadOnlyRule(BridgeCase):
@@ -2069,6 +2394,51 @@ class Runs(unittest.TestCase):
             self.assertEqual(got["handoffs"], {})
             self.assertFalse(any("outside the dag dir" in t for t in got["handoffs"].values()))
 
+    def test_a_running_run_quiet_for_a_day_with_no_helper_reporting_is_stale_not_live(self):
+        from datetime import datetime, timezone
+        v02 = "dag:20261108_213859_c9a97486/omher-v02"
+        with tempfile.TemporaryDirectory() as d:
+            prof, dag = _runs_profile(Path(d), ["20261108_213859_c9a97486"])
+            rec = next(dag.glob("*/omher-v02.json"))
+            updated = json.loads(rec.read_text(encoding="utf-8"))["updated_at"]
+            os.utime(rec, (updated, updated))  # the file changed when the record says it did
+            reader = ob.DagRuns(ob.Delegations(tz=timezone.utc))
+            one = lambda now: next(r for r in reader.list("kami", prof, now=now) if r["id"] == v02)
+            # ten minutes after its last change it is live
+            self.assertEqual((one(updated + 600)["state"], one(updated + 600).get("stale")), ("running", None))
+            # a day and a bit with no change: still "running" as the record says, but stale, and listed after
+            # every live run (a run settled since sorts by its own time as before)
+            quiet = one(updated + ob.QUIET_RUN + 60)
+            self.assertEqual((quiet["state"], quiet["stale"]), ("running", True))
+            self.assertEqual(quiet["counts"]["running"], 3)
+            # runs.get marks it the same way runs.list does
+            self.assertEqual(reader.get("kami", prof, v02)["run"].get("stale"), one(time.time()).get("stale"))
+            # the file itself changed since (a newer write than its updated_at): live again
+            os.utime(rec, (updated + ob.QUIET_RUN, updated + ob.QUIET_RUN))
+            self.assertNotIn("stale", one(updated + ob.QUIET_RUN + 60))
+            os.utime(rec, (updated, updated))
+            # a helper of one of its nodes still writing its log: live, however old the record
+            folder = prof / "cache" / "delegation" / "live" / "deleg_00aa11cc"
+            folder.mkdir(parents=True)
+            now = updated + 3 * ob.QUIET_RUN
+            started = datetime.fromtimestamp(now - 7200, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            (folder / "manifest.json").write_text(json.dumps({"started": started, "tasks": [
+                {"index": 0, "goal": "[dag:omher-v02/t2-attach] attach", "status": "running"}]}), encoding="utf-8")
+            (folder / "task-0.log").write_text(f"goal: attach\nstarted: {started}\n", encoding="utf-8")
+            for f in folder.iterdir():
+                os.utime(f, (now - 120, now - 120))
+            self.assertNotIn("stale", one(now))
+            # the same helper silent for over an hour (stalled): stale
+            for f in folder.iterdir():
+                os.utime(f, (now - ob.STALE_AFTER - 60, now - ob.STALE_AFTER - 60))
+            self.assertTrue(one(now)["stale"])
+
+    def test_only_running_dag_runs_can_be_stale(self):
+        run = {"id": "dag:s/x", "state": "done", "updated": 0.0, "nodes": []}
+        self.assertNotIn("stale", ob.mark_stale(dict(run), None, [], 10 * ob.QUIET_RUN))
+        self.assertTrue(ob.mark_stale(dict(run, state="running"), None, [], 10 * ob.QUIET_RUN)["stale"])
+        self.assertNotIn("stale", ob.mark_stale(dict(run, state="running"), None, [], ob.QUIET_RUN - 1))
+
     def test_no_dag_dir_or_no_state_db_means_no_runs(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(ob.DagRuns().list("kami", Path(d)), [])
@@ -2099,8 +2469,8 @@ class Runs(unittest.TestCase):
             prof, dag = _runs_profile(Path(d), sorted(sids), dag_src=real)
             runs = ob.DagRuns().list("kami", prof)
             self.assertGreaterEqual(len(runs), 1)
-            states = [r["state"] for r in runs]
-            self.assertEqual(states, sorted(states, key=lambda s: s != "running"))  # running first
+            live = [r["state"] == "running" and not r.get("stale") for r in runs]
+            self.assertEqual(live, sorted(live, reverse=True))  # live runs first (a stale one sorts by its time)
             got = ob.DagRuns().get("kami", prof, runs[0]["id"])
             self.assertEqual(len(got["run"]["nodes"]), runs[0]["counts"]["nodes"])
 
@@ -2862,6 +3232,66 @@ class Accounts(unittest.TestCase):
         self.assertEqual(gs["claude"]["also"], {"name": "CLIProxyAPI", "accounts": 5})
         self.assertNotIn("also", gs["codex"])
         self.assertEqual(ob.cpa_count(self.home()), 0)
+        # every CLIProxyAPI login is a row, from its file name only: read-only, no folder, no usage
+        cpa = [a for a in gs["claude"]["accounts"] if a.get("source") == "cpa"]
+        self.assertEqual([(a["id"], a["email"], a["state"], a["dir"], a["usage"]) for a in cpa],
+                         [(f"cpa:{i + 1}", f"a{i}@example.com", "ready", None, None) for i in range(5)])
+        self.assertEqual(gs["claude"]["active"], "default")
+
+    def test_cpa_logins_join_the_claude_rows_by_email_from_real_file_names(self):
+        h = self.home()
+        root = h / ".cli-proxy-api"
+        root.mkdir()
+        (root / "config.yaml").write_text('oauth:\n  auth-dir: "~/.cli-proxy-api"\n', encoding="utf-8")
+        for name in ("claude-2065f4ca-one@gmail.com.json", "claude-5012cc0d-Owner@Example.com.json",
+                     "claude-a0538558-me@sionic.ai.json", "claude-nomail.json", "codex-x@example.com.json",
+                     "claude-x.json.bak"):
+            (root / name).write_text(json.dumps({k: SECRET for k in TOKEN_KEYS}), encoding="utf-8")
+        (h / ".claude.json").write_text(json.dumps({"oauthAccount": {"emailAddress": "owner@example.com"}}), encoding="utf-8")
+        claude = self.groups(h)["claude"]
+        rows = [(a["id"], a["email"], a.get("source"), a.get("in_cpa")) for a in claude["accounts"]]
+        # Claude Code's own login is one of CLIProxyAPI's (case-insensitive): marked, not listed twice
+        self.assertEqual(rows, [("default", "owner@example.com", None, True), ("cpa:1", "one@gmail.com", "cpa", None),
+                                ("cpa:3", "me@sionic.ai", "cpa", None), ("cpa:4", "", "cpa", None)])
+        self.assertEqual(claude["also"], {"name": "CLIProxyAPI", "accounts": 4})
+        self.assertEqual(ob.cpa_email("claude-89345c0d-rlaope0206@gmail.com.json"), "rlaope0206@gmail.com")
+        self.assertEqual(ob.cpa_email("claude-rlaope0206@gmail.com.json"), "rlaope0206@gmail.com")
+        self.assertEqual(ob.cpa_email("claude-../../x@y.z.json"), "")
+        # a CLIProxyAPI login can never be made the account new sessions use (no folder under ~/.omher)
+        with self.assertRaises(ob.BridgeError):
+            ob.set_active_account("claude", "cpa:1", h)
+
+    def test_the_claude_meter_lists_every_login_with_only_its_own_record(self):
+        h = self.home()
+        self.cpa(h, n=3)
+        (h / ".claude.json").write_text(json.dumps({"oauthAccount": {"emailAddress": "a0@example.com"}}), encoding="utf-8")
+        (h / ".claude/projects/-w").mkdir(parents=True)
+        (h / ".claude/projects/-w/s.jsonl").write_text(CLAUDE_LINE + "\n", encoding="utf-8")
+        orig = Path.read_text
+
+        def guard(p, *a, **k):
+            self.assertFalse("cli-proxy-api" in str(p) and Path(p).suffix == ".json", f"opened {p}")
+            return orig(p, *a, **k)
+
+        with mock.patch.object(Path, "read_text", guard):
+            p = {x["id"]: x for x in ob.read_usage(h, now=1794200000.0, which=lambda _: None)["providers"]}["claude"]
+        self.assertEqual(p["state"], "limited")
+        self.assertEqual(p["accounts"], [
+            {"email": "a0@example.com", "label": "", "source": "cli", "in_cpa": True, "state": "limited",
+             "resets_at": 1794211200.0},
+            {"email": "a1@example.com", "label": "", "source": "cpa", "in_cpa": False, "state": "no_record"},
+            {"email": "a2@example.com", "label": "", "source": "cpa", "in_cpa": False, "state": "no_record"}])
+        self.assert_no_token(p)
+        # CLIProxyAPI logins alone (Claude Code not on PATH, no record) still give a Claude meter, with no number
+        h2 = self.home()
+        self.cpa(h2, n=2)
+        p2 = ob.read_usage(h2, now=1.0, which=lambda _: None)["providers"]
+        self.assertEqual([(x["id"], x["state"], x["windows"], len(x["accounts"])) for x in p2], [("claude", "connected", [], 2)])
+        # one login: no list (the meter is the login); no CLIProxyAPI, nothing on PATH: no meter at all
+        h3 = self.home()
+        self.cpa(h3, n=1)
+        self.assertNotIn("accounts", ob.read_usage(h3, now=1.0, which=lambda c: f"/bin/{c}")["providers"][0])
+        self.assertEqual(ob.read_usage(self.home(), now=1.0, which=lambda _: None), {"providers": []})
 
     def test_fuzzed_token_keys_never_reach_any_payload(self):
         import random

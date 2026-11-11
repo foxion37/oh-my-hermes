@@ -64,10 +64,19 @@ async function setup(page: Page, folders: string[] = []) {
   await expect(page.getByTestId("bot-kami")).toHaveAttribute("aria-current", "true");
 }
 
-async function start(page: Page, agent: string) {
+/** A New session chat on `agent` in the picker's next folder, started: a chat agent by its first message
+ *  (`first`), Grok by Start. */
+async function start(page: Page, agent: string, first = "/status") {
   await page.getByTestId("session-new").click();
   await page.getByTestId(`session-agent-${agent}`).click();
+  await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
+  if (agent === "grok") await page.getByTestId("session-go").click();
+  else {
+    await page.getByTestId("composer").fill(first);
+    await page.keyboard.press("Enter");
+  }
+  await expect(page.getByTestId("session-chat").or(page.getByTestId("terminal"))).not.toHaveAttribute("data-draft", "true");
 }
 
 /** Wait for the debounced snapshot to land. */
@@ -211,11 +220,9 @@ test("a saved bot that is gone, or a bad snapshot, opens the app as a fresh star
 
 test("after a restart: Claude Code and Codex continue by themselves, pi waits for Resume, an ended one stays ended", async ({ page }) => {
   await setup(page, ["/Users/you/code/web-app", "/Users/you/code/api", "/Users/you/code/pi-work", "/Users/you/code/old"]);
-  await start(page, "claude");
-  await expect(page.getByTestId("session-status")).toHaveText("Ready");
-  await page.getByTestId("composer").fill("hello before");
-  await page.keyboard.press("Enter");
+  await start(page, "claude", "hello before");
   await expect(page.getByTestId("bubble-bot").last()).toContainText("You said: hello before");
+  await expect(page.getByTestId("session-status")).toHaveText("Ready");
   await start(page, "codex");
   await expect(page.getByTestId("session-status")).toHaveText("Ready");
   await start(page, "pi");
@@ -303,4 +310,55 @@ test("a terminal session that was running comes back paused and starts only on R
   await page.getByTestId("session-resume").click();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
   expect((await sessionCalls(page)).filter((c) => c.op === "start")).toEqual([expect.objectContaining({ agent: "grok", cwd: "/Users/you/code/g" })]);
+});
+
+test("an ended terminal session comes back with Restart, which starts it again in its folder", async ({ page }) => {
+  await setup(page, ["/Users/you/code/g"]);
+  await start(page, "grok");
+  await expect(page.locator(".xterm-rows")).toContainText("(mock)");
+  await page.locator(".xterm-helper-textarea").focus();
+  await page.keyboard.type("exit");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("session-ended")).toBeVisible();
+  await expect.poll(async () => (await saved(page))?.sessions?.[0]?.running).toBe(false);
+  await page.evaluate(() => sessionStorage.setItem("__kept", "1"));
+  await page.reload();
+  await expect(page.getByTestId("session-agent")).toHaveText("Grok");
+  await expect(page.getByTestId("session-idle")).toContainText("Grok ended");
+  expect((await sessionCalls(page)).filter((c) => c.op === "start")).toEqual([]);
+  await page.getByTestId("session-restart").click();
+  await expect(page.locator(".xterm-rows")).toContainText("(mock)");
+  await expect(page.getByTestId("session-ended")).toHaveCount(0);
+  expect((await sessionCalls(page)).filter((c) => c.op === "start")).toEqual([expect.objectContaining({ agent: "grok", cwd: "/Users/you/code/g" })]);
+});
+
+test("a New session chat that never started comes back as a draft after a restart, and nothing starts", async ({ page }) => {
+  await setup(page, ["/Users/you/code/web-app"]);
+  await page.getByTestId("session-new").click();
+  await page.getByTestId("session-agent-codex").click();
+  await page.getByTestId("session-folder").click();
+  await page.getByTestId("session-choose").click();
+  await expect(page.getByTestId("session-folder")).toHaveText("web-app");
+  await page.getByTestId("composer").fill("half a thought");
+  await expect.poll(async () => (await saved(page))?.sessions?.[0]).toMatchObject({ agent: "codex", cwd: "/Users/you/code/web-app", draft: true, running: false });
+
+  await page.evaluate(() => sessionStorage.setItem("__kept", "1"));
+  await page.reload();
+  await expect(page.getByTestId("session-chat")).toHaveAttribute("data-draft", "true");
+  await expect(page.getByTestId("session-agent-fixed")).toHaveText("Codex");
+  await expect(page.getByTestId("session-folder")).toHaveText("web-app");
+  await expect(page.getByTestId("composer")).toHaveValue("half a thought");
+  await expect(page.locator("[data-testid=session-list] .ss-row .bot-n")).toHaveText(["New session"]);
+  await page.waitForTimeout(200);
+  // nothing starts; the startup prune keeps the draft's attachment folder
+  expect((await sessionCalls(page)).filter((c) => c.op !== "reset" && !c.op.startsWith("file."))).toEqual([]);
+  expect((await sessionCalls(page)).filter((c) => c.op === "file.prune")).toEqual([expect.objectContaining({ keep: ["s1"] })]);
+  // the update confirm does not count it as running
+  await page.getByTestId("update-btn").click();
+  await expect(page.getByTestId("update-running")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // it is still a draft: the first message starts it there, with that text
+  await page.getByTestId("composer").press("Enter");
+  await expect.poll(async () => (await sessionCalls(page)).find((c) => c.op === "chat.start")).toMatchObject({ agent: "codex", cwd: "/Users/you/code/web-app" });
+  await expect(page.getByTestId("bubble-user")).toHaveText("half a thought");
 });

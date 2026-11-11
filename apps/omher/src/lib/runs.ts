@@ -1,6 +1,7 @@
 // One model for every kind of agent run omher shows (dag-ulw runs now; delegate fan-outs, Claude Code
 // tasks, Codex sub-runs and CLI sessions later). The Runs tab draws only this shape, so a new source is
 // one adapter, never a new view. Read-only: nothing here retries, settles or cancels a run.
+import { t as tr, type Key } from "../i18n";
 
 export type RunKind = "dag" | "delegate" | "claude-task" | "codex-sub" | "session";
 export type RunState = "running" | "done" | "failed" | "cancelled";
@@ -79,6 +80,8 @@ export interface AgentRun {
   started: number;
   ended?: number;
   updated: number;
+  /** A run its record still calls running, but nothing about it changed for a day (bridge `mark_stale`): not live. */
+  stale?: boolean;
 }
 
 export interface RunCounts {
@@ -279,9 +282,10 @@ export const cliName = (agent: CliAgent | undefined) => (agent ? CLI_NAME[agent]
 /** A run id from `runs.cli` (`claude:<session>`, `codex:<thread>`), which no bot owns. */
 export const isCliRun = (id: string) => CLI_AGENTS.some((a) => id.startsWith(`${a}:`));
 
-/** Running first, then the most recently updated. */
-export function sortRuns<T extends { state: RunState; updated: number }>(runs: T[]): T[] {
-  return [...runs].sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.updated - a.updated);
+/** Live runs first (running and not stale), then the most recently updated. */
+export function sortRuns<T extends { state: RunState; updated: number; stale?: boolean }>(runs: T[]): T[] {
+  const live = (r: T) => Number(r.state === "running" && !r.stale);
+  return [...runs].sort((a, b) => live(b) - live(a) || b.updated - a.updated);
 }
 
 /** A run's or node's length, the one formatter for every Runs surface: under a minute "38s", under an hour "14m",
@@ -331,7 +335,7 @@ const TASK_STATE: Record<string, NodeState> = {
   interrupted: "cancelled",
   cancelled: "cancelled",
 };
-const ROUTE_WHY: Record<string, string> = { head: "chain head", fallback: "fallback", exhausted_to_inherit: "chain exhausted" };
+const ROUTE_WHY: Record<string, Key> = { head: "rn.chainHead", fallback: "rn.fallback", exhausted_to_inherit: "rn.exhausted" };
 
 function taskFields(t: Delegation["tasks"][number], d: Delegation): Partial<RunNode> {
   const out: Partial<RunNode> = {};
@@ -342,8 +346,8 @@ function taskFields(t: Delegation["tasks"][number], d: Delegation): Partial<RunN
   if (route?.effort) out.effort = route.effort;
   if (route?.category) {
     out.route = route.category;
-    const why = ROUTE_WHY[route.origin];
-    if (why) out.routeWhy = why + (why === "fallback" && route.from ? ` from ${route.from}` : "");
+    const key = ROUTE_WHY[route.origin];
+    if (key) out.routeWhy = tr(key) + (key === "rn.fallback" && route.from ? tr("rn.from", { from: route.from }) : "");
   }
   if (t.summary || t.error) out.summary = t.summary || t.error;
   return out;
@@ -358,7 +362,7 @@ export function fromDelegation(d: Delegation, bot: string): AgentRun {
     const end = t.ended ?? d.ended;
     if (state !== "running" && end !== undefined) att.ended = end;
     if ((state === "failed" || state === "cancelled") && (t.error || t.summary)) att.reason = t.error || t.summary;
-    const node: RunNode = { id: `task-${t.index}`, label: t.goal || `Task ${t.index + 1}`, deps: [], layer: 0, state, attempts: [att] };
+    const node: RunNode = { id: `task-${t.index}`, label: t.goal || tr("rn.task", { n: t.index + 1 }), deps: [], layer: 0, state, attempts: [att] };
     Object.assign(node, taskFields(t, d));
     if (att.started !== undefined) node.started = att.started;
     if (att.ended !== undefined) node.ended = att.ended;

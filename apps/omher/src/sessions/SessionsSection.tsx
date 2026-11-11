@@ -1,18 +1,20 @@
-// SESSIONS in the sidebar: the `+` menu that starts claude / codex / omh / pi / omp / grok in a folder,
-// and one row per session started in this run of the app. A chat row shows the bot row's live states: the
+// SESSIONS in the sidebar: the `+` menu of agents (picking one opens its New session chat at once; the folder is
+// picked in that chat, see DraftPane in SessionView), and one row per session started in this run of the app. A draft row reads "New
+// session" over its folder until its first message. A chat row shows the bot row's live states: the
 // answer ring around the agent mark and the turn's elapsed time while a turn runs, and the amber dot with
 // "waiting" while one of its approvals or questions is open (the same asks the Needs-you strip lists). A
 // terminal row keeps a live dot while its program runs: a terminal has no turn to ring for.
 // Line 1 is the session's name (the person's, the agent's own title, a summary of the first message, else the
 // folder) and line 2 the folder and the agent. Double-click the name, or right-click › Rename, to name it.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { selectAsks, useStore, type AppState } from "../state/store";
-import { ChevronRight, CloseIcon, LiveRing, PlusIcon, Popover, TypingDots } from "../ui";
+import { CloseIcon, LiveRing, PlusIcon, Popover, TypingDots } from "../ui";
 import { busyFor, shortTime } from "../app/time";
 import { useNow } from "../elsewhere/useNow";
 import { t } from "../i18n";
+import { composing } from "../lib/ime";
 import { AgentMark } from "./AgentMark";
-import { agentDef, folderName, missingNote, parentPath, recentFolders, rowModel, tildePath, type AgentId, type ChatLive, type RowContext, type SessionRec } from "./agents";
+import { agentDef, folderName, menuOrder, missingNote, rowModel, type AgentId, type ChatLive, type RowContext, type SessionRec } from "./agents";
 import { getSessions, useSessions } from "./sessions";
 import type { Account, AccountCli, AccountGroup } from "../lib/protocol";
 import { useAccounts } from "../settings/accounts/useAccounts";
@@ -42,6 +44,7 @@ export function openNewSessionMenu(): void {
 
 export function SessionsHeader() {
   const [open, setOpen] = useState(false);
+  const plus = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const f = () => setOpen(true);
     openers.add(f);
@@ -51,50 +54,23 @@ export function SessionsHeader() {
   }, []);
   return (
     <div className="side-sh side-sh-row">
-      <span>Sessions</span>
+      <span>{t("nav.sessions")}</span>
       <span className="ss-add">
         <button
+          ref={plus}
           type="button"
           className="ss-plus"
-          aria-label="New session"
-          title="New session"
+          aria-label={t("sessions.new")}
+          title={t("sessions.new")}
+          aria-haspopup="menu"
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           data-testid="session-new"
         >
           <PlusIcon size={14} />
         </button>
-        {open && <NewSessionMenu onClose={() => setOpen(false)} />}
+        {open && <NewSessionMenu onClose={() => setOpen(false)} trigger={plus} />}
       </span>
-    </div>
-  );
-}
-
-/** The coding agents the New session tooltip names: the CLIs a person launches to code with (omh stays in the + menu). */
-const CODING: AgentId[] = ["claude", "codex", "pi", "omp", "grok"];
-
-/** The empty section: one "New session" row built like the sidebar's nav rows, opening the + menu. What it does and
- *  the installed coding agents sit in its tooltip; nothing else shows, nothing is centred or boxed. */
-function SessionStart() {
-  const ss = useSessions();
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (ss.agents === null) void getSessions().loadAgents();
-  }, [ss.agents]);
-  const names = (ss.agents ?? [])
-    .filter((a) => a.path && CODING.includes(a.id))
-    .map((a) => agentDef(a.id).label)
-    .join(", ");
-  const tip = names ? `${t("onb.sessionsHint")} ${names}` : t("onb.sessionsHint");
-  return (
-    <div className="ss-none" data-testid="session-none">
-      <div className="ss-start-w">
-        <button type="button" className="ss-start" title={tip} aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid="session-start">
-          <PlusIcon size={16} />
-          New session
-        </button>
-        {open && <NewSessionMenu onClose={() => setOpen(false)} />}
-      </div>
     </div>
   );
 }
@@ -102,83 +78,63 @@ function SessionStart() {
 /** The menu spans the section, 8px inside both sidebar edges. */
 const MENU_W = "min(240px, calc(var(--side-w) - 16px))";
 
-/** The + menu in two steps: pick an agent, then its folder ("Choose folder…" or one of the recent folders). */
-function NewSessionMenu({ onClose }: { onClose: () => void }) {
+/** The SESSIONS + menu: every agent with its mark and name, the installed ones first (the last one used on top),
+ *  the missing ones dimmed with their install line in the tooltip. Picking one opens its New session chat at once
+ *  (the folder is the chip under that chat's composer). Arrow keys move, Enter picks, Esc closes. */
+function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: RefObject<HTMLButtonElement | null> }) {
   const ss = useSessions();
   const accounts = useAccounts();
-  /** step 2: the agent picked, asking for its folder */
-  const [agent, setAgent] = useState<AgentId | null>(null);
-  /** the agent ← came back from, which takes the focus again */
-  const [from, setFrom] = useState<AgentId | null>(null);
+  const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    void getSessions().loadAgents();
-  }, []);
-  if (agent) {
-    const back = () => {
-      setFrom(agent);
-      setAgent(null);
-    };
-    // the native folder dialog; cancelling it keeps this step open and starts nothing
-    const choose = async () => {
-      if (await getSessions().launch(agent)) onClose();
-    };
-    const start = (cwd: string) => {
-      onClose();
-      void getSessions().launch(agent, cwd);
-    };
-    const folders = recentFolders(ss.recent);
-    return (
-      <Popover open onClose={onClose} align="left" width={MENU_W} label="New session" className="ss-pop">
-        <div data-testid="session-menu" data-step="folder">
-          <div className="ss-agent" data-testid="session-folder-agent">
-            <button type="button" className="ss-back" aria-label={t("sessions.back")} title={t("sessions.back")} onClick={back} data-testid="session-back">
-              <ChevronRight size={12} />
-            </button>
-            <AgentMark agent={agent} size={14} />
-            <span className="ss-n">{agentDef(agent).label}</span>
-          </div>
-          <button type="button" className="ss-item" onClick={() => void choose()} autoFocus data-testid="session-choose">
-            <span className="ss-ic">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.4l2 2h8.6A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />
-              </svg>
-            </span>
-            <span className="ss-n">{t("sessions.choose")}</span>
-          </button>
-          {folders.length > 0 && (
-            <>
-              <div className="ss-sep" />
-              <div className="ss-h">{t("sessions.recent")}</div>
-              {folders.map((cwd) => (
-                <button key={cwd} type="button" className="ss-item" title={cwd} onClick={() => start(cwd)} data-testid="session-recent">
-                  <span className="ss-ic" />
-                  <span className="ss-n">{folderName(cwd)}</span>
-                  <span className="ss-path">{parentPath(tildePath(cwd, ss.home))}</span>
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      </Popover>
-    );
-  }
+    if (ss.agents === null) void getSessions().loadAgents();
+  }, [ss.agents]);
+  const agents = ss.agents ? menuOrder(ss.agents, ss.recent) : null;
+  // the first row takes the focus once the list is there (installed first, so it is the one Enter should pick)
+  const ready = agents !== null;
+  useEffect(() => {
+    if (ready) box.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+  }, [ready]);
+  const close = (why: "escape" | "outside" | "pick") => {
+    onClose();
+    if (why === "escape") trigger.current?.focus();
+  };
+  const pick = (id: AgentId) => {
+    close("pick");
+    getSessions().draft(id);
+  };
   return (
-    <Popover open onClose={onClose} align="left" width={MENU_W} label="New session" className="ss-pop">
-      <div data-testid="session-menu">
-        <div className="ss-h">New session</div>
-        {ss.agents === null && <div className="ss-empty">Looking for agents…</div>}
-        {(ss.agents ?? []).map((a) => {
+    <Popover open onClose={close} align="left" width={MENU_W} label={t("sessions.new")} className="ss-pop">
+      <div
+        ref={box}
+        role="menu"
+        aria-label={t("sessions.new")}
+        data-testid="session-menu"
+        onKeyDown={(e) => {
+          const items = [...(box.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
+          const i = items.indexOf(document.activeElement as HTMLButtonElement);
+          const to = e.key === "ArrowDown" ? i + 1 : e.key === "ArrowUp" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : null;
+          if (to === null || !items.length) return;
+          e.preventDefault();
+          items[(to + items.length) % items.length]?.focus();
+        }}
+      >
+        <div className="ss-h">{t("sessions.new")}</div>
+        {agents === null && <div className="ss-empty">{t("ss.lookingAgents")}</div>}
+        {(agents ?? []).map((a) => {
           const def = agentDef(a.id);
           const account = sessionAccountSuffix(accounts.groups, a.id);
+          const missing = !a.path;
           return (
             <button
               key={a.id}
               type="button"
-              className="ss-item"
-              disabled={!a.path}
+              role="menuitem"
+              className={`ss-item${missing ? " off" : ""}`}
+              aria-disabled={missing || undefined}
               title={a.path ?? missingNote(a.id)}
-              onClick={() => setAgent(a.id)}
-              autoFocus={a.id === from}
+              onClick={() => {
+                if (!missing) pick(a.id);
+              }}
               data-testid={`session-agent-${a.id}`}
             >
               <span className="ss-ic">
@@ -192,12 +148,51 @@ function NewSessionMenu({ onClose }: { onClose: () => void }) {
                   </span>
                 )}
               </span>
-              {a.path ? <code className="ss-cmd">{def.program}</code> : <span className="ss-missing">Not installed</span>}
+              {missing && <span className="ss-missing">{t("sessions.notInstalled")}</span>}
             </button>
           );
         })}
       </div>
     </Popover>
+  );
+}
+
+/** The coding agents the New session tooltip names: the CLIs a person launches to code with (omh stays in the + menu). */
+const CODING: AgentId[] = ["claude", "codex", "omo", "dsh", "pi", "omp", "grok"];
+
+/** The empty section: one "New session" row built like the sidebar's nav rows, opening the same + menu under it.
+ *  What it does and the installed coding agents sit in its tooltip; nothing else shows, nothing is centred or boxed. */
+function SessionStart() {
+  const ss = useSessions();
+  const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (ss.agents === null) void getSessions().loadAgents();
+  }, [ss.agents]);
+  const names = (ss.agents ?? [])
+    .filter((a) => a.path && CODING.includes(a.id))
+    .map((a) => agentDef(a.id).label)
+    .join(", ");
+  const tip = names ? `${t("onb.sessionsHint")} ${names}` : t("onb.sessionsHint");
+  return (
+    <div className="ss-none" data-testid="session-none">
+      <div className="ss-start-w">
+        <button
+          ref={btn}
+          type="button"
+          className="ss-start"
+          title={tip}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          data-testid="session-start"
+        >
+          <PlusIcon size={16} />
+          {t("sessions.new")}
+        </button>
+        {open && <NewSessionMenu onClose={() => setOpen(false)} trigger={btn} />}
+      </div>
+    </div>
   );
 }
 
@@ -222,16 +217,17 @@ export function SessionList() {
     else getSessions().close(rec.id);
   };
   if (ss.list.length === 0) return <SessionStart />;
-  const ctx: RowContext = { cwds: ss.list.map((r) => r.cwd), home: ss.home };
+  // a draft's folder is not settled yet: it never makes another row show its parent
+  const ctx: RowContext = { cwds: ss.list.filter((r) => r.status !== "draft").map((r) => r.cwd), home: ss.home };
   return (
-    <nav className="bot-list ss-list" aria-label="Sessions" data-testid="session-list">
+    <nav className="bot-list ss-list" aria-label={t("nav.sessions")} data-testid="session-list">
       {ss.list.map((rec) =>
         confirm === rec.id ? (
           <div
             key={rec.id}
             className="ss-row ss-confirm"
             role="group"
-            aria-label={`Stop ${agentDef(rec.agent).label} in ${folderName(rec.cwd)}?`}
+            aria-label={t("ss.stopIn", { agent: agentDef(rec.agent).label, folder: folderName(rec.cwd) })}
             data-testid={`session-confirm-${rec.id}`}
             onKeyDown={(e) => {
               if (e.key !== "Escape") return;
@@ -241,10 +237,10 @@ export function SessionList() {
             }}
           >
             <span className="ss-q" title={rec.cwd}>
-              Stop {agentDef(rec.agent).label}?
+              {t("ss.stopQ", { agent: agentDef(rec.agent).label })}
             </span>
             <button type="button" className="ss-btn" onClick={() => cancel(rec.id)} autoFocus>
-              Cancel
+              {t("ss.cancel")}
             </button>
             <button
               type="button"
@@ -255,7 +251,7 @@ export function SessionList() {
               }}
               data-testid="session-stop"
             >
-              Stop
+              {t("ss.stop")}
             </button>
           </div>
         ) : (
@@ -285,8 +281,8 @@ function SessionMenu({ at, name, onRename, onClose, onDismiss }: { at: { x: numb
     return () => document.removeEventListener("mousedown", onDown);
   }, [onDismiss]);
   const items: [string, string, () => void][] = [
-    ["Rename", "session-rename", onRename],
-    ["Close session", "session-menu-close", onClose],
+    [t("ss.rename"), "session-rename", onRename],
+    [t("ss.close"), "session-menu-close", onClose],
   ];
   return (
     <div
@@ -294,7 +290,7 @@ function SessionMenu({ at, name, onRename, onClose, onDismiss }: { at: { x: numb
       className="row-menu"
       style={{ left: at.x, top: at.y }}
       role="menu"
-      aria-label={`${name} actions`}
+      aria-label={t("ss.actions", { name })}
       data-testid="session-row-menu"
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -353,13 +349,13 @@ function NameInput({ initial, auto, onDone }: { initial: string; auto: boolean; 
       className="ss-name-in"
       defaultValue={initial}
       maxLength={80}
-      aria-label="Session name"
-      placeholder="Automatic name"
+      aria-label={t("ss.name")}
+      placeholder={t("ss.autoName")}
       spellCheck={false}
       data-testid="session-rename-input"
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+        if (e.key === "Enter" && !composing(e)) {
           e.preventDefault();
           finish(true);
         } else if (e.key === "Escape") {
@@ -392,10 +388,10 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
   };
   const body = (
     <>
-      <LiveRing on={ring} size={34} gap={3.5} label="Answering" seed={rec.id}>
+      <LiveRing on={ring} size={34} gap={3.5} label={t("ss.answering")} seed={rec.id}>
         <span className="ss-av">
           <AgentMark agent={rec.agent} size={18} />
-          {dot && <span className="live-dot" data-testid="live-dot" aria-label="running" />}
+          {dot && <span className="live-dot" data-testid="live-dot" aria-label={t("ss.liveDot")} />}
         </span>
       </LiveRing>
       <span className="bot-m">
@@ -410,7 +406,7 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
               title={m.titleSource === "folder" ? undefined : m.title}
               onDoubleClick={(e) => {
                 e.preventDefault();
-                setEditing(true);
+                if (rec.status !== "draft") setEditing(true);
               }}
             >
               {m.title}
@@ -424,13 +420,13 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
           )}
           {m.needsYou ? (
             <span className="bot-t wait" data-testid="bot-time">
-              waiting
+              {t("ss.waiting")}
             </span>
           ) : busySince !== null ? (
             <span className="bot-t busy" data-testid="bot-time">
               {busyFor(now - busySince)}
             </span>
-          ) : (
+          ) : rec.status === "draft" ? null : (
             <span className="bot-t" data-testid="bot-time">
               {shortTime(m.ts)}
             </span>
@@ -443,7 +439,7 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
           {ring && <TypingDots size={3} testId="bot-typing" />}
           {m.needsYou && (
             // the bot row's plain amber dot: no number (the strip carries the count)
-            <span className="needs-dot" data-testid="needs" role="status" aria-label="Needs your answer" title="Needs your answer" />
+            <span className="needs-dot" data-testid="needs" role="status" aria-label={t("ss.needsAnswer")} title={t("ss.needsAnswer")} />
           )}
         </span>
       </span>
@@ -459,6 +455,8 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
       onContextMenu={(e) => {
         e.preventDefault();
         if (editing) return;
+        // a draft has nothing to rename yet: right-click closes it, as before
+        if (rec.status === "draft") return onClose();
         const side = wrap.current?.closest(".side")?.getBoundingClientRect();
         const right = (side?.right ?? window.innerWidth) - 6;
         setMenu({ x: Math.max(6, Math.min(e.clientX, right - MENU_SIZE.w)), y: Math.min(e.clientY, window.innerHeight - MENU_SIZE.h - 6) });
@@ -481,7 +479,7 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
         </button>
       )}
       {!editing && (
-        <button type="button" className="ss-x" aria-label="Close session" title="Close session" onClick={onClose} data-testid="session-close">
+        <button type="button" className="ss-x" aria-label={t("ss.close")} title={t("ss.close")} onClick={onClose} data-testid="session-close">
           <CloseIcon />
         </button>
       )}

@@ -22,7 +22,7 @@ import time
 import unittest
 from unittest import mock
 
-from _tui_lines import info_row_index, composer_text, INFO_INSET, line_text, RULE_ROW, without_badge
+from _tui_lines import info_row_index, INFO_INSET, line_text, RULE_ROW, without_badge
 from test_tui_modes import RecordingClient, make_app, type_text
 from omh.tui.app import BELL, App
 from omh.tui.gateway import ServerRequest
@@ -347,12 +347,14 @@ class ClarifyFieldTests(unittest.TestCase):
         )
 
     def test_typing_a_character_opens_the_field_with_it_and_enter_sends_the_answer(self) -> None:
+        # Owner, 2026-11-11: the field is the `Type something.` row itself, as Claude Code's AskUserQuestion; the
+        # composer takes the keys and is not drawn.
         app, client, draft = self.open()
         type_text(app, "green")
         screen = drawn(app)
-        self.assertTrue(composer_drawn(app, screen), screen)
-        self.assertIn("❯ green", [composer_text(row) for row in screen])
-        self.assertIn("▌ ❯ 3. Type something.", screen)
+        self.assertFalse([row for row in screen if row.startswith("❯")], screen)  # no composer row: the field is 3.
+        self.assertIn("▌ ❯ 3. green", screen)
+        self.assertTrue(app.terminal.screen.cursor_visible)  # type: ignore[attr-defined]  # the caret, on that row
         press(app, Key(ENTER))
         self.assertEqual(answered(client, "srq-2"), [{"result": {"answers": {"q0": "green"}}}])
         self.assertEqual(held(app), draft)
@@ -367,7 +369,7 @@ class ClarifyFieldTests(unittest.TestCase):
         self.assertIn("▌ ❯ 2. blue", screen)
         press(app, Key(DOWN), Key(ENTER))
         screen = drawn(app)
-        self.assertIn("❯ gre", [composer_text(row) for row in screen])
+        self.assertIn("▌ ❯ 3. gre", screen)
         type_text(app, "en")
         press(app, Key(ENTER))
         self.assertEqual(answered(client, "srq-2"), [{"result": {"answers": {"q0": "green"}}}])
@@ -474,14 +476,12 @@ class PickerTests(unittest.TestCase):
                 screen = drawn(app)
                 self.assertEqual(app.terminal.screen.cursor[0], next(i for i, line in enumerate(screen) if line.startswith("❯ a draft")))  # type: ignore[attr-defined]
 
-    def test_the_caret_stays_on_the_filter_row_with_the_echo_and_the_working_row_above(self) -> None:
-        # The slot's top is below the sticky echo and the working row: the caret counts them.
+    def test_the_caret_stays_on_the_filter_row_with_the_working_row_above(self) -> None:
+        # The slot's top is below the working row: the caret counts it.
         app, _client = make_app(busy=True)
-        app.sticky, app.flushed_since_prompt = "run the tools", 999  # the prompt has scrolled off: its echo shows
         app._open_session_picker(SESSIONS)
         type_text(app, "re")
         screen = drawn(app)
-        self.assertTrue(any(line.startswith("↳ you: run the tools") for line in screen), screen)
         self.assertTrue(any("Working…" in line for line in screen), screen)
         row = info_row(screen) - 1
         self.assertEqual(screen[row], "❯ re")

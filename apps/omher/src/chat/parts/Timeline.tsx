@@ -4,8 +4,11 @@ import { selectTimeline, turnHasActivity, useStore, type TimelineItem } from "..
 import { slots } from "../../features";
 import { dayLabel, hhmm, sameDay } from "../../app/time";
 import { Bubble } from "./Bubble";
-import { TypingRow, awaitingFirstToken } from "./Typing";
+import { LiveFace, TypingRow, awaitingFirstToken } from "./Typing";
+import { liveFaceRow } from "./liveFace";
 import { ActivityFallback, CardFallback, ElsewhereFallback, RoutineFallback } from "./fallbacks";
+import { PluginAddedCard, RoutineAddedCard } from "../../pages/ChatCards";
+import { t } from "../../i18n";
 
 /** A time label goes in when the day changes, or after a quiet gap within the same day. */
 const GAP = 30 * 60;
@@ -27,8 +30,11 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
   const chat = s.chats[bot.name];
   const streaming = chat?.turn?.streaming ?? "";
   const typing = awaitingFirstToken(chat);
+  // the one row of the live run that carries the bot's ringed face
+  const faceRow = liveFaceRow(items, chat?.turn, typing);
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const lastTop = useRef(0);
   const lastBot = useRef<string | null>(null);
 
   // Stick to the bottom unless the person scrolled up; jump to the bottom on bot switch.
@@ -46,7 +52,8 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
     const ro = new ResizeObserver(() => {
       if (pinned.current) el.scrollTop = el.scrollHeight;
     });
-    for (const row of el.querySelectorAll(".row-assistant")) ro.observe(row);
+    // and each turn's activity: a fan-out card grows after its turn ended, as its subagents report back
+    for (const row of el.querySelectorAll(".row-assistant, .row-activity")) ro.observe(row);
     return () => ro.disconnect();
   }, [bot.name, items]);
 
@@ -74,6 +81,10 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
         const C = slots.routineLine ?? RoutineFallback;
         return <C bot={bot.name} item={it} />;
       }
+      case "routineAdded":
+        return <RoutineAddedCard bot={bot.name} item={it} />;
+      case "pluginAdded":
+        return <PluginAddedCard bot={bot.name} item={it} />;
       case "system":
         return (
           <div className="line sys" data-testid="system-line">
@@ -90,31 +101,40 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
       data-testid="timeline"
       onScroll={(e) => {
         const el = e.currentTarget;
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        // only the person scrolling up lets go of the bottom: a reflow (the side panel opening narrows the column)
+        // also fires scroll, with the bottom moved away but the position not moved up
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) pinned.current = true;
+        else if (el.scrollTop < lastTop.current) pinned.current = false;
+        lastTop.current = el.scrollTop;
       }}
     >
-      {!chat?.loaded && items.length === 0 && <div className="day">Loading…</div>}
+      {!chat?.loaded && items.length === 0 && <div className="day">{t("tl.loading")}</div>}
       {chat?.openError && (
         <div className="day note" data-testid="chat-error">
-          {bot.display_name} is not reachable ({chat.openError}). Start Hermes for this profile, then pick it again.
+          {t("tl.unreachable", { bot: bot.display_name, error: chat.openError })}
         </div>
       )}
       {/* A Hermes installed from the setup screen has no model yet: the first chat screen says where to pick one,
           never a terminal command. */}
       {chat?.loaded && !chat.openError && !(chat.model || bot.model) && (
         <div className="day note" data-testid="chat-no-model">
-          {bot.display_name} has no model yet. Pick one from the model menu at the top right to start.
+          {t("tl.noModel", { bot: bot.display_name })}
         </div>
       )}
-      {chat?.loaded && !chat.openError && items.length === 0 && <div className="day">Say hi to {bot.display_name}</div>}
+      {chat?.loaded && !chat.openError && items.length === 0 && <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>}
       {items.map((it, i) => {
         // the live activity line with nothing to say yet: the typing bubble below stands in for it
         if (it.kind === "activity" && chat?.turn?.id === it.turn.id && !turnHasActivity(it.turn)) return null;
         const label = divider(items[i - 1], it);
+        // the live activity line holds the face between the typing bubble and the answer, and keeps the typing
+        // bubble's height until the turn ends, so neither hand-over moves it
+        const liveLine = it.kind === "activity" && chat?.turn?.id === it.turn.id && (faceRow === "activity" || faceRow === "streaming");
+        const liveFace = liveLine && faceRow === "activity";
         return (
           <Fragment key={it.id}>
             {label && <div className="day">{label}</div>}
-            <div className={`row row-${it.kind}`} data-kind={it.kind}>
+            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind}>
+              {liveFace && <LiveFace bot={bot.name} face={face} />}
               {render(it, label ? undefined : items[i - 1])}
             </div>
           </Fragment>
@@ -133,6 +153,7 @@ export function Timeline({ bot, face }: { bot: Bot; face?: ReactNode }) {
             bot={bot.name}
             face={!botSpoke(items[items.length - 1])}
             faceEl={face}
+            live={faceRow === "streaming"}
           />
         </div>
       )}

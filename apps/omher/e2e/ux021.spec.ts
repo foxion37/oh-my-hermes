@@ -35,8 +35,11 @@ async function start(page: Page, agent: string, folder: string) {
   await page.evaluate((f) => ((window as unknown as { __omherPickFolder: string }).__omherPickFolder = f), folder);
   await page.getByTestId("session-new").click();
   await page.getByTestId(`session-agent-${agent}`).click();
+  await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
-  await expect(page.getByTestId("session-chat")).toBeVisible();
+  await page.getByTestId("composer").fill("/status");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("session-chat")).not.toHaveAttribute("data-draft", "true");
   await expect(page.getByTestId("session-status")).toHaveText("Ready");
 }
 
@@ -128,15 +131,18 @@ test("U14: a missing agent's Not installed tooltip carries its install line, as 
   await page.getByTestId("session-new").click();
   const lines: Record<string, string> = {
     codex: "npm i -g @openai/codex",
+    omo: "npm i -g omo-ai",
+    dsh: "npm i -g @deepseek-ai/dsh",
     pi: "npm i -g @mariozechner/pi-coding-agent",
     omp: "npm i -g @oh-my-pi/pi-coding-agent",
     grok: "see grok docs",
   };
   for (const [agent, line] of Object.entries(lines)) {
     const row = page.getByTestId(`session-agent-${agent}`);
-    await expect(row).toBeDisabled();
+    await expect(row).toHaveAttribute("aria-disabled", "true");
     await expect(row).toContainText("Not installed");
-    await expect(row).toHaveAttribute("title", new RegExp(`${agent} was not found on this computer · .*${line.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`));
+    const program = agent === "dsh" ? "DeepSeek Harness \\(dsh\\)" : agent;
+    await expect(row).toHaveAttribute("title", new RegExp(`${program} was not found on this computer · .*${line.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`));
   }
   // an installed agent keeps its path as the tooltip
   await expect(page.getByTestId("session-agent-claude")).toHaveAttribute("title", "/usr/local/bin/claude");

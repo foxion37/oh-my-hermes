@@ -1,5 +1,5 @@
 // Usability: notifications while omher is in the background, keyboard shortcuts, the risk line on an
-// approval card, and "Soon" tags on features that are not in this version.
+// approval card, and the sidebar's Automations and Plugins rows opening their pages.
 import { expect, test, type Page } from "@playwright/test";
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
@@ -160,12 +160,15 @@ test("a risky command gets a warning line; the buttons stay the same", async ({ 
   expect(order.slice(0, 3)).toEqual(["Deny", "Allow once", "Allow for session"]);
 });
 
-test("features not in this version say Soon", async ({ page }) => {
+test("Automations and Plugins are pages now, not Soon", async ({ page }) => {
   await open(page);
-  for (const id of ["nav-automations", "nav-plugins"]) {
+  for (const [id, page_] of [["nav-automations", "automations"], ["nav-plugins", "plugins"]] as const) {
     const b = page.getByTestId(id);
-    await expect(b).toBeDisabled();
-    await expect(b).toContainText("Soon");
+    await expect(b).toBeEnabled();
+    await expect(b).not.toContainText("Soon");
+    await b.click();
+    await expect(page.getByTestId(page_)).toBeVisible();
+    await expect(b).toHaveAttribute("aria-current", "page");
   }
 });
 
@@ -206,7 +209,15 @@ test("at 900px the header fits: the name ellipsizes, the model gives way, the pa
   const timelineBefore = await page.getByTestId("timeline").evaluate((e) => e.getBoundingClientRect().width);
   await page.getByTestId("who").click();
   await expect(page.getByTestId("details")).toHaveAttribute("aria-hidden", "false");
-  await page.waitForTimeout(400); // the panel slides in
+  // the panel slides in: measure once two reads 80 ms apart agree and it is on screen (a fixed wait raced the slide)
+  await expect
+    .poll(async () => {
+      const a = (await page.getByTestId("details").boundingBox())?.x ?? -1;
+      await page.waitForTimeout(80);
+      const b = (await page.getByTestId("details").boundingBox())?.x ?? -2;
+      return Math.abs(a - b) < 0.5 && b < 900;
+    })
+    .toBe(true);
   const m = await page.evaluate(() => {
     const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
     const head = r('[data-testid="header"]');

@@ -54,8 +54,10 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   for (const name of ["Kami", "Friren", "Hermes"]) await expect(side.getByText(name, { exact: true })).toBeVisible();
   await expect(side.getByText("omher", { exact: true })).toBeVisible();
   for (const nav of ["Settings", "You"]) await expect(side.getByText(nav, { exact: true })).toBeVisible();
-  // not in this version yet: shown, disabled, tagged Soon
-  for (const id of ["nav-automations", "nav-plugins"]) await expect(side.getByTestId(id)).toHaveText(/(Automations|Plugins)Soon/);
+  // Automations (with every bot's job count) and Plugins open their pages
+  await expect(side.getByTestId("nav-automations")).toHaveText("Automations6");
+  await expect(side.getByTestId("nav-plugins")).toHaveText("Plugins");
+  for (const id of ["nav-automations", "nav-plugins"]) await expect(side.getByTestId(id)).toBeEnabled();
   // Kami starts running in the mock -> live ring around its face
   await expect(page.getByTestId("bot-kami").getByTestId("live-ring")).toBeVisible();
   await page.getByLabel("Search bots").fill("fri");
@@ -127,14 +129,15 @@ test("slash shows the skill hint", async ({ page }) => {
   await expect(page.getByTestId("skill-hint")).toHaveCount(0);
 });
 
-test("header right holds only the model pill; name toggles the details column", async ({ page }) => {
+test("header right holds the model pill and the panel button; name toggles the details column", async ({ page }) => {
   await open(page);
   const right = page.getByTestId("head-right");
-  await expect(right.locator(":scope > *")).toHaveCount(1);
+  await expect(right.locator(":scope > *")).toHaveCount(2);
   await expect(right).toContainText("Opus 5.5");
   await expect(right).toContainText("High");
-  // at most one interactive control (the model picker slot renders one button; the fallback none)
-  expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(1);
+  // two controls: the model picker's one button and the panel button
+  expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(2);
+  await expect(right.locator(":scope > *").last()).toHaveAttribute("data-testid", "panel-button");
   const details = page.getByTestId("details");
   expect((await details.boundingBox())?.width ?? 0).toBeLessThan(2);
   await page.getByTestId("who").click();

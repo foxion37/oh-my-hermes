@@ -1,11 +1,12 @@
 import { pickTitle, type TitleSource } from "./titles";
+import { t } from "../i18n";
 
 // The agent programs a session can run, and the pure helpers the sidebar and the session views share.
 // The list is fixed and mirrors `AGENTS` in src-tauri/src/sessions.rs (the shell refuses anything else).
 // `mode` says how a new session opens: `chat` = the agent's structured mode shown as an omher chat,
 // `hermes` = a Hermes chat in the folder (oh-my-hermes, through the bridge), `terminal` = its own TUI.
 
-export type AgentId = "claude" | "codex" | "omh" | "pi" | "omp" | "grok";
+export type AgentId = "claude" | "codex" | "omo" | "dsh" | "omh" | "pi" | "omp" | "grok";
 
 export type AgentMode = "chat" | "hermes" | "terminal";
 
@@ -20,6 +21,8 @@ export interface AgentDef {
 export const AGENTS: readonly AgentDef[] = [
   { id: "claude", program: "claude", label: "Claude Code", mode: "chat" },
   { id: "codex", program: "codex", label: "Codex", mode: "chat" },
+  { id: "omo", program: "omo", label: "OmO", mode: "chat" },
+  { id: "dsh", program: "dsh", label: "DSH", mode: "chat" },
   { id: "omh", program: "omh", label: "oh-my-hermes", mode: "hermes" },
   { id: "pi", program: "pi", label: "pi", mode: "chat" },
   { id: "omp", program: "omp", label: "oh-my-pi", mode: "chat" },
@@ -29,9 +32,9 @@ export const AGENTS: readonly AgentDef[] = [
 /** Tooltip on the session header's Terminal toggle: whether the terminal view continues the same
  *  conversation or starts the agent's own terminal UI fresh. */
 export function terminalNote(agent: AgentId): string {
-  if (agent === "claude") return "Terminal view: Claude Code's own terminal, continuing this conversation (--resume). Back to chat continues it too.";
-  if (agent === "omh") return "Terminal view: starts oh-my-hermes in a new terminal; this chat stays as it is.";
-  return `Terminal view: starts ${agentDef(agent).label} fresh in its own terminal; this chat stays as it is.`;
+  if (agent === "claude") return t("ss.termClaude");
+  if (agent === "omh") return t("ss.termOmh");
+  return t("ss.termFresh", { agent: agentDef(agent).label });
 }
 
 /** The install line for an agent's CLI, shown as text in the new-session menu's "Not installed" tooltip (omher
@@ -39,20 +42,29 @@ export function terminalNote(agent: AgentId): string {
  *  inside the ChatGPT (or Codex) desktop app on macOS is detected. */
 export const INSTALL: Record<AgentId, string> = {
   claude: "npm i -g @anthropic-ai/claude-code",
-  codex: "npm i -g @openai/codex (the Codex bundled in the ChatGPT app is found too)",
+  codex: "npm i -g @openai/codex",
+  omo: "npm i -g omo-ai",
+  dsh: "npm i -g @deepseek-ai/dsh",
   omh: "curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh",
   pi: "npm i -g @mariozechner/pi-coding-agent",
   omp: "npm i -g @oh-my-pi/pi-coding-agent",
   grok: "see grok docs",
 };
 
-/** Tooltip of an agent that is not installed: what is missing, then how to install it. */
+/** Tooltip of an agent that is not installed: what is missing, then how to install it. DSH names DeepSeek Harness
+ *  (another `dsh` on PATH, such as deepseek-bot's, does not count) and its desktop app, which carries the CLI. */
 export function missingNote(agent: AgentId): string {
   const how = INSTALL[agent];
-  return `${agentDef(agent).program} was not found on this computer · ${how.startsWith("see ") ? how : `install: ${how}`}`;
+  const install = how.startsWith("see ") ? t("ss.seeDocs", { agent }) : t("ss.installHow", { cmd: how }) + (agent === "codex" ? t("ss.codexBundled") : agent === "dsh" ? t("ss.dshApp") : "");
+  return t("ss.missing", { program: agent === "dsh" ? "DeepSeek Harness (dsh)" : agentDef(agent).program, how: install });
 }
 
 export const isAgentId = (v: unknown): v is AgentId => typeof v === "string" && AGENTS.some((a) => a.id === v);
+
+/** Agents whose Restart (and Resume) continues the conversation, all of them chats: Claude Code `--resume`, Codex
+ *  `thread/resume`, OmO `--session`, DSH `--session-id` (DeepSeek Harness's own session). pi, oh-my-pi and Grok (a
+ *  terminal) start a new one. */
+export const CONTINUES: readonly AgentId[] = ["claude", "codex", "omo", "dsh"];
 
 export const agentDef = (id: AgentId): AgentDef => AGENTS.find((a) => a.id === id)!;
 
@@ -90,7 +102,9 @@ export function tildePath(path: string, home: string | null): string {
   return path;
 }
 
-export type SessionStatus = "starting" | "running" | "exited" | "failed";
+/** `draft` = a New session chat whose agent and folder can still change: nothing runs until its first message
+ *  (or Start, for an agent that opens in its terminal). */
+export type SessionStatus = "draft" | "starting" | "running" | "exited" | "failed";
 
 export interface SessionRec {
   id: string;
@@ -120,6 +134,9 @@ export interface SessionRec {
   agentTitle?: string;
   /** A short summary of the person's first real message, made here (no model is asked). */
   promptTitle?: string;
+  /** How the account it started with reads (`as work@…`), when Settings › Accounts picked one other than This
+   *  computer: shown under its composer. Display only; `account` is what the shell gets. */
+  startedAs?: string;
 }
 
 /** Live state of a session's chat that the row needs (from the store). */
@@ -156,6 +173,17 @@ export function rowModel(
   ts: number;
 } {
   const label = agentDef(s.agent).label;
+  // a draft: "New session" over the folder it will start in; it has no name yet and nothing runs, so nothing is live
+  if (s.status === "draft")
+    return {
+      title: t("ss.newTitle"),
+      titleSource: "folder",
+      folder: folderName(s.cwd),
+      sub: s.cwd ? tildePath(s.cwd, ctx?.home ?? null) : label,
+      live: false,
+      needsYou: false,
+      ts: s.startedAt / 1000,
+    };
   const alive = s.status === "running" || s.status === "starting";
   const needsYou = alive && !!chat?.needsYou;
   // While running the ring (chat) or the live dot (terminal) says it, and while it waits on the person "waiting" and
@@ -164,14 +192,14 @@ export function rowModel(
     needsYou || s.status === "running"
       ? ""
       : s.paused
-        ? "Paused"
+        ? t("ss.paused")
         : s.status === "starting"
-        ? "Starting…"
+        ? t("ss.starting")
         : s.status === "failed"
-          ? "Could not start"
+          ? t("ss.couldNotStart")
           : s.exitCode === 0 || s.exitCode === null || s.exitCode === undefined
-            ? "Ended"
-            : `Ended · exit ${s.exitCode}`;
+            ? t("ss.ended")
+            : t("ss.endedExit", { code: s.exitCode });
   // A chat is live while a turn runs; a terminal while its program runs.
   const live = s.view === "chat" && chat ? alive && chat.turn : alive;
   const folder = folderName(s.cwd);
@@ -228,4 +256,44 @@ export function recentFolders(list: Recent[]): string[] {
   const out: string[] = [];
   for (const r of [...list].sort((a, b) => b.at - a.at)) if (!out.includes(r.cwd)) out.push(r.cwd);
   return out.slice(0, RECENT_MAX);
+}
+
+// ---- a New session chat (draft) ---------------------------------------------------------------
+
+/** The agent a person used last (newest recent), if any. */
+export function lastAgent(list: Recent[]): AgentId | null {
+  let best: Recent | null = null;
+  for (const r of list) if (!best || r.at > best.at) best = r;
+  return best ? best.agent : null;
+}
+
+/** The SESSIONS + menu's order: the installed agents first, the last one used on top of them, then the rest in
+ *  list order; the agents that are not installed after those, in list order. */
+export function menuOrder(agents: AgentInfo[], list: Recent[]): AgentInfo[] {
+  const last = lastAgent(list);
+  const rank = (a: AgentInfo) => (a.path ? (a.id === last ? 0 : 1) : 2);
+  const at = (a: AgentInfo) => AGENTS.findIndex((d) => d.id === a.id);
+  return agents.filter((a) => isAgentId(a.id)).sort((a, b) => rank(a) - rank(b) || at(a) - at(b));
+}
+
+/** The agent a New session chat starts on: the last one used if it is installed, else the first installed (menu
+ *  order), else the last one used or Claude Code. Before the look-up (`agents` null) the last one used stands. */
+export function draftAgent(list: Recent[], agents: AgentInfo[] | null): AgentId {
+  const last = lastAgent(list);
+  if (!agents) return last ?? AGENTS[0].id;
+  const installed = (id: AgentId) => agents.some((a) => a.id === id && !!a.path);
+  if (last && installed(last)) return last;
+  const first = AGENTS.find((a) => installed(a.id));
+  return first ? first.id : (last ?? AGENTS[0].id);
+}
+
+/** The folder a New session chat starts in: the last folder used, else the home folder ("" until it is known). */
+export function draftFolder(list: Recent[], home: string | null): string {
+  return recentFolders(list)[0] ?? home ?? "";
+}
+
+/** The folder chip's menu: the recent folders (newest first), then the home folder unless it is one of them. */
+export function folderChoices(list: Recent[], home: string | null): { recent: string[]; home: string | null } {
+  const recent = recentFolders(list);
+  return { recent, home: home && !recent.includes(home) ? home : null };
 }

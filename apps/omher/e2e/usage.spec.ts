@@ -67,6 +67,25 @@ test("one mark per provider above the user row; rings only where the source gave
   expect(ops).toContain("usage.read");
 });
 
+
+test("Claude with five logins: the card lists each with only its own record, never a % it did not give", async ({ page }) => {
+  await open(page);
+  await page.getByTestId("usage-claude").hover();
+  const card = page.getByTestId("usage-card");
+  await expect(card.getByTestId("usage-accounts")).toContainText("5 logins");
+  const rows = card.getByTestId("usage-account");
+  await expect(rows).toHaveCount(5);
+  await expect(rows.locator(".uc-who")).toHaveText(["owner@example.com", "ana@example.com", "ben@example.com", "cho@example.com", "team@example.org"]);
+  await expect(rows.first().locator(".uc-state")).toHaveText(/^Limited until (\w{3} )?\d\d:\d\d$/);
+  await expect(rows.nth(1).locator(".uc-state")).toHaveText("No record");
+  await expect(card.getByTestId("usage-accounts")).not.toContainText("%");
+  // the meter itself is unchanged: one Claude mark, no ring (Claude Code gives no %)
+  await expect(page.getByTestId("usage-claude")).toHaveCount(1);
+  await expect(page.getByTestId("usage-claude").locator(".usage-ring")).toHaveCount(0);
+  // Codex has one login: no list
+  await page.getByTestId("usage-codex").hover();
+  await expect(page.getByTestId("usage-card").getByTestId("usage-accounts")).toHaveCount(0);
+});
 test("hover shows the card: plan, then each window with % and reset", async ({ page }) => {
   await open(page);
   await page.getByTestId("usage-codex").hover();
@@ -98,13 +117,13 @@ test("hover shows the card: plan, then each window with % and reset", async ({ p
     }, id);
     expect(Math.abs(caret - mark), id).toBeLessThanOrEqual(1.5);
   }
-  // the card starts on the first mark's edge and covers the nav rows' "Soon" tags whole (never cuts one in half)
-  const [cardBox, first, soon] = await Promise.all([
+  // the card starts on the first mark's edge and covers the nav rows' counts whole (never cuts one in half)
+  const [cardBox, first, count] = await Promise.all([
     page.getByTestId("usage-card").boundingBox(), page.getByTestId("usage-codex").boundingBox(),
-    page.locator("[data-testid=nav-plugins] .nav-soon").boundingBox(),
+    page.locator("[data-testid=nav-automations] .nav-count").boundingBox(),
   ]);
   expect(Math.abs(cardBox!.x - first!.x)).toBeLessThanOrEqual(0.5);
-  expect(cardBox!.x + cardBox!.width).toBeGreaterThanOrEqual(soon!.x + soon!.width);
+  expect(cardBox!.x + cardBox!.width).toBeGreaterThanOrEqual(count!.x + count!.width);
   // moving away closes a hover card; a click pins it until outside click / Escape
   await page.getByTestId("bot-friren").hover();
   await expect(card).toHaveCount(0);

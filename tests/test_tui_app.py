@@ -62,7 +62,9 @@ from omh.tui.app import (
 )
 from omh.tui.gateway import GatewayClient, GatewayUnavailable, ServerRequest, gateway_spawn
 from omh.tui.keys import CHAR, DOWN, ENTER, ESCAPE, LEFT, RIGHT, UP, Key, Mouse, Paste
-from omh.tui.launch import CLOSED_EXIT, FALLBACK_EXIT, FALLBACK_SENTINEL_ENV, SESSION_FILE_ENV
+from omh.tui.launch import (
+    BOTS_HOME_ENV, CLOSED_EXIT, FALLBACK_EXIT, FALLBACK_SENTINEL_ENV, RUNTIME_ENV, RUNTIME_OWN_VALUE, SESSION_FILE_ENV,
+)
 from omh.tui.modes import ACCEPT_LABEL, PLAN_LABEL, info_line
 from omh.tui.screen import CLEAR_SCREEN_AND_SCROLLBACK, ERASE_SCROLLBACK
 from omh.tui.style import Span
@@ -648,6 +650,28 @@ class SessionTests(AppTestCase):
         self.assertEqual((run.terminal.entered, run.terminal.exited), (1, 1))
         # The region is gone after exit; nothing of it is left on the screen.
         self.assertNotIn(BOX_MARK, run.terminal.history())
+
+    def test_the_hud_reads_the_home_the_session_runs_on_even_on_the_tuis_own_runtime(self) -> None:
+        # On its own runtime (`omh theme runtime own`) the session, its state database and the `processes.json`
+        # its background terminals land in all live in the TUI home `HERMES_HOME` names. `BOTS_HOME_ENV` names the
+        # bots' home for the bot board only: a HUD that read it found no process, so no `✳ Waiting…` row stood
+        # over the composer while the session waited on one (the owner's screen, 2026-11-11).
+        for extra, label in (({}, "shared"), ({RUNTIME_ENV: RUNTIME_OWN_VALUE, BOTS_HOME_ENV: "/bots"}, "own")):
+            with self.subTest(runtime=label):
+                run = self.prepare(Scenario("session", spans("session", "startup", "create"), answers=startup_answers()),
+                                   env=extra)
+                run.terminal.script(Step(b"\x04", when=run.terminal.idle, label="the first frame"))
+                homes: list[tuple[str | None, str | None]] = []
+
+                def make_poller(omh_home: str | None, hermes_home: str | None, run: Run = run) -> FakePoller:
+                    homes.append((omh_home, hermes_home))
+                    return run.poller
+
+                run.code = main(run.environ, stdin=TtyStream(), stdout=TtyStream(), stderr=run.stderr,
+                                open_terminal=lambda run=run: run.terminal, make_client=self.make_client(run),
+                                make_poller=make_poller, contain_faults=False)
+                self.assert_clean_run(run)
+                self.assertEqual([home for _omh, home in homes], [str(run.root)])
 
     def test_a_typed_prompt_is_submitted_and_the_reply_lands_in_scrollback(self) -> None:
         prompt = "Reply with exactly the word: ok"
@@ -1705,25 +1729,6 @@ class ShellLineTests(unittest.TestCase):
         _say(stream, "gateway said: \x1b[31mboom\x1b[0m \x1b]8;;http://x\x07link\x1b]8;;\x07")
         self.assertEqual(stream.getvalue(), "gateway said: boom link\n")
 
-class StickyPromptTests(unittest.TestCase):
-    """The sent prompt is echoed above the composer only once it has scrolled off the screen."""
-
-    def app(self, flushed: int, busy: bool = True) -> App:
-        app = App(ScriptedTerminal(rows=20, cols=60), None, {}, poller=FakePoller())  # type: ignore[arg-type]
-        app.sticky = "what changed in the build?"
-        app.turn_pending = busy
-        app.flushed_since_prompt = flushed
-        return app
-
-    def test_no_echo_while_the_prompt_is_still_on_screen(self) -> None:
-        self.assertFalse(self.app(flushed=12)._sticky_needed(12))  # 12 transcript rows above the region
-
-    def test_the_echo_appears_once_the_prompt_has_scrolled_off(self) -> None:
-        self.assertTrue(self.app(flushed=13)._sticky_needed(12))
-
-    def test_no_echo_when_no_turn_is_running(self) -> None:
-        self.assertFalse(self.app(flushed=99, busy=False)._sticky_needed(12))
-
 class ModelChainPickerTests(unittest.TestCase):
     def test_tui_keys_map_to_picker_tokens_and_ctrl_c_ctrl_d_esc_cancel(self) -> None:
         cases = {
@@ -2368,8 +2373,8 @@ class LocalCommandTests(AppTestCase):
         self.assertLess(history.index("┃ ❯ first prompt"), listed)
 
     def test_input_during_a_turn_queues_whatever_the_busy_mode(self) -> None:
-        # Hermes' `display.busy_input_mode` is Hermes' and its bots' business: here Enter during a turn always
-        # queues, so a `steer` or `interrupt` there never redirects or stops the turn from the OMH TUI.
+        # Hermes' `display.busy_input_mode` is Hermes' and its bots' business: a prompt sent before Hermes starts the
+        # turn queues, so a `steer` or `interrupt` there never redirects or stops the turn from the OMH TUI.
         for mode in ("queue", "steer", "interrupt"):
             with self.subTest(mode=mode):
                 run = self.prepare(
@@ -2703,7 +2708,7 @@ class KeyTests(AppTestCase):
         return run.terminal.running
 
     def test_esc_with_a_draft_interrupts_the_turn_and_keeps_the_draft(self) -> None:
-        # Enter queues during a turn, so Esc is the one-key stop, as in Claude Code: with a draft typed too.
+        # Enter never interrupts a turn, so Esc is the one-key stop, as in Claude Code: with a draft typed too.
         run = self.interrupted_run()
         terminal = run.terminal
         terminal.script(
@@ -2731,8 +2736,9 @@ class KeyTests(AppTestCase):
                 terminal.typed_during_query = answer  # what `Terminal.query_background` hands back
                 said = SEND_NOW_HINT.format(key=key)
                 terminal.script(
-                    self.submit(run, prompt),  # legacy bytes only: no key arrives as a report
-                    Step(b"then stop\r", when=self.running(run), label="running"),
+                    # One read: the second line lands before Hermes starts the turn, which Enter cannot steer yet, so
+                    # it queues (legacy bytes only: no key arrives as a report).
+                    Step(TYPED_AHEAD + prompt.encode() + b"\rthen stop\r", when=terminal.idle, label="the idle info line"),
                     Step(b"\x03", when=terminal.shows(said), capture="queued", label="queued"),
                     # The interrupt brings the queued prompt back into the composer: clear it, then leave.
                     Step(b"\x15\x04", when=lambda: "Interrupted." in terminal.history(), label="end"),

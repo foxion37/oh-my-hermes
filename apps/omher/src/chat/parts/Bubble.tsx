@@ -1,11 +1,12 @@
 import { memo, type ReactNode } from "react";
 import type { MessageItem } from "../../state/store";
-import { Avatar, SourceIcon } from "../../ui";
+import { Avatar, LiveRing, SourceIcon } from "../../ui";
 import { Markdown } from "./Markdown";
 import { MediaList } from "./Media";
 import { splitMedia } from "./mediaLines";
 import { SentFiles } from "./Attach";
 import { SkillText } from "./Skills";
+import { t } from "../../i18n";
 
 /** Messenger bubble, filled on both sides. Bot text renders markdown; user text stays plain. Files the bot
  * sent (`MEDIA:` lines) leave the text and show under it in the same column as the bubble, in order; while
@@ -17,6 +18,7 @@ export const Bubble = memo(function Bubble({
   bot,
   face,
   faceEl,
+  live,
 }: {
   item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "sent">;
   streaming?: boolean;
@@ -25,6 +27,8 @@ export const Bubble = memo(function Bubble({
   face?: boolean;
   /** Drawn in the face column instead of the bot's picture (a SESSIONS chat's agent mark). */
   faceEl?: ReactNode;
+  /** The answer being written: its face wears the live ring (the bot is still working). */
+  live?: boolean;
 }) {
   if (item.kind === "user") {
     return (
@@ -37,22 +41,30 @@ export const Bubble = memo(function Bubble({
         {item.files?.length ? <SentFiles files={item.files} /> : null}
         {item.reply && (
           <div className="msg-reply" data-testid="bubble-reply">
-            Reply target <SourceIcon source={item.reply.source} size={11} /> {item.reply.label}
+            {t("bub.replyTarget")} <SourceIcon source={item.reply.source} size={11} /> {item.reply.label}
           </div>
         )}
-        {item.error && <div className="msg-err">Not sent · {item.error}</div>}
+        {item.error && <div className="msg-err">{t("bub.notSent", { error: item.error })}</div>}
       </div>
     );
   }
   const { text, paths } = splitMedia(item.text);
+  const faceNode =
+    bot &&
+    (faceEl ? (
+      <span className={`msg-face${face === false ? " blank" : ""}`}>{faceEl}</span>
+    ) : (
+      <Avatar bot={bot} size={28} className={`msg-face${face === false ? " blank" : ""}`} />
+    ));
   return (
     <div className={`msg a${streaming ? " streaming" : ""}${bot ? " face" : ""}`} data-testid={streaming ? "bubble-streaming" : "bubble-bot"}>
-      {bot &&
-        (faceEl ? (
-          <span className={`msg-face${face === false ? " blank" : ""}`}>{faceEl}</span>
-        ) : (
-          <Avatar bot={bot} size={28} className={`msg-face${face === false ? " blank" : ""}`} />
-        ))}
+      {bot && live && face !== false ? (
+        <LiveRing on size={28} gap={3} testId="face-ring" seed={bot}>
+          {faceNode}
+        </LiveRing>
+      ) : (
+        faceNode
+      )}
       {/* one column beside the face: the caption, then the files under it, both on the bubble's left edge */}
       <div className="msg-col">
         {(text || streaming || paths.length === 0) && (

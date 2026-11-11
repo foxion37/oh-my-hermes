@@ -10,6 +10,8 @@
 //!   `item/commandExecution/requestApproval`, `turn/interrupt`).
 //! - pi and oh-my-pi: `--mode rpc`, JSONL commands, responses and events (`prompt`, `abort`,
 //!   `extension_ui_request` dialogs).
+//! - DSH (DeepSeek Harness): one `dsh --profile headless --json` run per message, continued by `--session-id`
+//!   ([`crate::dsh_chat`]).
 //!
 //! The UI sends only an agent id, a folder and chat input; the program and its arguments come from the
 //! allow-list. Closing the session (or quitting the app) stops the program.
@@ -28,13 +30,17 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use crate::dsh_chat::DshChat;
+use crate::session_files;
 use crate::sessions::{agent, chat_args, coalesce, is_uuid, launch_for, resume_args, signal_group, Mode, COALESCE_BYTES, COALESCE_WINDOW, INPUT_QUEUE};
 
-/// What the person did in the chat. Mirrors `ChatInput` in src/sessions/host.ts.
+/// What the person did in the chat. Mirrors `ChatInput` in src/sessions/host.ts. A message's `images` are the
+/// saved copies (`session_files`) of the pictures the person attached, for the agent's own image input; any other
+/// file is already named in `text` by its saved copy's path.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Input {
-    Send { text: String },
+    Send { text: String, #[serde(default)] images: Vec<Picture> },
     Interrupt,
     Approve { request_id: String, choice: String },
     /// A string, or per-question answers (`{qid: text|null}`) for several questions at once.
@@ -42,11 +48,47 @@ pub enum Input {
     Model { model: String },
 }
 
+impl Input {
+    /// Check that every attached picture is a file omher saved for a session (`session_files::check`) that an
+    /// agent's image input takes, and read it. Nothing outside omher's own folder is read.
+    pub fn resolve(&mut self, home: &Path) -> Result<(), String> {
+        let Input::Send { images, .. } = self else { return Ok(()) };
+        for p in images.iter_mut() {
+            let real = session_files::check(home, &p.path)?;
+            let mime = session_files::image_mime(&p.path).ok_or_else(|| format!("not a picture: {}", p.path))?;
+            let bytes = std::fs::read(&real).map_err(|e| e.to_string())?;
+            if bytes.len() as u64 > session_files::INLINE_MAX {
+                return Err("picture over 5 MB".into());
+            }
+            p.path = real.to_string_lossy().into_owned();
+            p.mime = mime.into();
+            p.data = session_files::base64(&bytes);
+        }
+        Ok(())
+    }
+}
+
+/// A picture the person attached: its saved copy's path (from the UI) and, once [`Input::resolve`] read it, its type
+/// and bytes (base64) for an agent that takes pictures inline.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub struct Picture {
+    pub path: String,
+    pub mime: String,
+    pub data: String,
+}
+
+impl From<String> for Picture {
+    fn from(path: String) -> Picture {
+        Picture { path, ..Picture::default() }
+    }
+}
+
 /// Events for the UI: the bot chat's own event names (`turn.start`, `tool.start`, `delta`, `message`,
 /// `approval.request`, `turn.end`, …) plus `session.info` (agent session id, model) and `session.models`.
 pub type Event = Value;
 
-fn ev(name: &str, fields: Value) -> Event {
+pub(crate) fn ev(name: &str, fields: Value) -> Event {
     let mut m = Map::new();
     m.insert("event".into(), Value::String(name.into()));
     if let Value::Object(f) = fields {
@@ -95,7 +137,8 @@ pub fn adapter_for(id: &str, cwd: &str, resume: Option<&str>) -> Option<Box<dyn 
     match id {
         "claude" => Some(Box::new(Claude::new(cwd))),
         "codex" => Some(Box::new(Codex::new(cwd, resume))),
-        "pi" | "omp" => Some(Box::new(Pi::new(cwd, label))),
+        // OmO speaks pi's RPC (senpi engine): the same adapter, under its own name
+        "pi" | "omp" | "omo" => Some(Box::new(Pi::new(cwd, label))),
         _ => None,
     }
 }
@@ -104,11 +147,11 @@ pub fn adapter_for(id: &str, cwd: &str, resume: Option<&str>) -> Option<Box<dyn 
 // Shared helpers
 // ---------------------------------------------------------------------------------------------
 
-fn s(v: &Value, k: &str) -> String {
+pub(crate) fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-fn clip(t: &str, n: usize) -> String {
+pub(crate) fn clip(t: &str, n: usize) -> String {
     let one = t.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() <= n {
         one
@@ -198,8 +241,6 @@ fn unwrap_shell(cmd: &str) -> String {
     body.to_string()
 }
 
-/// The first useful line of what a program wrote to stderr: log lines (`2026-11-10T05:09:59Z ERROR …`) and
-/// blank lines skipped, else the last line.
 /// How a turn ends when its program exits in the middle of it: a clean exit (code 0, nothing on stderr) is
 /// "ended", which the UI shows in grey; any other exit is an "error" carrying the reason.
 pub(crate) fn exit_turn_end(code: Option<i32>, err: &str) -> Value {
@@ -210,10 +251,38 @@ pub(crate) fn exit_turn_end(code: Option<i32>, err: &str) -> Value {
     ev("turn.end", json!({"outcome": "error", "error": e}))
 }
 
+/// The first useful line of what a program wrote to stderr: colour codes removed, warnings dropped (`Warning: …`,
+/// a `WARN`/`INFO` log line, Codex's "ignoring 1 unrecognized configuration setting"), then the first line that
+/// is not a log line (`2026-11-10T05:09:59Z ERROR …`), else the last log line, else nothing.
 pub(crate) fn exit_reason(tail: &str) -> String {
     let is_log = |l: &str| l.len() > 11 && l.as_bytes()[..4].iter().all(u8::is_ascii_digit) && l.as_bytes()[4] == b'-' && l.as_bytes()[10] == b'T';
-    let lines: Vec<&str> = tail.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let warning = |l: &str| {
+        let low = l.to_ascii_lowercase();
+        low.starts_with("warning:") || low.starts_with("warn:") || (is_log(l) && [" WARN ", " INFO ", " DEBUG ", " TRACE "].iter().any(|w| l.contains(w))) || low.contains("unrecognized configuration setting")
+    };
+    let lines: Vec<String> = tail.lines().map(|l| strip_ansi(l).trim().to_string()).filter(|l| !l.is_empty() && !warning(l)).collect();
     lines.iter().find(|l| !is_log(l)).or(lines.last()).map(|l| clip(l, 200)).unwrap_or_default()
+}
+
+/// `text` without terminal colour and cursor codes (`ESC [ … letter`).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' {
+            if it.peek() == Some(&'[') {
+                it.next();
+                for d in it.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// What a tool call is about, for the progress line and the approval card: the command, path, pattern,
@@ -250,7 +319,7 @@ fn tool_detail(input: &Value) -> String {
 }
 
 /// The bot chat's tool names for the verbs on the progress line ("Running", "Reading", "Editing" …).
-fn tool_kind(name: &str) -> &str {
+pub(crate) fn tool_kind(name: &str) -> &str {
     match name.to_ascii_lowercase().as_str() {
         "bash" | "shell" | "exec" | "exec_command" | "local_shell" | "powershell" | "eval" => "terminal",
         "read" | "notebookread" | "view" => "read_file",
@@ -290,7 +359,7 @@ fn file_call_detail(input: &Value, cwd: &str) -> String {
 }
 
 /// The progress-line detail of a tool call: the diff summary for file tools, else the command / path / query.
-fn call_detail(name: &str, input: &Value, cwd: &str) -> String {
+pub(crate) fn call_detail(name: &str, input: &Value, cwd: &str) -> String {
     if tool_kind(name) == "patch" {
         file_call_detail(input, cwd)
     } else {
@@ -557,7 +626,10 @@ impl Adapter for Claude {
                                 st.emit(ev("delta", json!({"text": t})));
                             }
                         }
-                        "thinking_delta" => st.emit(ev("thinking", json!({}))),
+                        "thinking_delta" => {
+                            self.begin(&mut st, true);
+                            st.emit(ev("thinking", json!({})));
+                        }
                         _ => {}
                     }
                 }
@@ -643,12 +715,20 @@ impl Adapter for Claude {
     fn on_input(&mut self, input: Input) -> Result<Step, String> {
         let mut st = Step::default();
         match input {
-            Input::Send { text } => {
+            Input::Send { text, images } => {
                 self.begin(&mut st, false);
                 // the person's message joins a turn Claude Code started itself: it is theirs now
                 self.auto_turn = false;
+                // pictures as Claude Code's own image content (stream-json: an Anthropic base64 image block)
+                let mut content: Vec<Value> = images
+                    .iter()
+                    .map(|p| json!({"type": "image", "source": {"type": "base64", "media_type": p.mime, "data": p.data}}))
+                    .collect();
+                if !text.is_empty() || content.is_empty() {
+                    content.push(json!({"type": "text", "text": text}));
+                }
                 st.out(json!({"type": "user", "session_id": "", "parent_tool_use_id": null,
-                              "message": {"role": "user", "content": [{"type": "text", "text": text}]}}));
+                              "message": {"role": "user", "content": content}}));
             }
             Input::Interrupt => self.control(&mut st, "interrupt", json!({"subtype": "interrupt"})),
             Input::Approve { request_id, choice } => {
@@ -727,13 +807,15 @@ pub struct Codex {
     model: Option<String>,
     model_id: String,
     labels: HashMap<String, String>,
-    queued: Vec<String>,
+    queued: Vec<(String, Vec<Picture>)>,
     /// open approvals and questions by our request id
     pending: HashMap<String, CodexAsk>,
     /// diff summaries of fileChange items, shown on their approval card
     changes: HashMap<String, String>,
     /// the last error notification was a 401 (not signed in)
     unauthorized: bool,
+    /// Stop was pressed before Codex named the turn: interrupt it as soon as it does
+    stop_asked: bool,
 }
 
 const CODEX_SIGNED_OUT: &str = "Codex is not signed in. Sign in from Settings › Accounts (or run `codex login`), then Restart.";
@@ -755,6 +837,7 @@ impl Codex {
             pending: HashMap::new(),
             changes: HashMap::new(),
             unauthorized: false,
+            stop_asked: false,
         }
     }
     fn call(&mut self, st: &mut Step, method: &'static str, params: Value) {
@@ -762,9 +845,14 @@ impl Codex {
         self.calls.insert(self.seq, method);
         st.out(json!({"id": self.seq, "method": method, "params": params}));
     }
-    fn turn_start(&mut self, st: &mut Step, text: String) {
+    fn turn_start(&mut self, st: &mut Step, text: String, images: &[Picture]) {
         let thread = self.thread.clone().unwrap_or_default();
-        let mut p = json!({"threadId": thread, "input": [{"type": "text", "text": text}]});
+        // pictures as app-server `localImage` items: Codex reads the saved copy itself
+        let mut input: Vec<Value> = images.iter().map(|p| json!({"type": "localImage", "path": p.path})).collect();
+        if !text.is_empty() || input.is_empty() {
+            input.push(json!({"type": "text", "text": text}));
+        }
+        let mut p = json!({"threadId": thread, "input": input});
         if let Some(m) = &self.model {
             p["model"] = Value::String(m.clone());
         }
@@ -773,7 +861,16 @@ impl Codex {
     fn label(&self, model: &str) -> String {
         self.labels.get(model).cloned().unwrap_or_else(|| model.to_string())
     }
+    /// Codex named the running turn: a Stop pressed before that interrupts it now.
+    fn named(&mut self, st: &mut Step, turn: &str) {
+        self.turn_id = Some(turn.into());
+        if std::mem::take(&mut self.stop_asked) && self.turn {
+            let thread = self.thread.clone().unwrap_or_default();
+            self.call(st, "turn/interrupt", json!({"threadId": thread, "turnId": turn}));
+        }
+    }
     fn end(&mut self, st: &mut Step, outcome: &str, error: Option<String>) {
+        self.stop_asked = false;
         if self.turn {
             self.turn = false;
             self.turn_id = None;
@@ -881,13 +978,13 @@ impl Adapter for Codex {
                         f["title"] = Value::String(name);
                     }
                     st.emit(ev("session.info", f));
-                    for text in std::mem::take(&mut self.queued) {
-                        self.turn_start(&mut st, text);
+                    for (text, images) in std::mem::take(&mut self.queued) {
+                        self.turn_start(&mut st, text, &images);
                     }
                 }
                 "turn/start" => {
                     if let Some(t) = r["turn"].get("id").and_then(Value::as_str) {
-                        self.turn_id = Some(t.into());
+                        self.named(&mut st, t);
                     }
                 }
                 "model/list" => {
@@ -956,12 +1053,12 @@ impl Adapter for Codex {
                 }
             }
             "turn/started" => {
-                if let Some(t) = p["turn"].get("id").and_then(Value::as_str) {
-                    self.turn_id = Some(t.into());
-                }
                 if !self.turn {
                     self.turn = true;
                     st.emit(ev("turn.start", json!({})));
+                }
+                if let Some(t) = p["turn"].get("id").and_then(Value::as_str) {
+                    self.named(&mut st, t);
                 }
             }
             "item/agentMessage/delta" => {
@@ -1053,11 +1150,15 @@ impl Adapter for Codex {
                 if info.to_string().contains("\"httpStatusCode\":401") {
                     self.unauthorized = true;
                 }
+                // a status shows only while a turn runs; outside one an error is a note under the chat
                 if p.get("willRetry").and_then(Value::as_bool).unwrap_or(false) {
                     // "Reconnecting... 2/5": say it on the progress line instead of a silent wait
-                    st.emit(ev("status", json!({"text": clip(&s(e, "message"), 120)})));
+                    if self.turn {
+                        st.emit(ev("status", json!({"text": clip(&s(e, "message"), 120)})));
+                    }
                 } else if !self.unauthorized {
-                    st.emit(ev("status", json!({"text": clip(&format!("Error: {}", s(e, "message")), 160)})));
+                    let text = clip(&format!("Error: {}", s(e, "message")), 160);
+                    st.emit(if self.turn { ev("status", json!({"text": text})) } else { ev("session.error", json!({"message": text})) });
                 }
             }
             _ => {}
@@ -1068,21 +1169,28 @@ impl Adapter for Codex {
     fn on_input(&mut self, input: Input) -> Result<Step, String> {
         let mut st = Step::default();
         match input {
-            Input::Send { text } => {
+            Input::Send { text, images } => {
                 if !self.turn {
                     self.turn = true;
                     st.emit(ev("turn.start", json!({})));
                 }
                 if self.thread.is_none() {
-                    self.queued.push(text);
+                    self.queued.push((text, images));
                 } else {
-                    self.turn_start(&mut st, text);
+                    self.turn_start(&mut st, text, &images);
                 }
             }
-            Input::Interrupt => {
-                let (Some(thread), Some(turn)) = (self.thread.clone(), self.turn_id.clone()) else { return Err("nothing is running".into()) };
-                self.call(&mut st, "turn/interrupt", json!({"threadId": thread, "turnId": turn}));
-            }
+            Input::Interrupt => match (self.thread.clone(), self.turn_id.clone()) {
+                (Some(thread), Some(turn)) => self.call(&mut st, "turn/interrupt", json!({"threadId": thread, "turnId": turn})),
+                _ if !self.turn => return Err("nothing is running".into()),
+                // the message still waits for the thread: it is never sent
+                (None, _) => {
+                    self.queued.clear();
+                    self.end(&mut st, "interrupted", None);
+                }
+                // sent, but Codex has not named the turn yet
+                (Some(_), None) => self.stop_asked = true,
+            },
             Input::Approve { request_id, choice } => {
                 let rpc_id = match self.pending.remove(&request_id) {
                     Some(CodexAsk::Command(id)) | Some(CodexAsk::File(id)) => id,
@@ -1120,7 +1228,7 @@ impl Adapter for Codex {
                                 self.turn = true;
                                 st.emit(ev("turn.start", json!({})));
                             }
-                            self.turn_start(&mut st, text);
+                            self.turn_start(&mut st, text, &[]);
                         }
                     }
                 }
@@ -1339,7 +1447,14 @@ impl Adapter for Pi {
             }
             // Both end a run with agent_end. oh-my-pi then adds prompt_result and session_settled, which can arrive
             // after the person's next prompt was sent, so they never end a turn, except a prompt no agent ran for.
-            "agent_end" => self.end(&mut st),
+            "agent_end" => {
+                // a Stop that hit a running tool leaves the last message at stopReason "toolUse": agent_end itself
+                // says the run was aborted
+                if v.get("aborted").and_then(Value::as_bool) == Some(true) {
+                    self.last_stop = "aborted".into();
+                }
+                self.end(&mut st)
+            }
             "prompt_result" if v.get("agentInvoked").and_then(Value::as_bool) == Some(false) => self.end(&mut st),
             "extension_ui_request" => {
                 let id = s(&v, "id");
@@ -1374,9 +1489,10 @@ impl Adapter for Pi {
                             st.emit(ev("prompt.expired", json!({"request_id": target, "reason": "timeout"})));
                         }
                     }
+                    // OmO sets its own statuses (memory, goal, web search) after agent_end too: those are not a turn
                     "setStatus" => {
                         let t = s(&v, "statusText");
-                        if !t.is_empty() {
+                        if !t.is_empty() && self.turn {
                             st.emit(ev("status", json!({"text": clip(&t, 120)})));
                         }
                     }
@@ -1391,8 +1507,12 @@ impl Adapter for Pi {
     fn on_input(&mut self, input: Input) -> Result<Step, String> {
         let mut st = Step::default();
         match input {
-            Input::Send { text } => {
+            Input::Send { text, images } => {
                 let mut f = json!({"message": text});
+                // pictures as the rpc prompt's own `images` (ImageContent: base64 data and its type)
+                if !images.is_empty() {
+                    f["images"] = images.iter().map(|p| json!({"type": "image", "data": p.data, "mimeType": p.mime})).collect();
+                }
                 if self.streaming {
                     f["streamingBehavior"] = Value::String("followUp".into());
                 }
@@ -1473,6 +1593,8 @@ struct ChatLive {
 #[derive(Default)]
 pub struct ChatSessions {
     live: Mutex<HashMap<u32, ChatLive>>,
+    /// DSH chats: no process between messages, a run per message ([`DshChat`])
+    dsh: Mutex<HashMap<u32, DshChat>>,
     next: AtomicU32,
 }
 
@@ -1549,6 +1671,7 @@ fn command_for(argv: &[OsString], cwd: &Path, path_env: Option<OsString>, accoun
     for (k, v) in account_env {
         cmd.env(k, v);
     }
+    crate::appimage::host_env(&mut cmd);
     Ok(cmd)
 }
 
@@ -1557,8 +1680,8 @@ impl ChatSessions {
         Arc::new(ChatSessions::default())
     }
 
-    /// Start allow-listed agent `agent_id` in its chat mode in `cwd`. `resume` (Claude Code only) continues
-    /// that conversation. `account_env` is `accounts::session_env` for that agent, as for a terminal session:
+    /// Start allow-listed agent `agent_id` in its chat mode in `cwd`. `resume` (Claude Code, Codex, OmO)
+    /// continues that conversation. `account_env` is `accounts::session_env` for that agent, as for a terminal session:
     /// the chosen account's home variable, or nothing. Anything not on the allow-list, or without a chat
     /// mode, is refused before a process exists.
     pub fn start_agent<F>(&self, agent_id: &str, cwd: &Path, resume: Option<&str>, account_env: &[(String, String)], sink: F) -> Result<u32, String>
@@ -1568,6 +1691,13 @@ impl ChatSessions {
         let a = agent(agent_id).ok_or_else(|| format!("unknown agent \"{agent_id}\""))?;
         if a.mode != Mode::Chat {
             return Err(format!("{} has no chat mode", a.label));
+        }
+        if agent_id == "dsh" {
+            // DeepSeek Harness: `resume` is the `session-<uuid>` it reported (resume_args checks it)
+            let chat = DshChat::start(cwd, resume, sink)?;
+            let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+            self.dsh.lock().unwrap().insert(id, chat);
+            return Ok(id);
         }
         let args = chat_args(agent_id).ok_or("no chat mode")?;
         // Codex continues a thread over its own protocol (`thread/resume`), not by an argument; the id must
@@ -1681,8 +1811,10 @@ impl ChatSessions {
                 done.store(true, Ordering::SeqCst);
             });
         }
+        // set once stderr reached its end: the exit reason is read from all of it
+        let err_done = Arc::new(AtomicBool::new(false));
         {
-            let tail = tail.clone();
+            let (tail, err_done) = (tail.clone(), err_done.clone());
             thread::spawn(move || {
                 let mut r = stderr;
                 let mut buf = [0u8; 4096];
@@ -1698,10 +1830,12 @@ impl ChatSessions {
                         t.drain(..cut);
                     }
                 }
+                err_done.store(true, Ordering::SeqCst);
             });
         }
         {
             let (child, exited, sink, adapter, done) = (child.clone(), exited.clone(), sink.clone(), adapter.clone(), reader_done.clone());
+            let err_done = err_done.clone();
             thread::spawn(move || {
                 let code = loop {
                     if let Ok(Some(st)) = child.lock().unwrap().try_wait() {
@@ -1710,9 +1844,9 @@ impl ChatSessions {
                     thread::sleep(Duration::from_millis(40));
                 };
                 exited.store(true, Ordering::SeqCst);
-                // let the reader hand over what the program printed last
+                // let the readers hand over what the program printed last (stdout's events, stderr's reason)
                 let deadline = Instant::now() + Duration::from_millis(800);
-                while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
+                while !(done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst)) && Instant::now() < deadline {
                     thread::sleep(Duration::from_millis(10));
                 }
                 let (mid_turn, err) = {
@@ -1735,6 +1869,10 @@ impl ChatSessions {
 
     /// One thing the person did in chat `id`.
     pub fn input(&self, id: u32, input: Input) -> Result<(), String> {
+        let dsh = self.dsh.lock().unwrap().get(&id).cloned();
+        if let Some(chat) = dsh {
+            return chat.input(input);
+        }
         let (adapter, stdin, sink) = {
             let g = self.live.lock().unwrap();
             let s = g.get(&id).ok_or("no such session")?;
@@ -1748,6 +1886,9 @@ impl ChatSessions {
 
     /// Stop the program (stdin closed, then hang-up, then a hard kill after a grace period) and forget it.
     pub fn close(&self, id: u32) {
+        if let Some(chat) = self.dsh.lock().unwrap().remove(&id) {
+            thread::spawn(move || chat.stop(Duration::from_millis(1500)));
+        }
         let live = self.live.lock().unwrap().remove(&id);
         if let Some(s) = live {
             thread::spawn(move || stop(s, Duration::from_millis(1500)));
@@ -1756,7 +1897,9 @@ impl ChatSessions {
 
     pub fn close_all(&self) {
         let all: Vec<ChatLive> = self.live.lock().unwrap().drain().map(|(_, s)| s).collect();
-        let handles: Vec<_> = all.into_iter().map(|s| thread::spawn(move || stop(s, Duration::from_millis(400)))).collect();
+        let dsh: Vec<DshChat> = self.dsh.lock().unwrap().drain().map(|(_, c)| c).collect();
+        let mut handles: Vec<_> = all.into_iter().map(|s| thread::spawn(move || stop(s, Duration::from_millis(400)))).collect();
+        handles.extend(dsh.into_iter().map(|c| thread::spawn(move || c.stop(Duration::from_millis(400)))));
         for h in handles {
             let _ = h.join();
         }
@@ -1764,7 +1907,7 @@ impl ChatSessions {
 
     #[cfg(test)]
     pub fn count(&self) -> usize {
-        self.live.lock().unwrap().len()
+        self.live.lock().unwrap().len() + self.dsh.lock().unwrap().len()
     }
 }
 
@@ -1801,6 +1944,13 @@ fn stop(s: ChatLive, grace: Duration) {
 mod tests {
     use super::*;
 
+    impl Input {
+        /// A message with text only.
+        pub fn send(text: impl Into<String>) -> Input {
+            Input::Send { text: text.into(), images: vec![] }
+        }
+    }
+
     fn fixture(name: &str) -> Vec<String> {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name);
         std::fs::read_to_string(p).unwrap().lines().filter(|l| !l.trim().is_empty()).map(String::from).collect()
@@ -1834,7 +1984,7 @@ mod tests {
         let init: Value = serde_json::from_str(&st.write[0]).unwrap();
         assert_eq!(init["type"], "control_request");
         assert_eq!(init["request"]["subtype"], "initialize");
-        let st = c.on_input(Input::Send { text: "say hi".into() }).unwrap();
+        let st = c.on_input(Input::send("say hi")).unwrap();
         assert_eq!(names(&st.events), ["turn.start"]);
         let msg: Value = serde_json::from_str(&st.write[0]).unwrap();
         assert_eq!(msg["type"], "user");
@@ -1846,7 +1996,7 @@ mod tests {
     fn claude_say_hi_streams_deltas_then_one_message_then_done() {
         let mut c = Claude::default();
         c.start();
-        c.on_input(Input::Send { text: "say hi".into() }).unwrap();
+        c.on_input(Input::send("say hi")).unwrap();
         let st = run(&mut c, &fixture("claude-hi.jsonl"));
         let info = st.events.iter().find(|e| s(e, "event") == "session.info").unwrap();
         assert_eq!(s(info, "agent_session"), "eee5079a-c52e-4526-b633-f3d8cb7d6394");
@@ -1862,7 +2012,7 @@ mod tests {
     fn claude_approval_round_trip_from_a_real_write_tool_call() {
         let mut c = Claude::new("/w/t14");
         c.start();
-        c.on_input(Input::Send { text: "write note.txt".into() }).unwrap();
+        c.on_input(Input::send("write note.txt")).unwrap();
         let lines = fixture("claude-approve.jsonl");
         let at = lines.iter().position(|l| l.contains("\"can_use_tool\"")).unwrap();
         let st = run(&mut c, &lines[..=at]);
@@ -1916,7 +2066,7 @@ mod tests {
     fn claude_esc_sends_its_own_interrupt_and_the_turn_ends_interrupted() {
         let mut c = Claude::default();
         c.start();
-        c.on_input(Input::Send { text: "write a long story".into() }).unwrap();
+        c.on_input(Input::send("write a long story")).unwrap();
         let st = c.on_input(Input::Interrupt).unwrap();
         let req: Value = serde_json::from_str(&st.write[0]).unwrap();
         assert_eq!(req["type"], "control_request");
@@ -1943,7 +2093,7 @@ mod tests {
     #[test]
     fn claude_ignores_subagent_text_and_ends_errors_with_the_reason() {
         let mut c = Claude::default();
-        c.on_input(Input::Send { text: "x".into() }).unwrap();
+        c.on_input(Input::send("x")).unwrap();
         let st = c.on_line(r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"id":"m","content":[{"type":"text","text":"inner"}]}}"#);
         assert!(st.events.is_empty());
         let st = c.on_line(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"error","errors":["API Error: 529 overloaded"]}"#);
@@ -1960,7 +2110,7 @@ mod tests {
         assert_eq!((init["id"].as_u64(), s(&init, "method")), (Some(1), "initialize".to_string()));
         assert_eq!(init["params"]["clientInfo"]["name"], "omher");
         // text typed before the thread exists waits for it
-        let st = x.on_input(Input::Send { text: "run the tests".into() }).unwrap();
+        let st = x.on_input(Input::send("run the tests")).unwrap();
         assert_eq!(names(&st.events), ["turn.start"]);
         assert!(st.write.is_empty());
 
@@ -1999,7 +2149,7 @@ mod tests {
         let mut x = Codex::new("/w", None);
         x.start();
         run(&mut x, &fixture("codex-turn.jsonl")[..2]);
-        x.on_input(Input::Send { text: "go".into() }).unwrap();
+        x.on_input(Input::send("go")).unwrap();
         x.on_line(r#"{"method":"turn/started","params":{"threadId":"thr_1","turn":{"id":"turn_9","status":"inProgress","items":[]}}}"#);
         let st = x.on_input(Input::Interrupt).unwrap();
         let req: Value = serde_json::from_str(&st.write[0]).unwrap();
@@ -2026,7 +2176,7 @@ mod tests {
         let st = p.start();
         let w: Vec<Value> = st.write.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!((s(&w[0], "type"), s(&w[1], "type")), ("get_state".into(), "get_available_models".into()));
-        let st = p.on_input(Input::Send { text: "list the ts files".into() }).unwrap();
+        let st = p.on_input(Input::send("list the ts files")).unwrap();
         let cmd: Value = serde_json::from_str(&st.write[0]).unwrap();
         assert_eq!((s(&cmd, "type"), s(&cmd, "message")), ("prompt".into(), "list the ts files".into()));
         assert_eq!(names(&st.events), ["turn.start"]);
@@ -2044,7 +2194,7 @@ mod tests {
     #[test]
     fn pi_dialogs_become_cards_and_abort_is_its_interrupt() {
         let mut p = Pi::default();
-        p.on_input(Input::Send { text: "x".into() }).unwrap();
+        p.on_input(Input::send("x")).unwrap();
         let st = p.on_line(r#"{"type":"extension_ui_request","id":"u1","method":"confirm","title":"Run rm -rf dist?","message":"bash: rm -rf dist"}"#);
         assert_eq!(st.events[0]["choices"], json!(["deny", "once"]));
         let ans: Value = serde_json::from_str(&p.on_input(Input::Approve { request_id: "u1".into(), choice: "deny".into() }).unwrap().write[0]).unwrap();
@@ -2061,7 +2211,7 @@ mod tests {
         // oh-my-pi's prompt_result for a run that already ended draws nothing; for a prompt no agent ran (a
         // command it handled itself) it ends the turn
         assert!(p.on_line(r#"{"type":"prompt_result","id":"omher-3","agentInvoked":true}"#).events.is_empty());
-        p.on_input(Input::Send { text: "y".into() }).unwrap();
+        p.on_input(Input::send("y")).unwrap();
         let st = p.on_line(r#"{"type":"prompt_result","id":"omher-9","agentInvoked":false}"#);
         assert_eq!(s(&st.events[0], "outcome"), "done");
         let m: Value = serde_json::from_str(&p.on_input(Input::Model { model: "anthropic/claude-x".into() }).unwrap().write[0]).unwrap();
@@ -2070,14 +2220,16 @@ mod tests {
 
     #[test]
     fn only_chat_agents_have_adapters() {
-        for id in ["claude", "codex", "pi", "omp"] {
+        for id in ["claude", "codex", "omo", "pi", "omp"] {
             assert!(adapter_for(id, "/w", None).is_some(), "{id}");
         }
-        for id in ["omh", "grok", "sh", ""] {
+        // DSH has no adapter: its chat is a run per message (dsh_chat)
+        for id in ["omh", "grok", "dsh", "sh", ""] {
             assert!(adapter_for(id, "/w", None).is_none(), "{id}");
         }
         let c = ChatSessions::default();
         let tmp = std::env::temp_dir();
+        assert!(c.start_agent("dsh", &tmp, Some("eee5079a-c52e-4526-b633-f3d8cb7d6394"), &[], |_| {}).is_err());
         for bad in ["omh", "grok", "/bin/sh", "claude -p"] {
             assert!(c.start_agent(bad, &tmp, None, &[], |_| {}).is_err(), "{bad}");
         }
@@ -2117,7 +2269,7 @@ mod tests {
         let script = format!("read l; printf '%s\\n' \"$l\" > '{}'; cat '{}'; trap '' HUP; while :; do sleep 1; done", mark.display(), fx.display());
         let (out, sink) = collect();
         let mut adapter: Box<dyn Adapter> = Box::new(Claude::default());
-        adapter.on_input(Input::Send { text: "say hi".into() }).unwrap();
+        adapter.on_input(Input::send("say hi")).unwrap();
         let id = c.spawn(vec!["/bin/sh".into(), "-c".into(), script.into()], &tmp, None, &[], adapter, sink).unwrap();
         assert!(wait_for(|| out.lock().unwrap().iter().any(|o| matches!(o, ChatOut::Event(e) if s(e, "event") == "turn.end")), 10));
         let first = std::fs::read_to_string(&mark).unwrap();
@@ -2140,7 +2292,7 @@ mod tests {
         let c = ChatSessions::default();
         let (out, sink) = collect();
         let mut adapter: Box<dyn Adapter> = Box::new(Claude::default());
-        adapter.on_input(Input::Send { text: "x".into() }).unwrap();
+        adapter.on_input(Input::send("x")).unwrap();
         let tmp = std::env::temp_dir().canonicalize().unwrap();
         c.spawn(vec!["/bin/sh".into(), "-c".into(), "echo 'Error: not logged in' >&2; exit 2".into()], &tmp, None, &[], adapter, sink).unwrap();
         assert!(wait_for(|| out.lock().unwrap().iter().any(|o| matches!(o, ChatOut::Exit(..))), 10));
@@ -2163,7 +2315,7 @@ mod tests {
         let c = ChatSessions::default();
         let (out, sink) = collect();
         let mut adapter: Box<dyn Adapter> = Box::new(Claude::default());
-        adapter.on_input(Input::Send { text: "x".into() }).unwrap();
+        adapter.on_input(Input::send("x")).unwrap();
         let tmp = std::env::temp_dir().canonicalize().unwrap();
         c.spawn(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()], &tmp, None, &[], adapter, sink).unwrap();
         assert!(wait_for(|| out.lock().unwrap().iter().any(|o| matches!(o, ChatOut::Exit(..))), 10));
@@ -2258,11 +2410,11 @@ mod tests {
         // 1 MB of prompts: the pipe takes about 64 KB, the rest must not hold anything up
         let started = Instant::now();
         for _ in 0..16 {
-            c.input(stuck, Input::Send { text: "x".repeat(64 * 1024) }).unwrap();
+            c.input(stuck, Input::send("x".repeat(64 * 1024))).unwrap();
         }
         assert!(started.elapsed() < Duration::from_millis(500), "input blocked: {:?}", started.elapsed());
         // other chats keep working while that one is stuck
-        c.input(other, Input::Send { text: "pong".into() }).unwrap();
+        c.input(other, Input::send("pong")).unwrap();
         assert!(wait_for(|| std::fs::read_to_string(&mark).is_ok_and(|t| t.contains("pong")), 10), "other chat stalled");
         let t = Instant::now();
         c.close_all();
@@ -2293,6 +2445,151 @@ mod tests {
         assert!(deltas.len() < 200, "{} delta events", deltas.len());
     }
 
+    /// The real OmO through `start_agent` (`omo --mode rpc`): "hi" gets an answer, then a second process started
+    /// with the session id it reported (`--session`) still knows the first turn. Needs omo signed in.
+    #[test]
+    #[ignore]
+    fn real_omo_chat_says_hi_and_resumes() {
+        let dir = std::env::temp_dir().join(format!("omher-real-omo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let turn = |resume: Option<&str>, text: &str| -> (String, Vec<String>) {
+            let c = ChatSessions::default();
+            let out = Arc::new(Mutex::new(Vec::new()));
+            let o = out.clone();
+            let id = c.start_agent("omo", &dir, resume, &[], move |x| o.lock().unwrap().push(x)).unwrap();
+            c.input(id, Input::send(text)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(150);
+            while Instant::now() < deadline && !out.lock().unwrap().iter().any(|x| matches!(x, ChatOut::Event(e) if s(e, "event") == "turn.end")) {
+                thread::sleep(Duration::from_millis(100));
+            }
+            let got = out.lock().unwrap().clone();
+            c.close(id);
+            thread::sleep(Duration::from_millis(500));
+            let session = got.iter().find_map(|x| match x { ChatOut::Event(e) if s(e, "event") == "session.info" && !s(e, "agent_session").is_empty() => Some(s(e, "agent_session")), _ => None }).unwrap_or_default();
+            let msgs: Vec<String> = got.iter().filter_map(|x| match x { ChatOut::Event(e) if s(e, "event") == "message" => Some(s(e, "text")), _ => None }).collect();
+            println!("omo session {session} (resume {resume:?}): {msgs:?}");
+            (session, msgs)
+        };
+        let (session, first) = turn(None, "hi. reply with just the word pineapple");
+        assert!(is_uuid(&session), "{session:?}");
+        assert!(first.iter().any(|m| m.to_lowercase().contains("pineapple")), "{first:?}");
+        let (again, second) = turn(Some(&session), "which fruit word did you just reply with? one word");
+        assert_eq!(again, session);
+        assert!(second.iter().any(|m| m.to_lowercase().contains("pineapple")), "{second:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The real OmO, Claude Code and Codex, one short message each through `start_agent`: every event the chat
+    /// gets (and the ones that come within 4 s after the answer) leaves no turn open and says nothing outside one.
+    /// `OMHER_REAL_OUT=<dir>` keeps each agent's events as `<agent>.json` for a replay through the store.
+    /// Spends one small turn per agent: `cargo test real_agents_answer_and_go_idle -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_agents_answer_and_go_idle() {
+        let dir = std::env::temp_dir().join(format!("omher-real-idle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        for agent in ["omo", "claude", "codex"] {
+            let c = ChatSessions::default();
+            let out = Arc::new(Mutex::new(Vec::new()));
+            let o = out.clone();
+            let id = c.start_agent(agent, &dir, None, &[], move |x| o.lock().unwrap().push(x)).unwrap();
+            if agent == "omo" {
+                // OmO's own default can be a model its provider refuses on this machine: pick one it serves
+                thread::sleep(Duration::from_secs(3));
+                c.input(id, Input::Model { model: std::env::var("OMHER_REAL_OMO_MODEL").unwrap_or("anthropic/claude-fable-5-1".into()) }).unwrap();
+                thread::sleep(Duration::from_secs(1));
+            }
+            c.input(id, Input::Send { text: "hi. reply with just the word ok".into(), images: vec![] }).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(150);
+            while Instant::now() < deadline && !out.lock().unwrap().iter().any(|x| matches!(x, ChatOut::Event(e) if s(e, "event") == "turn.end")) {
+                thread::sleep(Duration::from_millis(100));
+            }
+            // what the agent says after its turn (OmO's setStatus, agent_settled, …)
+            thread::sleep(Duration::from_secs(4));
+            let events: Vec<Event> = out.lock().unwrap().iter().filter_map(|x| match x { ChatOut::Event(e) => Some(e.clone()), _ => None }).collect();
+            c.close(id);
+            thread::sleep(Duration::from_millis(500));
+            let mut open = false;
+            for e in &events {
+                match s(e, "event").as_str() {
+                    "turn.start" => open = true,
+                    "turn.end" => open = false,
+                    "status" | "thinking" | "tool.start" | "tool.end" | "delta" | "skill" => assert!(open, "{agent}: {e} outside a turn"),
+                    _ => {}
+                }
+            }
+            let msgs: Vec<String> = events.iter().filter(|e| s(e, "event") == "message").map(|e| s(e, "text")).collect();
+            let after = events.iter().skip_while(|e| s(e, "event") != "turn.end").skip(1).map(|e| s(e, "event")).collect::<Vec<_>>();
+            println!("{agent}: answer {msgs:?}; {} events; after turn.end: {after:?}", events.len());
+            assert!(!open, "{agent}: the turn never ended");
+            assert!(msgs.iter().any(|m| m.to_lowercase().contains("ok")), "{agent}: {events:?}");
+            if let Some(d) = std::env::var_os("OMHER_REAL_OUT") {
+                std::fs::write(Path::new(&d).join(format!("{agent}.json")), serde_json::to_string_pretty(&events).unwrap()).unwrap();
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The real attach check: a picture with a word in it and a small text file, saved and resolved exactly as a
+    /// SESSIONS chat does (`session_files::save`, `Input::resolve`, the adapter's own image input; the text file
+    /// named by its saved path), sent to the real agent in a temp folder. Approvals are answered `once`. Needs the
+    /// agent installed and signed in: `OMHER_REAL_AGENT=codex cargo test real_agent_reads_attached_files --
+    /// --ignored --nocapture` (claude, codex or omo; default claude).
+    #[test]
+    #[ignore]
+    fn real_agent_reads_attached_files() {
+        let agent = std::env::var("OMHER_REAL_AGENT").unwrap_or_else(|_| "claude".into());
+        let base = std::env::temp_dir().join(format!("omher-real-attach-{agent}-{}", std::process::id()));
+        let (home, dir) = (base.join("home"), base.join("proj"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let (home, dir) = (home.canonicalize().unwrap(), dir.canonicalize().unwrap());
+        let png = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/real/word.png")).unwrap();
+        let pic = session_files::save(&home, "s1", "word.png", &png).unwrap();
+        let txt = session_files::save(&home, "s1", "notes.txt", b"alpha line\nthe second line is cobalt-42\ngamma line\n").unwrap();
+        // what the UI sends (attach.ts wireText): the typed text, then the non-picture file by its saved path
+        let text = format!(
+            "1) What word is written in the attached picture? 2) What is the second line of the attached text file? Answer as: picture=<word>; line2=<line>\n\nAttached file (a copy omher saved; open it with your tools):\n- {}",
+            txt.display()
+        );
+        let mut input = Input::Send { text, images: vec![Picture::from(pic.to_string_lossy().into_owned())] };
+        input.resolve(&home).unwrap();
+        let c = Arc::new(ChatSessions::default());
+        let out = Arc::new(Mutex::new(Vec::<ChatOut>::new()));
+        let (o, c2, me) = (out.clone(), c.clone(), Arc::new(Mutex::new(0u32)));
+        let me2 = me.clone();
+        let id = c
+            .start_agent(&agent, &dir, None, &[], move |x| {
+                if let ChatOut::Event(e) = &x {
+                    if s(e, "event") == "approval.request" {
+                        println!("approval {} {}", s(e, "title"), s(e, "command"));
+                        let (c3, rid, id) = (c2.clone(), s(e, "request_id"), *me2.lock().unwrap());
+                        thread::spawn(move || {
+                            let _ = c3.input(id, Input::Approve { request_id: rid, choice: "once".into() });
+                        });
+                    }
+                }
+                o.lock().unwrap().push(x);
+            })
+            .unwrap();
+        *me.lock().unwrap() = id;
+        c.input(id, input).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(240);
+        while Instant::now() < deadline && !out.lock().unwrap().iter().any(|x| matches!(x, ChatOut::Event(e) if s(e, "event") == "turn.end")) {
+            thread::sleep(Duration::from_millis(100));
+        }
+        let got = out.lock().unwrap().clone();
+        let msgs: Vec<String> = got.iter().filter_map(|x| match x { ChatOut::Event(e) if s(e, "event") == "message" => Some(s(e, "text")), _ => None }).collect();
+        println!("{agent} answered: {msgs:?}");
+        c.close(id);
+        thread::sleep(Duration::from_millis(500));
+        let all = msgs.join(" ").to_lowercase();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(all.contains("marigold") && all.contains("cobalt-42"), "{got:?}");
+    }
+
     /// The real check: Claude Code in its chat mode in a temp folder, "reply with the word ok", through the
     /// same allow-list, adapter and pipes a session uses. Needs claude installed and signed in, and spends a
     /// tiny turn: `cargo test real_claude_chat_replies_ok -- --ignored --nocapture`.
@@ -2316,7 +2613,7 @@ mod tests {
                 o.lock().unwrap().push(x);
             })
             .unwrap();
-        c.input(id, Input::Send { text: "reply with the word ok".into() }).unwrap();
+        c.input(id, Input::send("reply with the word ok")).unwrap();
         let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline && !out.lock().unwrap().iter().any(|x| matches!(x, ChatOut::Event(e) if s(e, "event") == "turn.end")) {
             thread::sleep(Duration::from_millis(100));
@@ -2432,7 +2729,7 @@ mod tests {
     #[test]
     fn real_claude_1_plain_answer() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        c.on_input(Input::send("2+2")).unwrap();
         let st = replay(&mut c, &["claude-1-plain.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["2+2 is 4."]);
         assert!(tools(&st.events).is_empty());
@@ -2443,7 +2740,7 @@ mod tests {
     #[test]
     fn real_claude_2_bash_deny_once_session() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "mkdir".into() }).unwrap();
+        c.on_input(Input::send("mkdir")).unwrap();
         let st = replay(&mut c, &["claude-2-approvals.jsonl"], &["deny", "once", "session"]);
         // the row shows the command itself, whatever Claude Code calls the tool (Bash)
         assert_eq!(tools(&st.events), [("terminal", "mkdir -p d1"), ("terminal", "mkdir -p d2"), ("terminal", "mkdir -p d3"), ("terminal", "mkdir -p d4")].map(|(a, b)| (a.to_string(), b.to_string())));
@@ -2473,7 +2770,7 @@ mod tests {
     #[test]
     fn real_claude_3_write_and_edit_show_the_file_and_diff_size() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "notes".into() }).unwrap();
+        c.on_input(Input::send("notes")).unwrap();
         let st = replay(&mut c, &["claude-3-edit.jsonl"], &[]);
         assert_eq!(
             tools(&st.events),
@@ -2489,9 +2786,9 @@ mod tests {
         let lines = real("claude-4-stop.jsonl");
         // the recording first finishes the resume turn, then the person asks for a slow command
         let second = lines.iter().rposition(|l| l.contains("\"subtype\":\"init\"")).unwrap();
-        c.on_input(Input::Send { text: "which file".into() }).unwrap();
+        c.on_input(Input::send("which file")).unwrap();
         run(&mut c, &lines[..second]);
-        c.on_input(Input::Send { text: "sleep".into() }).unwrap();
+        c.on_input(Input::send("sleep")).unwrap();
         let st = run(&mut c, &lines[second..]);
         let card = of(&st.events, "approval.request")[0].clone();
         assert!(s(&card, "command").starts_with("python3 -c"), "{card}");
@@ -2503,7 +2800,7 @@ mod tests {
         assert_eq!(ends(&rest.events), [("interrupted".into(), "".into())]);
         assert!(!c.in_turn());
         // the next message starts a new turn
-        assert_eq!(names(&c.on_input(Input::Send { text: "again".into() }).unwrap().events), ["turn.start"]);
+        assert_eq!(names(&c.on_input(Input::send("again")).unwrap().events), ["turn.start"]);
     }
 
     #[test]
@@ -2511,12 +2808,12 @@ mod tests {
         // Claude Code ran `sleep 25` in the background and answered; while the next turn waited on a question,
         // the task finished and Claude Code started (and ended) a turn of its own.
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "sleep".into() }).unwrap();
+        c.on_input(Input::send("sleep")).unwrap();
         let st = replay(&mut c, &["claude-4-background.jsonl"], &[]);
         assert_eq!(ends(&st.events), [("done".into(), "".into())]);
         assert!(tools(&st.events).iter().any(|t| t.1 == "sleep 25; echo finished"));
         // a result Claude Code started by itself while the person's turn runs leaves that turn running
-        c.on_input(Input::Send { text: "next".into() }).unwrap();
+        c.on_input(Input::send("next")).unwrap();
         let st = run(&mut c, &[r#"{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","origin":{"kind":"task-notification"}}"#.into()]);
         assert!(st.events.is_empty() && c.in_turn(), "{:?}", st.events);
         // and on its own it shows as a turn that starts and ends
@@ -2531,7 +2828,7 @@ mod tests {
     #[test]
     fn real_claude_5_ask_user_question_becomes_a_question_card() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "ask".into() }).unwrap();
+        c.on_input(Input::send("ask")).unwrap();
         let lines = real("claude-5-question.jsonl");
         let at = lines.iter().position(|l| l.contains("\"can_use_tool\"")).unwrap();
         let st = run(&mut c, &lines[..=at]);
@@ -2553,7 +2850,7 @@ mod tests {
     #[test]
     fn real_claude_6_bad_command_is_a_calm_failed_step_not_a_failed_turn() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "bad".into() }).unwrap();
+        c.on_input(Input::send("bad")).unwrap();
         let st = replay(&mut c, &["claude-6-error.jsonl"], &["once"]);
         assert_eq!(s(of(&st.events, "approval.request")[0], "command"), "definitely-not-a-command-xyz --flag; echo \"exit=$?\"");
         assert_eq!(text_of(&st.events, "message"), ["exit code 127 (command not found)."]);
@@ -2575,7 +2872,7 @@ mod tests {
     #[test]
     fn real_claude_8_resume_reports_the_same_session() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "which file".into() }).unwrap();
+        c.on_input(Input::send("which file")).unwrap();
         // on resume Claude Code reports the same session and an empty result of a background task from before:
         // the person's turn keeps running until its own result
         let st = replay(&mut c, &["claude-8-resume.jsonl"], &[]);
@@ -2592,7 +2889,7 @@ mod tests {
     fn real_claude_10_close_mid_command_has_no_turn_end_from_the_agent() {
         // the stream stops mid-command (omher closed stdin); the exit watcher ends the turn, not the adapter
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "sleep".into() }).unwrap();
+        c.on_input(Input::send("sleep")).unwrap();
         let st = replay(&mut c, &["claude-10-close.jsonl"], &["once"]);
         assert!(ends(&st.events).is_empty());
         assert!(c.in_turn());
@@ -2601,7 +2898,7 @@ mod tests {
     #[test]
     fn real_claude_signed_out_says_how_to_sign_in() {
         let mut c = claude_up();
-        c.on_input(Input::Send { text: "hi".into() }).unwrap();
+        c.on_input(Input::send("hi")).unwrap();
         let st = replay(&mut c, &["claude-signed-out.jsonl"], &[]);
         assert!(text_of(&st.events, "message").is_empty(), "\"Not logged in\" is not an answer bubble");
         let e = ends(&st.events);
@@ -2628,7 +2925,7 @@ mod tests {
     #[test]
     fn real_codex_1_plain_answer() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        x.on_input(Input::send("2+2")).unwrap();
         let st = replay(&mut x, &["codex-1-plain.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["2 + 2 = 4."]);
         assert_eq!(text_of(&st.events, "delta").concat(), "2 + 2 = 4.");
@@ -2638,7 +2935,7 @@ mod tests {
     #[test]
     fn real_codex_2_command_shows_unwrapped_deny_once_session() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "mkdir".into() }).unwrap();
+        x.on_input(Input::send("mkdir")).unwrap();
         let st = replay(&mut x, &["codex-2-approvals.jsonl"], &["deny", "once", "session", "once"]);
         // Codex reports `/bin/zsh -lc 'mkdir -p d1'`; the row and the card show the command
         assert_eq!(tools(&st.events), [("terminal", "mkdir -p d1"), ("terminal", "mkdir -p d2"), ("terminal", "mkdir -p d3"), ("terminal", "mkdir -p d4")].map(|(a, b)| (a.to_string(), b.to_string())));
@@ -2655,7 +2952,7 @@ mod tests {
     #[test]
     fn real_codex_3_file_change_card_and_diff_summary() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "notes".into() }).unwrap();
+        x.on_input(Input::send("notes")).unwrap();
         let st = replay(&mut x, &["codex-3-edit.jsonl"], &["once"]);
         assert_eq!(tools(&st.events), [("patch".to_string(), "notes.txt +1".to_string())]);
         let card = of(&st.events, "approval.request")[0];
@@ -2667,7 +2964,7 @@ mod tests {
     #[test]
     fn real_codex_4_stop_closes_the_open_card_and_ends_interrupted() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "sleep".into() }).unwrap();
+        x.on_input(Input::send("sleep")).unwrap();
         let st = run(&mut x, &real("codex-4-stop.jsonl"));
         let card = of(&st.events, "approval.request")[0].clone();
         assert_eq!(s(&card, "command"), "sleep 30; echo finished");
@@ -2683,7 +2980,7 @@ mod tests {
     #[test]
     fn real_codex_5_question_in_a_message_becomes_a_question_card() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "ask".into() }).unwrap();
+        x.on_input(Input::send("ask")).unwrap();
         let lines = real("codex-5-question.jsonl");
         let at = lines.iter().position(|l| l.contains("\"questions\":[{")).unwrap();
         let at = at + lines[at + 1..].iter().position(|l| l.contains("item/completed")).map(|i| i + 1).unwrap_or(0);
@@ -2705,7 +3002,7 @@ mod tests {
     #[test]
     fn real_codex_5_answer_after_the_turn_ended_starts_a_new_turn() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "ask".into() }).unwrap();
+        x.on_input(Input::send("ask")).unwrap();
         let st = run(&mut x, &real("codex-5-question.jsonl"));
         let q = of(&st.events, "clarify.request")[0].clone();
         assert!(!x.in_turn());
@@ -2717,7 +3014,7 @@ mod tests {
     #[test]
     fn real_codex_6_bad_command_fails_its_step_only() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "bad".into() }).unwrap();
+        x.on_input(Input::send("bad")).unwrap();
         let st = replay(&mut x, &["codex-6-error.jsonl"], &["once"]);
         assert_eq!(tools(&st.events), [("terminal".to_string(), "definitely-not-a-command-xyz --flag".to_string())]);
         assert_eq!(of(&st.events, "tool.end")[0]["ok"], false);
@@ -2730,7 +3027,7 @@ mod tests {
         let mut x = codex_up();
         let st = x.on_input(Input::Model { model: "gpt-6-astra".into() }).unwrap();
         assert_eq!(s(&st.events[0], "model"), "GPT-6-Astra");
-        let w = written(&x.on_input(Input::Send { text: "switched".into() }).unwrap());
+        let w = written(&x.on_input(Input::send("switched")).unwrap());
         assert_eq!((w[0]["method"].as_str(), w[0]["params"]["model"].as_str()), (Some("turn/start"), Some("gpt-6-astra")));
         let st = replay(&mut x, &["codex-7-model.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["switched"]);
@@ -2747,7 +3044,7 @@ mod tests {
         assert_eq!(w[1]["params"]["threadId"], id);
         let st = run(&mut x, &real("codex-8-resume.jsonl"));
         assert_eq!(s(of(&st.events, "session.info")[0], "agent_session"), id);
-        let st = x.on_input(Input::Send { text: "which file".into() }).unwrap();
+        let st = x.on_input(Input::send("which file")).unwrap();
         assert_eq!(written(&st)[0]["params"]["threadId"], id);
         let st = replay(&mut x, &["codex-8-resume-turn.jsonl"], &[]);
         assert!(text_of(&st.events, "message")[0].contains("notes.txt"));
@@ -2785,7 +3082,7 @@ mod tests {
     #[test]
     fn real_codex_signed_out_says_how_to_sign_in() {
         let mut x = codex_up();
-        x.on_input(Input::Send { text: "hi".into() }).unwrap();
+        x.on_input(Input::send("hi")).unwrap();
         let st = replay(&mut x, &["codex-signed-out.jsonl"], &[]);
         // the retries show on the progress line instead of a silent wait
         assert!(of(&st.events, "status").iter().any(|e| s(e, "text").starts_with("Reconnecting")));
@@ -2800,7 +3097,7 @@ mod tests {
     fn real_pi_1_plain_answer_ends_on_agent_end() {
         // pi 0.73 ends a prompt with agent_end only (no agent_settled / prompt_result)
         let mut p = pi_up("pi", &["pi-init.jsonl"]);
-        p.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        p.on_input(Input::send("2+2")).unwrap();
         let st = replay(&mut p, &["pi-1-plain.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["4. (model stub-a)"]);
         assert_eq!(ends(&st.events), [("done".into(), "".into())]);
@@ -2808,10 +3105,32 @@ mod tests {
     }
 
     #[test]
+    fn real_omo_plain_answer_through_the_pi_adapter() {
+        // omo 5.0.0-beta.65 (`omo --mode rpc`, signed in): pi's RPC plus its own events (settings_source_selected,
+        // agent_settled, agent_idle, setStatus/notify dialogs, stdout log lines); the session id is what --session takes
+        let mut p = Pi::new("/w/proj", "OmO");
+        p.start();
+        let st = run(&mut p, &real("omo-init.jsonl"));
+        let info = of(&st.events, "session.info");
+        assert_eq!(s(info[0], "agent_session"), "01a1c85a-703a-72fe-ae88-c1f9ffb5c249");
+        assert_eq!(s(info[0], "model"), "Claude Fable 5.1");
+        assert_eq!(of(&st.events, "session.models")[0]["options"].as_array().unwrap().len(), 3);
+        assert!(!p.in_turn());
+        p.on_input(Input::send("hi. reply with just the word ok")).unwrap();
+        let st = replay(&mut p, &["omo-1-plain.jsonl"], &[]);
+        assert_eq!(text_of(&st.events, "message"), ["ok"]);
+        assert_eq!(ends(&st.events), [("done".into(), "".into())]);
+        assert!(of(&st.events, "approval.request").is_empty() && of(&st.events, "clarify.request").is_empty());
+        assert!(!p.in_turn());
+        // the error line names OmO, not pi
+        assert!(p.explain("No API key found").starts_with("OmO is not signed in"));
+    }
+
+    #[test]
     fn real_pi_2_bash_runs_show_the_commands() {
         // pi has no tool approvals of its own: it runs bash straight away
         let mut p = pi_up("pi", &["pi-init.jsonl"]);
-        p.on_input(Input::Send { text: "ls".into() }).unwrap();
+        p.on_input(Input::send("ls")).unwrap();
         let st = replay(&mut p, &["pi-2-tools.jsonl"], &[]);
         assert_eq!(tools(&st.events), [("terminal", "ls -la"), ("terminal", "echo hi"), ("terminal", "pwd")].map(|(a, b)| (a.to_string(), b.to_string())));
         assert!(of(&st.events, "approval.request").is_empty());
@@ -2821,7 +3140,7 @@ mod tests {
     #[test]
     fn real_pi_3_write_and_edit() {
         let mut p = pi_up("pi", &["pi-init.jsonl"]);
-        p.on_input(Input::Send { text: "notes".into() }).unwrap();
+        p.on_input(Input::send("notes")).unwrap();
         let st = replay(&mut p, &["pi-3-edit.jsonl"], &[]);
         assert_eq!(tools(&st.events), [("patch", "notes.txt +1"), ("patch", "README.md +1 -1")].map(|(a, b)| (a.to_string(), b.to_string())));
         assert_eq!(ends(&st.events), [("done".into(), "".into())]);
@@ -2830,7 +3149,7 @@ mod tests {
     #[test]
     fn real_pi_4_abort_ends_interrupted() {
         let mut p = pi_up("pi", &["pi-init.jsonl"]);
-        p.on_input(Input::Send { text: "sleep".into() }).unwrap();
+        p.on_input(Input::send("sleep")).unwrap();
         let st = run(&mut p, &real("pi-4-running.jsonl"));
         assert_eq!(tools(&st.events), [("terminal".to_string(), "sleep 30; echo finished".to_string())]);
         assert!(ends(&st.events).is_empty() && p.in_turn());
@@ -2845,7 +3164,7 @@ mod tests {
     fn real_pi_5_question_is_plain_text() {
         // pi has no ask tool: the question is the answer bubble and the turn ends, waiting for the reply
         let mut p = pi_up("pi", &["pi-init.jsonl"]);
-        p.on_input(Input::Send { text: "ask".into() }).unwrap();
+        p.on_input(Input::send("ask")).unwrap();
         let st = replay(&mut p, &["pi-5-question.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["Which greeting should go in greet.txt: hello or hi?"]);
         assert_eq!(ends(&st.events), [("done".into(), "".into())]);
@@ -2854,7 +3173,7 @@ mod tests {
     #[test]
     fn real_pi_6_bad_command_fails_its_step_only() {
         let mut p = pi_up("pi", &["pi-init.jsonl"]);
-        p.on_input(Input::Send { text: "bad".into() }).unwrap();
+        p.on_input(Input::send("bad")).unwrap();
         let st = replay(&mut p, &["pi-6-error.jsonl"], &[]);
         assert_eq!(of(&st.events, "tool.end")[0]["ok"], false);
         assert_eq!(ends(&st.events), [("done".into(), "".into())]);
@@ -2867,7 +3186,7 @@ mod tests {
         assert_eq!((s(&w[0], "provider"), s(&w[0], "modelId")), ("stub".into(), "stub-b".into()));
         let st = run(&mut p, &real("pi-7-model.jsonl").iter().map(|l| l.replace("omher-9", s(&w[0], "id").as_str())).collect::<Vec<_>>());
         assert_eq!(s(&st.events[0], "model"), "Stub B");
-        p.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        p.on_input(Input::send("2+2")).unwrap();
         let st = replay(&mut p, &["pi-7-after-model.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["4. (model stub-b)"]);
     }
@@ -2879,7 +3198,7 @@ mod tests {
         let st = run(&mut p, &real("pi-noauth-init.jsonl"));
         assert_eq!(s(of(&st.events, "session.info")[0], "model"), "", "\"unknown\" is not a model name");
         assert_eq!(of(&st.events, "session.models")[0]["options"], json!([]));
-        p.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        p.on_input(Input::send("2+2")).unwrap();
         let st = run(&mut p, &real("pi-signed-out.jsonl").iter().map(|l| l.replace("omher-3", "omher-3")).collect::<Vec<_>>());
         let e = ends(&st.events);
         assert_eq!(e[0], ("error".to_string(), "pi is not signed in. Open Terminal and run /login, then Restart.".to_string()));
@@ -2895,7 +3214,7 @@ mod tests {
         let st = run(&mut p, &real("omp-ready.jsonl"));
         assert!(st.events.is_empty() && st.write.is_empty(), "{:?}", st);
         run(&mut p, &real("omp-init.jsonl"));
-        p.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        p.on_input(Input::send("2+2")).unwrap();
         let st = replay(&mut p, &["omp-1-plain.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["4. (model stub-a)"]);
         // agent_end, prompt_result and session_settled all arrive: one turn.end
@@ -2905,7 +3224,7 @@ mod tests {
     #[test]
     fn real_omp_2_tool_approval_select_maps_to_deny_once_session() {
         let mut p = pi_up("oh-my-pi", &["omp-init.jsonl"]);
-        p.on_input(Input::Send { text: "ls".into() }).unwrap();
+        p.on_input(Input::send("ls")).unwrap();
         let st = replay(&mut p, &["omp-2-approvals.jsonl"], &["deny", "once", "session"]);
         let cards = of(&st.events, "approval.request");
         assert_eq!(cards.len(), 3);
@@ -2924,7 +3243,7 @@ mod tests {
     #[test]
     fn real_omp_3_write_card_names_the_file() {
         let mut p = pi_up("oh-my-pi", &["omp-init.jsonl"]);
-        p.on_input(Input::Send { text: "notes".into() }).unwrap();
+        p.on_input(Input::send("notes")).unwrap();
         let st = replay(&mut p, &["omp-3-edit.jsonl"], &["once", "once"]);
         let titles: Vec<String> = of(&st.events, "approval.request").iter().map(|c| s(c, "title")).collect();
         assert_eq!(titles, ["Allow write to change notes.txt?", "Allow edit to change files?"]);
@@ -2935,7 +3254,7 @@ mod tests {
     #[test]
     fn real_omp_4_abort_ends_interrupted_once() {
         let mut p = pi_up("oh-my-pi", &["omp-init.jsonl"]);
-        p.on_input(Input::Send { text: "sleep".into() }).unwrap();
+        p.on_input(Input::send("sleep")).unwrap();
         run(&mut p, &real("omp-4-running.jsonl"));
         p.on_input(Input::Interrupt).unwrap();
         let st = run(&mut p, &real("omp-4-stopped.jsonl"));
@@ -2945,15 +3264,15 @@ mod tests {
     #[test]
     fn real_omp_5_6_7_question_error_and_model() {
         let mut p = pi_up("oh-my-pi", &["omp-init.jsonl"]);
-        p.on_input(Input::Send { text: "ask".into() }).unwrap();
+        p.on_input(Input::send("ask")).unwrap();
         let st = replay(&mut p, &["omp-5-question.jsonl"], &[]);
         assert_eq!(text_of(&st.events, "message"), ["Which greeting should go in greet.txt: hello or hi?"]);
         let w = written(&p.on_input(Input::Model { model: "stub/stub-b".into() }).unwrap());
         let st = run(&mut p, &real("omp-7-model.jsonl").iter().map(|l| l.replace("omher-9", s(&w[0], "id").as_str())).collect::<Vec<_>>());
         assert_eq!(s(of(&st.events, "session.info")[0], "model"), "Stub B");
-        p.on_input(Input::Send { text: "2+2".into() }).unwrap();
+        p.on_input(Input::send("2+2")).unwrap();
         assert_eq!(text_of(&replay(&mut p, &["omp-7-after-model.jsonl"], &[]).events, "message"), ["4. (model stub-b)"]);
-        p.on_input(Input::Send { text: "bad".into() }).unwrap();
+        p.on_input(Input::send("bad")).unwrap();
         let st = replay(&mut p, &["omp-6-error.jsonl"], &[]);
         assert_eq!(of(&st.events, "tool.end")[0]["ok"], false);
         assert_eq!(ends(&st.events), [("done".into(), "".into())]);
@@ -2962,12 +3281,224 @@ mod tests {
     #[test]
     fn omp_cancel_closes_its_dialog_and_an_ordinary_select_is_a_question() {
         let mut p = Pi::new("/w/proj", "oh-my-pi");
-        p.on_input(Input::Send { text: "x".into() }).unwrap();
+        p.on_input(Input::send("x")).unwrap();
         let st = p.on_line(r#"{"type":"extension_ui_request","id":"u9","method":"select","title":"Which branch?","options":["main","dev"]}"#);
         assert_eq!(s(&st.events[0], "event"), "clarify.request");
         let st = p.on_line(r#"{"type":"extension_ui_request","id":"c1","method":"cancel","targetId":"u9"}"#);
         assert_eq!(st.events[0], json!({"event": "prompt.expired", "request_id": "u9", "reason": "timeout"}));
         assert!(p.on_input(Input::Clarify { request_id: "u9".into(), answer: json!("dev") }).is_err());
+    }
+
+    // -- every recorded stream ends with the turn over --
+
+    /// One step of a replay: a recorded file (or the part of it before / from its last `init`), or what the person
+    /// (or the exit watcher) does in between.
+    enum Do {
+        File(&'static str),
+        Head(&'static str),
+        Tail(&'static str),
+        Send,
+        Stop,
+        Model(&'static str),
+        /// the program exits: the watcher's `turn.end` when it was mid-turn
+        Exit,
+    }
+
+    /// Each sequence: a name, the adapter, then its steps. Every file in tests/fixtures/real/ is in one of them.
+    fn sequences() -> Vec<(&'static str, &'static str, Vec<Do>)> {
+        use Do::*;
+        let turn = |f: &'static str| vec![Send, File(f)];
+        let mut out: Vec<(&'static str, &'static str, Vec<Do>)> = Vec::new();
+        for f in ["claude-1-plain.jsonl", "claude-2-approvals.jsonl", "claude-3-edit.jsonl", "claude-4-background.jsonl", "claude-5-question.jsonl", "claude-6-error.jsonl", "claude-signed-out.jsonl"] {
+            out.push((f, "claude", turn(f)));
+        }
+        // the recording finishes a turn, then the person asks for a slow command and presses Stop
+        out.push(("claude-4-stop.jsonl", "claude", vec![Send, Head("claude-4-stop.jsonl"), Send, Tail("claude-4-stop.jsonl"), Stop, File("claude-4-stopped.jsonl")]));
+        out.push(("claude-7-model.jsonl", "claude", vec![Model("haiku"), File("claude-7-model.jsonl")]));
+        // a resumed conversation: an old background task's empty result, then the person's answer
+        out.push(("claude-8-resume.jsonl", "claude", vec![Send, File("claude-8-resume.jsonl"), Head("claude-4-stop.jsonl")]));
+        // omher closed the chat mid-command: the exit watcher ends the turn
+        out.push(("claude-10-close.jsonl", "claude", vec![Send, File("claude-10-close.jsonl"), Exit]));
+        for f in ["codex-1-plain.jsonl", "codex-2-approvals.jsonl", "codex-3-edit.jsonl", "codex-5-question.jsonl", "codex-6-error.jsonl", "codex-signed-out.jsonl"] {
+            out.push((f, "codex", turn(f)));
+        }
+        out.push(("codex-4-stop.jsonl", "codex", vec![Send, File("codex-4-stop.jsonl"), Stop, File("codex-4-stopped.jsonl")]));
+        out.push(("codex-7-model.jsonl", "codex", vec![Model("gpt-6-astra"), Send, File("codex-7-model.jsonl")]));
+        out.push(("codex-8-resume.jsonl", "codex-resume", vec![File("codex-8-resume-init.jsonl"), File("codex-8-resume.jsonl"), Send, File("codex-8-resume-turn.jsonl")]));
+        out.push(("omo-1-plain.jsonl", "omo", turn("omo-1-plain.jsonl")));
+        for f in ["omp-1-plain.jsonl", "omp-2-approvals.jsonl", "omp-3-edit.jsonl", "omp-5-question.jsonl", "omp-6-error.jsonl"] {
+            out.push((f, "omp", turn(f)));
+        }
+        out.push(("omp-4-running.jsonl", "omp", vec![Send, File("omp-4-running.jsonl"), Stop, File("omp-4-stopped.jsonl")]));
+        out.push(("omp-7-model.jsonl", "omp", vec![Model("stub/stub-b"), File("omp-7-model.jsonl"), Send, File("omp-7-after-model.jsonl")]));
+        for f in ["pi-1-plain.jsonl", "pi-2-tools.jsonl", "pi-3-edit.jsonl", "pi-5-question.jsonl", "pi-6-error.jsonl"] {
+            out.push((f, "pi", turn(f)));
+        }
+        out.push(("pi-4-running.jsonl", "pi", vec![Send, File("pi-4-running.jsonl"), Stop, File("pi-4-stopped.jsonl")]));
+        out.push(("pi-7-model.jsonl", "pi", vec![Model("stub/stub-b"), File("pi-7-model.jsonl"), Send, File("pi-7-after-model.jsonl")]));
+        out.push(("pi-signed-out.jsonl", "pi-noauth", vec![File("pi-noauth-init.jsonl"), Send, File("pi-signed-out.jsonl"), File("pi-noauth-model.jsonl")]));
+        out
+    }
+
+    /// The adapter of a sequence, after its own start-up recording (the files each one reads before any turn).
+    fn adapter_up(kind: &str) -> (Box<dyn Adapter>, Vec<&'static str>) {
+        match kind {
+            "claude" => (Box::new(Claude::new("/w/proj")), vec!["claude-init.jsonl"]),
+            "codex" => (Box::new(Codex::new("/w/proj", None)), vec!["codex-init.jsonl"]),
+            "codex-resume" => (Box::new(Codex::new("/w/proj", Some("01a1c3b9-4b7f-7542-900c-c5f4dc80eefa"))), vec![]),
+            "omo" => (Box::new(Pi::new("/w/proj", "OmO")), vec!["omo-init.jsonl"]),
+            "omp" => (Box::new(Pi::new("/w/proj", "oh-my-pi")), vec!["omp-ready.jsonl", "omp-init.jsonl"]),
+            "pi" => (Box::new(Pi::new("/w/proj", "pi")), vec!["pi-init.jsonl"]),
+            "pi-noauth" => (Box::new(Pi::new("/w/proj", "pi")), vec![]),
+            other => panic!("{other}"),
+        }
+    }
+
+    /// Replays one sequence: every event the chat gets, in order (start-up included), with the person's approvals
+    /// answered as `replay` does. Also returns whether the adapter still thinks a turn runs.
+    fn replay_sequence(kind: &str, steps: &[Do], used: &mut std::collections::BTreeSet<String>) -> (Vec<Event>, bool) {
+        let (mut a, init) = adapter_up(kind);
+        let mut events = a.start().events;
+        for f in init {
+            used.insert(f.into());
+            events.extend(run(a.as_mut(), &real(f)).events);
+        }
+        let split = |name: &str| {
+            let lines = real(name);
+            let at = lines.iter().rposition(|l| l.contains("\"subtype\":\"init\"")).unwrap();
+            (lines[..at].to_vec(), lines[at..].to_vec())
+        };
+        let mut last_write: Vec<String> = Vec::new();
+        let mut exited = false;
+        for step in steps {
+            let lines: Vec<String> = match step {
+                Do::Send => {
+                    events.extend(a.on_input(Input::Send { text: "go".into(), images: vec![] }).unwrap().events);
+                    continue;
+                }
+                Do::Stop => {
+                    events.extend(a.on_input(Input::Interrupt).unwrap().events);
+                    continue;
+                }
+                Do::Model(m) => {
+                    let st = a.on_input(Input::Model { model: (*m).into() }).unwrap();
+                    last_write = st.write.clone();
+                    events.extend(st.events);
+                    continue;
+                }
+                Do::Exit => {
+                    if a.in_turn() {
+                        events.push(exit_turn_end(Some(0), ""));
+                    }
+                    exited = true;
+                    continue;
+                }
+                Do::File(f) => {
+                    used.insert((*f).into());
+                    // a model answer names the request it answers: the one this replay sent
+                    let id = last_write.first().and_then(|w| serde_json::from_str::<Value>(w).ok()).map(|w| if w["request_id"].is_string() { s(&w, "request_id") } else { s(&w, "id") }).unwrap_or_default();
+                    real(f).into_iter().map(|l| if id.is_empty() { l } else { l.replace("omher-model-2", &id).replace("omher-9", &id) }).collect()
+                }
+                Do::Head(f) => {
+                    used.insert((*f).into());
+                    split(f).0
+                }
+                Do::Tail(f) => {
+                    used.insert((*f).into());
+                    split(f).1
+                }
+            };
+            for l in lines {
+                for e in a.on_line(&l).events {
+                    let ask = s(&e, "event") == "approval.request";
+                    let rid = s(&e, "request_id");
+                    events.push(e);
+                    if ask {
+                        events.extend(a.on_input(Input::Approve { request_id: rid, choice: "once".into() }).unwrap().events);
+                    }
+                }
+            }
+        }
+        // a program that exited runs nothing, whatever its adapter last thought
+        (events, a.in_turn() && !exited)
+    }
+
+    /// Every recorded stream, replayed through its adapter, leaves no turn running, and the events of a turn
+    /// (status, thinking, steps, streamed text) never come outside one. The events go to
+    /// `src/state/__fixtures__/real-agent-replay.json`, which the store's own test replays through the reducer
+    /// (`OMHER_WRITE_REPLAY=1 cargo test real_streams` rewrites it after an adapter change).
+    #[test]
+    fn real_streams_end_their_turns_and_say_nothing_outside_one() {
+        let mut used = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for (name, kind, steps) in sequences() {
+            let (events, running) = replay_sequence(kind, &steps, &mut used);
+            assert!(!running, "{name}: the adapter still thinks a turn runs");
+            let mut open = false;
+            for e in &events {
+                match s(e, "event").as_str() {
+                    "turn.start" => open = true,
+                    "turn.end" => open = false,
+                    "status" | "thinking" | "tool.start" | "tool.end" | "delta" | "skill" => {
+                        assert!(open, "{name}: {e} outside a turn");
+                    }
+                    _ => {}
+                }
+            }
+            assert!(!open, "{name}: the last turn never ended");
+            out.push(json!({"name": name, "agent": kind, "events": events}));
+        }
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("real");
+        // DSH has no adapter (a run per message): dsh_chat.rs's own tests replay its dsh-*.jsonl streams
+        let all: std::collections::BTreeSet<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".jsonl") && !n.starts_with("dsh-")).collect();
+        assert_eq!(all.difference(&used).collect::<Vec<_>>(), Vec::<&String>::new(), "a recorded stream no sequence replays");
+        let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("src").join("state").join("__fixtures__").join("real-agent-replay.json");
+        let text = serde_json::to_string_pretty(&Value::Array(out)).unwrap() + "\n";
+        if std::env::var_os("OMHER_WRITE_REPLAY").is_some() {
+            std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
+            std::fs::write(&golden, &text).unwrap();
+        }
+        let saved = std::fs::read_to_string(&golden).unwrap_or_default().replace("\r\n", "\n");
+        assert!(saved == text, "{} is out of date: run OMHER_WRITE_REPLAY=1 cargo test real_streams", golden.display());
+    }
+
+    #[test]
+    fn omo_status_after_its_turn_ended_is_not_shown() {
+        // omo-1-plain.jsonl: agent_end, then setStatus "(😺 OmO Native)", agent_settled, agent_idle, more setStatus
+        let mut p = pi_up("OmO", &["omo-init.jsonl"]);
+        p.on_input(Input::Send { text: "hi".into(), images: vec![] }).unwrap();
+        let lines = real("omo-1-plain.jsonl");
+        let end = lines.iter().position(|l| l.contains("\"type\":\"agent_end\"")).unwrap();
+        run(&mut p, &lines[..=end]);
+        let late = run(&mut p, &lines[end + 1..]);
+        assert!(late.events.is_empty(), "{:?}", late.events);
+        // while a turn runs, its status shows as the agent wrote it
+        p.on_input(Input::Send { text: "again".into(), images: vec![] }).unwrap();
+        let st = p.on_line(r#"{"type":"extension_ui_request","id":"s1","method":"setStatus","statusKey":"memory","statusText":"mem:khope-sionic-ai-d09472c9 9d ago (+1)"}"#);
+        assert_eq!(st.events, [json!({"event": "status", "text": "mem:khope-sionic-ai-d09472c9 9d ago (+1)"})]);
+    }
+
+    #[test]
+    fn codex_stop_before_the_turn_has_an_id_still_stops_it() {
+        // before the thread exists the message only waits: Stop drops it and ends the turn
+        let mut x = Codex::new("/w/proj", None);
+        x.start();
+        x.on_input(Input::Send { text: "hi".into(), images: vec![] }).unwrap();
+        let st = x.on_input(Input::Interrupt).unwrap();
+        assert_eq!(st.events, [json!({"event": "turn.end", "outcome": "interrupted"})]);
+        assert!(!x.in_turn() && run(&mut x, &real("codex-init.jsonl")).write.iter().all(|w| !w.contains("turn/start")));
+        // sent, but Codex has not named the turn yet: Stop waits for the name, then interrupts it
+        let mut x = codex_up();
+        x.on_input(Input::Send { text: "sleep".into(), images: vec![] }).unwrap();
+        assert!(x.on_input(Input::Interrupt).unwrap().write.is_empty());
+        let st = x.on_line(r#"{"method":"turn/started","params":{"threadId":"t","turn":{"id":"turn_7","status":"inProgress","items":[]}}}"#);
+        assert_eq!(written(&st)[0]["method"], "turn/interrupt");
+        assert_eq!(written(&st)[0]["params"]["turnId"], "turn_7");
+        // an error outside a turn is a note, not a progress line
+        let mut idle = codex_up();
+        let st = idle.on_line(r#"{"method":"error","params":{"error":{"message":"boom"},"willRetry":false}}"#);
+        assert_eq!(names(&st.events), ["session.error"]);
+        assert!(idle.on_line(r#"{"method":"error","params":{"error":{"message":"Reconnecting... 1/5"},"willRetry":true}}"#).events.is_empty());
     }
 
     // -- one shape across agents --
@@ -3022,6 +3553,37 @@ mod tests {
     }
 
     #[test]
+    fn exit_reasons_drop_colour_codes_and_config_warnings() {
+        // Codex 0.167 (audit O8): a coloured log line that only warns about a config setting is no reason
+        let codex = "\u{1b}[2m2026-11-11T10:25:23.520926Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2mcodex_app_server\u{1b}[2m:\u{1b}[0m Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.";
+        assert_eq!(exit_reason(codex), "");
+        let codex = format!("{codex}\n\u{1b}[2m2026-11-11T10:25:24Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m codex_api: failed to connect");
+        assert_eq!(exit_reason(&codex), "2026-11-11T10:25:24Z ERROR codex_api: failed to connect");
+        // OmO's skills-catalog warning, then the real reason
+        let omo = "Warning: The skills catalog uses one-line descriptions to limit request size (above 100 skills, 16 KiB of descriptions, or 48 KiB rendered). Remove unused skills to shrink every request.";
+        assert_eq!(exit_reason(omo), "");
+        assert_eq!(exit_reason(&format!("{omo}\nError: model not found")), "Error: model not found");
+        assert_eq!(exit_turn_end(Some(0), &exit_reason(omo)), json!({"event": "turn.end", "outcome": "ended"}));
+    }
+
+    #[test]
+    fn omo_stop_during_a_command_ends_interrupted() {
+        // omo (audit O4): the abort hit the tool, so the last message ended with stopReason "toolUse"; agent_end
+        // carries aborted: true
+        let mut p = pi_up("OmO", &["omo-init.jsonl"]);
+        p.on_input(Input::Send { text: "sleep".into(), images: vec![] }).unwrap();
+        p.on_line(r#"{"type":"agent_start"}"#);
+        p.on_line(r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"toolUse"}}"#);
+        let st = p.on_line(r#"{"type":"agent_end","messages":[],"willRetry":false,"aborted":true,"abortSource":"user"}"#);
+        assert_eq!(ends(&st.events), [("interrupted".into(), "".into())]);
+        // an ordinary end stays done
+        p.on_input(Input::Send { text: "hi".into(), images: vec![] }).unwrap();
+        p.on_line(r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop"}}"#);
+        let st = p.on_line(r#"{"type":"agent_end","messages":[],"willRetry":false}"#);
+        assert_eq!(ends(&st.events), [("done".into(), "".into())]);
+    }
+
+    #[test]
     fn codex_resume_takes_only_a_thread_uuid() {
         let c = ChatSessions::default();
         let tmp = std::env::temp_dir();
@@ -3030,5 +3592,95 @@ mod tests {
         }
         assert!(c.start_agent("pi", &tmp, Some("01a1c3b9-4b7f-7542-900c-c5f4dc80eefa"), &[], |_| {}).is_err());
         assert_eq!(c.count(), 0);
+    }
+
+    // ---- attached files: each agent's own image input (shapes checked against claude 2.1.322, codex 0.167,
+    // omo 5.0 beta on 2026-11-11: each read a word from a PNG sent this way) -----------------------------------
+
+    fn pic() -> Picture {
+        Picture { path: "/h/.omher/session-files/s1/1-word.png".into(), mime: "image/png".into(), data: "iVBORw0KGgo=".into() }
+    }
+    fn with_pic(text: &str) -> Input {
+        Input::Send { text: text.into(), images: vec![pic()] }
+    }
+
+    #[test]
+    fn the_ui_sends_picture_paths_and_text_only_messages_still_parse() {
+        let i: Input = serde_json::from_value(json!({"kind": "send", "text": "hi"})).unwrap();
+        assert_eq!(i, Input::send("hi"));
+        let i: Input = serde_json::from_value(json!({"kind": "send", "text": "look", "images": ["/h/.omher/session-files/s1/1-a.png"]})).unwrap();
+        let Input::Send { images, .. } = i else { panic!() };
+        assert_eq!(images, [Picture { path: "/h/.omher/session-files/s1/1-a.png".into(), ..Picture::default() }]);
+        // the UI cannot hand the shell bytes or a type: only a path, which resolve() checks and reads
+        assert!(serde_json::from_value::<Input>(json!({"kind": "send", "text": "x", "images": [{"path": "/a", "data": "AAAA"}]})).is_err());
+    }
+
+    #[test]
+    fn claude_gets_pictures_as_base64_image_blocks_before_the_text() {
+        let mut c = claude_up_raw();
+        let st = c.on_input(with_pic("What does it say?")).unwrap();
+        let m: Value = serde_json::from_str(&st.write[0]).unwrap();
+        assert_eq!(
+            m["message"]["content"],
+            json!([{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}, {"type": "text", "text": "What does it say?"}])
+        );
+        // a picture with nothing typed: no empty text block
+        let mut c = claude_up_raw();
+        let st = c.on_input(with_pic("")).unwrap();
+        let m: Value = serde_json::from_str(&st.write[0]).unwrap();
+        assert_eq!(m["message"]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn codex_gets_pictures_as_local_image_items_even_when_queued_before_the_thread() {
+        let mut x = codex_up();
+        let st = x.on_input(with_pic("What does it say?")).unwrap();
+        let t: Value = serde_json::from_str(st.write.last().unwrap()).unwrap();
+        assert_eq!(t["method"], "turn/start");
+        assert_eq!(t["params"]["input"], json!([{"type": "localImage", "path": "/h/.omher/session-files/s1/1-word.png"}, {"type": "text", "text": "What does it say?"}]));
+        // sent before the thread exists: the picture waits with the text
+        let mut x = Codex::new("/w/proj", None);
+        x.start();
+        assert!(x.on_input(with_pic("")).unwrap().write.is_empty());
+        let st = run(&mut x, &real("codex-init.jsonl"));
+        let t: Value = st.write.iter().map(|w| serde_json::from_str::<Value>(w).unwrap()).find(|v| v["method"] == "turn/start").unwrap();
+        assert_eq!(t["params"]["input"], json!([{"type": "localImage", "path": "/h/.omher/session-files/s1/1-word.png"}]));
+    }
+
+    #[test]
+    fn pi_and_omo_get_pictures_as_the_prompt_images() {
+        let mut p = Pi::new("/w/proj", "OmO");
+        p.start();
+        let st = p.on_input(with_pic("What does it say?")).unwrap();
+        let cmd: Value = serde_json::from_str(&st.write[0]).unwrap();
+        assert_eq!(s(&cmd, "type"), "prompt");
+        assert_eq!(s(&cmd, "message"), "What does it say?");
+        assert_eq!(cmd["images"], json!([{"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}]));
+        let st = p.on_input(Input::send("no picture")).unwrap();
+        let cmd: Value = serde_json::from_str(&st.write[0]).unwrap();
+        assert!(cmd.get("images").is_none());
+    }
+
+    #[test]
+    fn resolve_reads_only_pictures_omher_saved() {
+        let home = std::env::temp_dir().join(format!("omher-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let home = home.canonicalize().unwrap();
+        let png = session_files::save(&home, "s1", "word.png", b"\x89PNG").unwrap();
+        let mut i = Input::Send { text: "x".into(), images: vec![Picture::from(png.to_string_lossy().into_owned())] };
+        i.resolve(&home).unwrap();
+        let Input::Send { images, .. } = &i else { panic!() };
+        assert_eq!((images[0].mime.as_str(), images[0].data.as_str()), ("image/png", "iVBORw=="));
+        let txt = session_files::save(&home, "s1", "notes.txt", b"a").unwrap();
+        let outside = home.join("secret.png");
+        std::fs::write(&outside, b"x").unwrap();
+        for bad in [txt.to_string_lossy().into_owned(), outside.to_string_lossy().into_owned(), "/etc/hosts".into(), "relative.png".into()] {
+            let mut i = Input::Send { text: "x".into(), images: vec![Picture::from(bad.clone())] };
+            assert!(i.resolve(&home).is_err(), "{bad}");
+        }
+        // other inputs carry no files
+        assert!(Input::Interrupt.resolve(&home).is_ok());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

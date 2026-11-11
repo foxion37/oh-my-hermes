@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Bot, Skill } from "../../lib/protocol";
 import { useStore, type OutFile, type ReplyChip } from "../../state/store";
 import { ArrowUp, CloseIcon, SourceIcon, StopIcon } from "../../ui";
@@ -7,6 +7,8 @@ import "./attach.css";
 import { SkillPicker, mirrorText } from "./Skills";
 import { findTokens, fragmentAt, matchSkills } from "./skillTokens";
 import { getDraft, setDraft } from "../../app/drafts";
+import { t, tx } from "../../i18n";
+import { composing as imeComposing } from "../../lib/ime";
 
 const MAX_H = 200;
 
@@ -28,6 +30,9 @@ export function Composer({
   onClearReply,
   offlineText,
   skills: skillsOn = false,
+  tools,
+  action,
+  foot,
 }: {
   bot: Bot;
   running: boolean;
@@ -35,7 +40,7 @@ export function Composer({
   asking?: boolean;
   offline: boolean;
   onSend: (text: string) => void;
-  /** Without it (a SESSIONS chat) there is no + and no drop: files go only to a bot's main chat. */
+  /** Files with the text (a bot's main chat, a SESSIONS chat agent). Without it there is no +, drop or file paste. */
   onSendFiles?: (text: string, files: OutFile[]) => Promise<void>;
   onStop: () => void;
   reply?: ReplyChip | null;
@@ -44,6 +49,12 @@ export function Composer({
   offlineText?: string;
   /** Offer the bot's skills on `./` (a bot's main chat). */
   skills?: boolean;
+  /** Controls in the row before Send (a New session chat's agent picker). */
+  tools?: ReactNode;
+  /** Stands in for Send (a terminal agent's Start). */
+  action?: ReactNode;
+  /** A quiet line under the box (a session's folder and account). */
+  foot?: ReactNode;
 }) {
   // unsent text survives switching chats and restarts (drafts.ts; the composer is keyed by its chat)
   const [text, setText] = useState(() => getDraft(bot.name));
@@ -211,8 +222,7 @@ export function Composer({
       {picking && <SkillPicker items={items} active={at} onPick={pick} onHover={setActive} popRef={pop} />}
       {slash && (
         <div className="hint" role="note" data-testid="skill-hint">
-          <span className="hint-k">/skill</span> Type a skill name, e.g. <code>/plan</code> — {bot.display_name} loads it
-          for this message
+          <span className="hint-k">/skill</span> {tx("cmp.skillHint", { example: <code>/plan</code>, bot: bot.display_name })}
         </div>
       )}
       <div className={`composer${has ? " has" : ""}`} data-testid="composer-box">
@@ -231,8 +241,8 @@ export function Composer({
             <button
               type="button"
               className="rc-x"
-              aria-label="Remove reply target"
-              title="Remove"
+              aria-label={t("cmp.removeReply")}
+              title={t("cmp.remove")}
               onClick={() => {
                 onClearReply?.();
                 ref.current?.focus();
@@ -256,14 +266,14 @@ export function Composer({
               disabled={offline}
               placeholder={
                 offline
-                  ? (offlineText ?? `${bot.display_name} is offline`)
+                  ? (offlineText ?? t("cmp.offline", { bot: bot.display_name }))
                   : reply
-                    ? `Tell ${bot.display_name} what to post there`
+                    ? t("cmp.replyThere", { bot: bot.display_name })
                     : asking
-                      ? "Answer above, or type to reply"
-                      : `Message ${bot.display_name}`
+                      ? t("cmp.asking")
+                      : t("cmp.message", { bot: bot.display_name })
               }
-              aria-label={`Message ${bot.display_name}`}
+              aria-label={t("cmp.message", { bot: bot.display_name })}
               data-testid="composer"
               onChange={(e) => {
                 setText(e.target.value);
@@ -280,7 +290,7 @@ export function Composer({
                 add(files);
               }}
               onKeyDown={(e) => {
-                const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+                const composing = imeComposing(e);
                 if (picking && !composing) {
                   const n = items.length;
                   if ((e.key === "ArrowDown" || e.key === "ArrowUp") && n) {
@@ -310,16 +320,19 @@ export function Composer({
               }}
             />
           </div>
-          {showStop ? (
-            <button type="button" className="send stop" aria-label="Stop" title="Stop" onClick={onStop} data-testid="stop">
+          {tools}
+          {action ? (
+            action
+          ) : showStop ? (
+            <button type="button" className="send stop" aria-label={t("cmp.stop")} title={t("cmp.stop")} onClick={onStop} data-testid="stop">
               <StopIcon />
             </button>
           ) : (
             <button
               type="button"
               className="send"
-              aria-label="Send"
-              title="Send"
+              aria-label={t("cmp.send")}
+              title={t("cmp.send")}
               disabled={!has || offline || sending}
               onClick={() => void send()}
               data-testid="send"
@@ -329,6 +342,7 @@ export function Composer({
           )}
         </div>
       </div>
+      {foot}
     </div>
   );
 }

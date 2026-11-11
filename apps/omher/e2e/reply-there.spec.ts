@@ -33,6 +33,8 @@ const submits = async (): Promise<{ bot: string; session_id: string; text: strin
 /** Every op the app may call: reads, plus chat.send to the main chat. Nothing here writes to a messenger. */
 const ALLOWED = new Set([
   "hello",
+  // every bot's automations, read from files (no gateway)
+  "automations.list",
   "bots.list",
   "bots.avatar",
   "bots.info",
@@ -46,6 +48,8 @@ const ALLOWED = new Set([
   "accounts.list",
   // channel names for Slack / Discord link chips: a read of the bot's own sessions
   "links.places",
+  // the bot's own plans, for the header's panel button (a read of its dag runs)
+  "runs.list",
 ]);
 
 /** Screenshot after every running animation (chip / menu `pop`) has finished; under load they start late. */

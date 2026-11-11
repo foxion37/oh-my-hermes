@@ -4,10 +4,12 @@
 // so a mock host echoes terminal typing and a mock agent answers chats with the same events.
 import { AGENTS, agentDef, type AgentId, type AgentInfo } from "./agents";
 import type { ApprovalChoice, ClarifyAnswers } from "../lib/protocol";
+import { t } from "../i18n";
 
-/** What the person did in a chat. Mirrors `Input` in src-tauri/src/agent_chat.rs. */
+/** What the person did in a chat. Mirrors `Input` in src-tauri/src/agent_chat.rs. `images`: saved copies
+ *  (`saveFile`) of attached pictures, for the agent's own image input. */
 export type ChatInput =
-  | { kind: "send"; text: string }
+  | { kind: "send"; text: string; images?: string[] }
   | { kind: "interrupt" }
   | { kind: "approve"; request_id: string; choice: ApprovalChoice }
   | { kind: "clarify"; request_id: string; answer: string | ClarifyAnswers }
@@ -27,7 +29,7 @@ export interface SessionHost {
   /** Native folder picker; null when the person cancels. */
   pickFolder(defaultPath: string): Promise<string | null>;
   /** Start `agent` in `cwd` in a terminal. Only the agent id goes to the shell: never a command line.
-   *  `resume` is a Claude Code session id (the terminal view of a chat); the shell checks it is one. `account`
+   *  `resume` is a Claude Code session id (the terminal view of a chat); the shell checks it is a UUID. `account`
    *  names the Settings › Accounts login it runs as (the one it ran with, after a restart); none = the one picked
    *  for new sessions. */
   start(
@@ -43,11 +45,20 @@ export interface SessionHost {
   write(id: number, data: string): Promise<void>;
   resize(id: number, cols: number, rows: number): Promise<void>;
   close(id: number): Promise<void>;
-  /** Start `agent` in its chat mode in `cwd` (`resume`: a Claude Code session id or a Codex thread id to continue;
+  /** Start `agent` in its chat mode in `cwd` (`resume`: a Claude Code or OmO session id or a Codex thread id to continue;
    *  `account`: as for `start`). */
   chatStart(agent: AgentId, cwd: string, onEvent: (ev: ChatEvent) => void, resume?: string, account?: string): Promise<number>;
   chatInput(id: number, input: ChatInput): Promise<void>;
   chatClose(id: number): Promise<void>;
+  /** Save a file the person attached in session `session` under omher's own folder
+   *  (`~/.omher/session-files/<session>/`); the saved copy's absolute path. */
+  saveFile(session: string, name: string, data: Uint8Array): Promise<string>;
+  /** The bytes of a file `saveFile` saved (a sent bubble's picture after a restart). */
+  readFile(path: string): Promise<Uint8Array>;
+  /** Remove session `session`'s saved files. */
+  removeFiles(session: string): Promise<void>;
+  /** Remove the saved files of every session not in `keep`. */
+  pruneFiles(keep: string[]): Promise<void>;
 }
 
 // ---- Tauri ----------------------------------------------------------------------------------
@@ -71,7 +82,7 @@ export class TauriHost implements SessionHost {
   }
   async pickFolder(defaultPath: string) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const r = await open({ directory: true, multiple: false, defaultPath, title: "Choose a folder for the session" });
+    const r = await open({ directory: true, multiple: false, defaultPath, title: t("ss.pickFolder") });
     return typeof r === "string" ? r : null;
   }
   async start(agent: AgentId, cwd: string, cols: number, rows: number, onData: (d: Uint8Array) => void, onExit: (c: number | null) => void, resume?: string, account?: string) {
@@ -96,6 +107,23 @@ export class TauriHost implements SessionHost {
     const { invoke } = await this.core();
     await invoke("chat_close", { id });
   }
+  async saveFile(session: string, name: string, data: Uint8Array) {
+    const { invoke } = await this.core();
+    // the bytes go raw (no JSON array of numbers); the name rides in a header
+    return invoke<string>("session_file_save", data, { headers: { "x-session": session, "x-name": encodeURIComponent(name) } });
+  }
+  async readFile(path: string) {
+    const { invoke } = await this.core();
+    return new Uint8Array(await invoke<ArrayBuffer>("session_file_read", { path }));
+  }
+  async removeFiles(session: string) {
+    const { invoke } = await this.core();
+    await invoke("session_files_remove", { session });
+  }
+  async pruneFiles(keep: string[]) {
+    const { invoke } = await this.core();
+    await invoke("session_files_prune", { keep });
+  }
   async write(id: number, data: string) {
     const { invoke } = await this.core();
     await invoke("session_write", { id, data });
@@ -113,7 +141,7 @@ export class TauriHost implements SessionHost {
 // ---- mock (browser, e2e) --------------------------------------------------------------------
 
 export interface MockCall {
-  op: "reset" | "start" | "write" | "resize" | "close" | "chat.start" | "chat.input" | "chat.close";
+  op: "reset" | "start" | "write" | "resize" | "close" | "chat.start" | "chat.input" | "chat.close" | "file.save" | "file.remove" | "file.prune";
   id?: number;
   agent?: string;
   cwd?: string;
@@ -123,11 +151,18 @@ export interface MockCall {
   resume?: string;
   account?: string;
   input?: ChatInput;
+  session?: string;
+  name?: string;
+  size?: number;
+  path?: string;
+  keep?: string[];
 }
 
 const BANNER: Record<AgentId, string> = {
   claude: "\x1b[38;2;217;119;87m✻\x1b[0m \x1b[1mClaude Code\x1b[0m \x1b[2m(mock)\x1b[0m",
   codex: "\x1b[1m>_ Codex\x1b[0m \x1b[2m(mock)\x1b[0m",
+  omo: "\x1b[1mOmO\x1b[0m \x1b[2m(mock)\x1b[0m",
+  dsh: "\x1b[1mDeepSeek Harness\x1b[0m \x1b[2m(mock)\x1b[0m",
   omh: "\x1b[38;2;211;60;141m◆\x1b[0m \x1b[1moh-my-hermes\x1b[0m \x1b[2m(mock)\x1b[0m",
   pi: "\x1b[1mπ pi\x1b[0m \x1b[2m(mock)\x1b[0m",
   omp: "\x1b[1mπ oh-my-pi\x1b[0m \x1b[2m(mock)\x1b[0m",
@@ -135,7 +170,13 @@ const BANNER: Record<AgentId, string> = {
 };
 const PROMPT = "\x1b[2m›\x1b[0m ";
 
-type MockGlobals = { __omherPickFolder?: string | null; __omherSessionCalls?: MockCall[]; __omherMockAgents?: AgentId[] };
+type MockGlobals = {
+  __omherPickFolder?: string | null;
+  __omherSessionCalls?: MockCall[];
+  __omherMockAgents?: AgentId[];
+  /** e2e: the next file saves fail with this message */
+  __omherFileSaveError?: string;
+};
 
 /** Echoes typing, answers each line, ends on `exit` or Ctrl+D. Installed: claude, codex, omh. */
 export class MockHost implements SessionHost {
@@ -235,6 +276,31 @@ export class MockHost implements SessionHost {
     this.chats.get(id)?.stop();
     this.chats.delete(id);
   }
+
+  // ---- files: kept in memory under the same paths the shell would use ------------------------
+  private files = new Map<string, Uint8Array>();
+  async saveFile(session: string, name: string, data: Uint8Array) {
+    if (this.g.__omherFileSaveError) throw new Error(this.g.__omherFileSaveError);
+    const dir = `/Users/you/.omher/session-files/${session}/`;
+    let n = 1;
+    while (this.files.has(`${dir}${n}-${name}`)) n += 1;
+    const path = `${dir}${n}-${name}`;
+    this.files.set(path, data);
+    this.log({ op: "file.save", session, name, size: data.length, path });
+    return path;
+  }
+  async readFile(path: string) {
+    const d = this.files.get(path);
+    if (!d) throw new Error("not a file omher saved");
+    return d;
+  }
+  async removeFiles(session: string) {
+    this.log({ op: "file.remove", session });
+    for (const k of [...this.files.keys()]) if (k.includes(`/session-files/${session}/`)) this.files.delete(k);
+  }
+  async pruneFiles(keep: string[]) {
+    this.log({ op: "file.prune", keep });
+  }
 }
 
 const MOCK_MODELS: Record<string, { id: string; label: string }[]> = {
@@ -249,6 +315,7 @@ const MOCK_MODELS: Record<string, { id: string; label: string }[]> = {
   ],
   pi: [{ id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5" }],
   omp: [{ id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5" }],
+  omo: [{ id: "claude-fable-5-1", label: "Claude Fable 5.1" }],
 };
 
 /** One mock chat agent. `/approve` asks to run `rm -rf ./build`; `/slow` streams long enough to stop with
@@ -265,13 +332,18 @@ class MockChat {
     this.model = MOCK_MODELS[agent]?.[0]?.label ?? agentDef(agent).label;
     this.session = resume ?? `${agent}-mock-${Math.random().toString(16).slice(2, 10)}-0000-0000-000000000000`;
     if (agent === "claude" && !resume) this.session = "11111111-2222-4333-8444-555555555555";
+    // DeepSeek Harness names its session `session-<uuid>` and reports no model in its headless stream
+    if (agent === "dsh") {
+      if (!resume) this.session = "session-8c11e2bc-9f55-4bcb-a597-19ea472184e8";
+      this.model = "";
+    }
   }
   private at(ms: number, fn: () => void) {
     this.timers.push(setTimeout(fn, ms));
   }
   boot() {
     this.at(20, () => {
-      this.emit({ event: "session.info", agent_session: this.session, model: this.model });
+      this.emit({ event: "session.info", agent_session: this.session, ...(this.model ? { model: this.model } : {}) });
       this.emit({ event: "session.models", options: (MOCK_MODELS[this.agent] ?? []).map((m) => ({ ...m, detail: "" })) });
     });
   }
@@ -344,13 +416,34 @@ class MockChat {
         this.at(60, () => this.end("error", `${agentDef(this.agent).label} is not signed in. Sign in from Settings › Accounts, then Restart.`));
         return;
       }
+      if (text === "/die") {
+        // the program dies mid-turn with nothing more on its stdout (a crash before the shell saw the turn)
+        this.at(60, () => this.emit({ event: "delta", text: "partial" }));
+        this.at(120, () => {
+          this.stop();
+          this.turn = false;
+          this.emit({ event: "exit", code: null, error: "" });
+        });
+        return;
+      }
+      if (text.endsWith("/late")) {
+        // OmO (omo-1-plain.jsonl): the answer, the turn's end, then a status of its own (`setStatus`) after it
+        this.say("ok", 60);
+        this.at(400, () => {
+          this.end("done"); // clears the pending timers: the late events are scheduled after it
+          this.at(50, () => this.emit({ event: "status", text: "mem:khope-sionic-ai-d09472c9 9d ago (+1)" }));
+          this.at(100, () => this.emit({ event: "thinking" }));
+        });
+        return;
+      }
       if (text.startsWith("/slow")) {
         for (let k = 0; k < 40; k++) this.at(100 + k * 250, () => this.emit({ event: "delta", text: `line ${k + 1}\n` }));
         return;
       }
       this.at(60, () => this.emit({ event: "tool.start", tool_id: `t${this.seq}`, name: "read_file", detail: "README.md" }));
       this.at(300, () => this.emit({ event: "tool.end", tool_id: `t${this.seq}`, name: "", ok: true, ms: 240 }));
-      this.say(`(mock ${agentDef(this.agent).label}) You said: ${text}`, 360);
+      const pics = i.images?.length ? ` (${i.images.length} picture${i.images.length > 1 ? "s" : ""})` : "";
+      this.say(`(mock ${agentDef(this.agent).label}) You said: ${text}${pics}`, 360);
       this.at(800, () => this.end("done"));
     } else if (i.kind === "interrupt") {
       if (!this.turn) throw new Error("nothing is running");

@@ -39,10 +39,11 @@ because over stdio the gateway otherwise waits out its whole deadline; events
 whose envelope `session_id` is not the live session are dropped, except
 `gateway.*` and withdrawals, which match by request id; the stored session id
 is tracked from every `session.info` and written (id only, mode 0600) to
-`HERMES_TUI_ACTIVE_SESSION_FILE`; input sent while a turn runs is queued in
-memory whatever Hermes' `display.busy_input_mode` says, a slash command too
-(only the ones `slash.RUNS_DURING_TURN` names run at once: `_run_slash`), and
-only Esc or `/stop` interrupts a turn.
+`HERMES_TUI_ACTIVE_SESSION_FILE`; typed text sent with Enter while a turn
+runs steers it (`_on_composer`, as Claude Code does), and what a steer cannot
+carry is queued in memory whatever Hermes' `display.busy_input_mode` says, a
+slash command too (only the ones `slash.RUNS_DURING_TURN` names run at once:
+`_run_slash`), and only Esc or `/stop` interrupts a turn.
 The queue is the TUI's own (the gateway has no call that withdraws a prompt):
 its prompts are listed above the composer's top rule, and Up on an empty
 composer takes them back into the composer (a `!` line on its own, never
@@ -149,8 +150,8 @@ from ..skin_pack import (
     write_wallpaper_choice,
 )
 from . import gateway_contract as contract
-from .composer import COMPLETE, EXIT, IMAGE_LABEL, INTERRUPT, SUBMIT, VIM_INSERT, VIM_NORMAL, Composer, ComposerAction
-from .frame import INFO_INSET, MODE_NORMAL, MODE_SHELL, Frame, badge_forms, branch_forms, build_frame, sticky_line
+from .composer import COMPLETE, EXIT, IMAGE_LABEL, INTERRUPT, SUBMIT, VIM_INSERT, VIM_NORMAL, VIM_REPLACE, VIM_VISUAL, Composer, ComposerAction
+from .frame import INFO_INSET, MODE_NORMAL, MODE_SHELL, Frame, badge_forms, branch_forms, build_frame
 from .git_status import GitWatcher
 from .inline_image import MODE_KITTY, PREVIEW_KEEP, PREVIEW_MAX_COLS, PREVIEW_MAX_ROWS, Preview, preview_from
 from .history import SEARCH_ACCEPT, SEARCH_CANCEL, SEARCH_HINTS, HistorySearch, append_entry, history_path, load_history
@@ -208,7 +209,7 @@ from .keys import (
 )
 from .generation_watch import GenerationWatch, watch_for
 from .launch import (
-    BOTS_HOME_ENV, CLOSED_EXIT, PICK_SESSION_ENV, RELAUNCH_EXIT, RELAUNCH_FILE_ENV, RUNTIME_ENV, RUNTIME_OWN_VALUE,
+    CLOSED_EXIT, PICK_SESSION_ENV, RELAUNCH_EXIT, RELAUNCH_FILE_ENV, RUNTIME_ENV, RUNTIME_OWN_VALUE,
     SESSION_FILE_ENV, UPDATED_ENV, UPDATED_PLAIN, UPDATED_PLAN, request_fallback, request_relaunch,
 )
 from .agent_view import AGENT_STEER_LEFT_UNANSWERED_NOTICE, STEER_SAY, TAIL_ANSWER_SECONDS, AgentViewMixin
@@ -259,6 +260,7 @@ from .screen import (
     CURSOR_HOME,
     CURSOR_SHAPE_BEAM,
     CURSOR_SHAPE_BLOCK,
+    CURSOR_SHAPE_UNDERLINE,
     ERASE_SCROLLBACK,
     FLUSHED_KEPT,
     HIDE_CURSOR,
@@ -1091,11 +1093,13 @@ BELL_OFF = "0"
 # the OMH home) or OMH_TUI_WALLPAPER=0 turns it off, and the terminal's own background comes back at once.
 WALLPAPER_ENV = "OMH_TUI_WALLPAPER"
 WALLPAPER_OFF = "0"
-# The main screen leaves the wheel and selection to the terminal (the owner's decision of 2026-11-06): reports are
-# asked for only while the agent list or the /theme picker takes clicks. OMH_TUI_MOUSE=1 takes the mouse there
-# (`_screen_mouse`): a drag selects and copies without the rail, the wheel opens the transcript view.
+# The main screen takes the mouse (`_screen_mouse`; the owner's decision of 2026-11-11, back from the one of 2026-11-06
+# that left it to the terminal): a drag selects and copies without the rail and with the rows the TUI wrapped joined
+# again; the wheel up hands the mouse to the terminal (`wheel_lent`), which scrolls its own scrollback, until the next
+# key. OMH_TUI_MOUSE=0 leaves the wheel and selection to the terminal there: reports are asked for only while the
+# agent list or the /theme picker takes clicks.
 MOUSE_ENV = "OMH_TUI_MOUSE"
-MOUSE_TAKEN = "1"
+MOUSE_NATIVE = "0"
 # A turn that ran this long ends with the terminal's attention signal (`attention_sequence`).
 TURN_ALERT_SECONDS = 10.0
 TURN_ALERT_TEXT = "Hermes finished a turn ({elapsed})"
@@ -2031,6 +2035,10 @@ def _slot_owns(slot: PromptSlot, event: Key | Paste, composer_text: str) -> bool
         return False
     if event.name in (ESCAPE, UP, DOWN):
         return True
+    if slot.method == "clarify" and event.name == CHAR and event.ctrl and event.char in ("n", "p") and not (
+        event.alt or event.shift or event.reported_shift
+    ):
+        return True
     return not composer_text and event.name == CHAR and event.ctrl and event.char == "c"
 
 
@@ -2075,7 +2083,9 @@ def picker_key(event: Key | Paste | Mouse) -> str:
     if event.name != CHAR:
         return _PICKER_KEYS.get(event.name, KEY_NONE)
     if event.ctrl:
-        return KEY_QUIT if event.char in ("c", "d") else KEY_NONE
+        if event.shift or event.reported_shift:
+            return KEY_NONE
+        return {"c": KEY_QUIT, "d": KEY_QUIT, "n": KEY_DOWN, "p": KEY_UP}.get(event.char, KEY_NONE)
     return plain_key(event.char)
 
 
@@ -2268,7 +2278,7 @@ class App(ModesMixin, AgentViewMixin):
         # What `commands.catalog` last said, bound to the live session: completion and `/help` read it.
         self.catalog: list[tuple[str, str]] = []
         # Every name a typed `/name` resolves to (`slash.known_names`): drawn bold in its colour in the composer,
-        # your prompt's row and the `↳ you:` reminder. The TUI's own commands until the catalog arrives.
+        # and your prompt's row. The TUI's own commands until the catalog arrives.
         self.known_slash = known_names()
         self.catalog_categories: list[tuple[str, list[str]]] = []
         self.skill_count = 0
@@ -2324,8 +2334,6 @@ class App(ModesMixin, AgentViewMixin):
         self.lifecycle_seen = 0  # the live session's `message.start` and `message.complete` events, counted
         self.inbound_at = 0.0  # when the gateway last sent anything (`GATEWAY_SILENCE_SECONDS`)
         self.authority_epoch: object = None  # the shared gateway's epoch the last create or resume answered
-        self.sticky = ""
-        self.flushed_since_prompt = 0  # rows printed above the region from the last prompt's first row on
         self.turn_pending = False  # a prompt went out and its turn has not started (or ended) yet
         # The undeclared event types the submitted turn has brought before any of TURN_PROGRESS_EVENTS; None
         # before the first prompt, once the watch ends, and after the notice (`_watch_turn`).
@@ -2372,7 +2380,9 @@ class App(ModesMixin, AgentViewMixin):
         self.board_reader: BoardReader | None = None
         self.make_board_reader: Callable[..., BoardReader] | None = None  # `bot_board.BoardReader` when None
         self.redraw_after_pager = False  # a full redraw the main screen is owed once the pager is left
-        self.pager_by_wheel = False  # the open pager is the view the wheel opened, which the wheel down leaves
+        # The wheel turned up on the main screen: reports are off, so the terminal scrolls its own scrollback as in any
+        # shell, until the next key or paste takes them back (`_take_main_mouse`).
+        self.wheel_lent = False
         self.hud: HudSnapshot | None = None
         self.goal: Mapping[str, Any] | None = None  # Hermes' standing /goal, as its last `session.control.update` said
         self.retired_plan = ""  # the text of a finished plan the panel no longer draws (`_retire_finished_plan`)
@@ -3185,9 +3195,9 @@ class App(ModesMixin, AgentViewMixin):
         """Whether a lone ESC the decoder holds may be the start of a mouse report, so it waits
         `keys.REPORTING_ESCAPE_SECONDS` for the rest before it is Esc.
 
-        By default, whenever reporting is on (the agent list, the /theme
-        picker, a pager). Where the main screen takes the mouse
-        (`OMH_TUI_MOUSE=1`), reporting is on nearly all the time, and a wait on every Esc
+        With `OMH_TUI_MOUSE=0`, whenever reporting is on (the agent list, the
+        /theme picker, a pager). Where the main screen takes the mouse
+        (the default), reporting is on nearly all the time, and a wait on every Esc
         would slow interrupting a turn and leaving vim's INSERT on every
         terminal that sends Esc as one byte. There it waits only where a report
         can come split: over SSH or WSL (`remote`), while a button is held (a
@@ -4618,6 +4628,7 @@ class App(ModesMixin, AgentViewMixin):
             else:
                 self._on_mouse(event)  # never a key: whatever it is, it types nothing
             return
+        self.wheel_lent = False  # the screen's mouse is the TUI's again from the next frame: a drag copies clean
         if self._copy_key_dropped(event):
             return
         self._drop_selection()  # it is of the screen as it is, which a key may move
@@ -4630,7 +4641,9 @@ class App(ModesMixin, AgentViewMixin):
             return
         if self.slot is None and self._front_picker() is not None:
             self.composer._drop_pending()  # the picker owns input, including display keys that return below
-        if self._display_key(event):
+        if (not self.composer.visual or self.slot is not None or self._front_picker() is not None) and (
+            self._display_key(event)
+        ):
             return
         if isinstance(event, Key) and event.name == CHAR and event.ctrl and event.char == "c" and (
             self.composer.pending and self._exit_said()
@@ -4649,7 +4662,9 @@ class App(ModesMixin, AgentViewMixin):
             if isinstance(event, Key) and event.name == ESCAPE:
                 self._escape(event)  # drops the target as any pending command's Esc does, holding a waiting continue
                 return
-            if isinstance(event, Paste):
+            if isinstance(event, Paste) or (self.composer.visual and (
+                event.name == ENTER or (event.name == CHAR and event.ctrl and not event.alt and event.char == "v")
+            )):
                 self.composer._drop_pending()
             else:
                 self._on_composer(self._edit(self.composer, event), event)
@@ -4686,6 +4701,23 @@ class App(ModesMixin, AgentViewMixin):
             else:
                 self._model_picker_key(event)
             return
+        if self.slot is None and self.composer.normal and not self.composer.visual and self.composer._prefix in ("g", "r"):
+            # The g/r grammar owns its follower after picker/slot/display policy,
+            # just like a literal find. Clipboard and Paste keep native intake;
+            # Enter and other invalid followers are consumed by Composer.
+            if isinstance(event, Paste) or (event.name == CHAR and event.ctrl and not event.alt and event.char == "v"):
+                self.composer._drop_pending()
+            else:
+                if not self._escape(event):
+                    self._on_composer(self._edit(self.composer, event), event)
+                return
+        if self.slot is None and self.composer.visual:
+            self.escape_armed = None
+            if self._attachment_input(event) or self._escape(event) or self._send_now_key(event):
+                return
+            self._on_composer(self._edit(self.composer, event), event,
+                              steer=isinstance(event, Key) and event.name == ENTER and event.ctrl)
+            return
         if self.slot is None and self.list_selected is None and self.tree_selected is None and self._leader_key(event):
             return
         if self.slot is None and self._agent_list_key(event):
@@ -4704,10 +4736,7 @@ class App(ModesMixin, AgentViewMixin):
         # The send-now key, as Claude Code's: while a turn runs, on an empty composer with a prompt queued that can be
         # sent, Ctrl+Enter (or Ctrl+J, where Ctrl+Enter may arrive as Enter) sends the oldest queued prompt into the
         # turn. Anywhere else Ctrl+J adds a line, and Ctrl+Enter with text typed steers that text.
-        if event in (SEND_NOW_KEY, STEER_FALLBACK_KEY) and not self.composer.text and self._steer_keys_live() and (
-            self._queue_head_steers()
-        ):
-            self._send_queued_now()
+        if self._send_now_key(event):
             return
         # The second Ctrl+C leaves even over text while the info line names it (`_exit_said`): the queue an interrupt
         # gives back lands in the composer between the presses, and clearing it there would leave the TUI open. Any
@@ -4722,16 +4751,30 @@ class App(ModesMixin, AgentViewMixin):
         action = self._edit(self.composer, event)
         self._on_composer(action, event, steer=isinstance(event, Key) and event.name == ENTER and event.ctrl)
 
+    def _send_now_key(self, event: Key | Paste) -> bool:
+        """Keep empty-draft queued send policy shared by ordinary and visual input."""
+        if event in (SEND_NOW_KEY, STEER_FALLBACK_KEY) and not self.composer.text and self._steer_keys_live() and (
+            self._queue_head_steers()
+        ):
+            self.composer._clear_visual()
+            self._send_queued_now()
+            return True
+        return False
+
     def _edit(self, composer: Composer, event: Key | Paste) -> ComposerAction:
         """`event` to `composer`, the person's own key: one that changes its text reopens the `/` menu at its top."""
-        before, editing = composer.text, composer.normal
+        before, editing, visual = composer.text, composer.normal, composer.visual
         action = composer.handle(event)
+        if composer.take_bell() and self.environ.get(BELL_ENV) != BELL_OFF:
+            self.terminal.write(BELL)
         if composer.text != before:
             self.menu_index = 0
             self.menu_closed = None
             self.escape_armed = None  # an edit takes back what a second Esc would have done
         elif composer.normal != editing:
             self.escape_armed = None  # so does a change of vim mode's editing mode (`i` between two Escs)
+        elif visual or composer.visual:
+            self.escape_armed = None  # selected motions and consumed followers are editing too
         return action
 
     def _front_picker(self) -> object | None:
@@ -4910,6 +4953,7 @@ class App(ModesMixin, AgentViewMixin):
         """The open question's text field (the composer while a slot is open) to `slot`: as shown, and as Enter in
         the field sends it, pastes whole (`Composer.expanded`)."""
         slot.draft, slot.draft_sent = self.composer.shown(), self.composer.expanded()
+        slot.draft_before = self.composer._labelled(self.composer.text[: self.composer.caret])
 
     def _next_question(self, question: int) -> None:
         """After a key or a submit the open slot took, from its question number `question`: if it moved on.
@@ -4961,6 +5005,16 @@ class App(ModesMixin, AgentViewMixin):
         """Act on what the composer made of `event`; `steer` says the key was Ctrl+Enter. A submit's image tokens go
         with it, to the prompt it sends."""
         if action.kind == SUBMIT:
+            # Enter steers a running turn with typed text, as Claude Code's does: the text shows as a sent prompt
+            # above the working row at once, never as a queued `⧗` row. What a steer cannot carry (a slash command,
+            # a `!` line, images) still queues for the turn's end (`_steer_or_submit`).
+            # Plan mode keeps Enter's queue: a plan request must not land in a turn that can edit. So does a queue
+            # already holding lines: what is sent goes behind them, in the order it was sent. And so does a prompt
+            # sent before Hermes has started the turn (`message.start`): there is no turn yet to steer.
+            steer = steer or (
+                self.transcript.running and self._steer_keys_live() and not self.plan_mode and not self.queued
+                and bool(action.text.strip())
+            )
             images = tuple(image for _label, image in action.images if isinstance(image, Attachment))
             if self.slot is None and self.tell_draft is None and self._hold_submit(action, images, steer):
                 return  # it goes once the pastes it was typed with are answered, with their images
@@ -5067,6 +5121,8 @@ class App(ModesMixin, AgentViewMixin):
             )
             return True
         if event.name == CHAR and event.ctrl and not event.alt and event.char == "v":
+            self.composer._clear_visual()
+            self.composer._invalidate_reselection()
             self._paste("")
             return True
         return False
@@ -5092,7 +5148,7 @@ class App(ModesMixin, AgentViewMixin):
         """
         if not isinstance(event, Key) or event.name != ESCAPE:
             return False
-        if self.composer.vim and (not self.composer.normal or self.composer.pending):
+        if self.composer.vim and (not self.composer.normal or self.composer.pending or self.composer.visual):
             self.composer.handle(event)
             self.path_items = []
             self.escape_armed = None
@@ -5992,8 +6048,9 @@ class App(ModesMixin, AgentViewMixin):
     ) -> None:
         """Send `text`, or queue it behind the running turn; `typed` is what Up puts back in the composer.
 
-        While a turn runs it always queues, whatever Hermes' `display.busy_input_mode` says: Enter never interrupts
-        or steers a turn (Esc and `/stop` interrupt it, the send-now key and `/steer` steer it). `notice` goes under
+        While a turn runs it always queues, whatever Hermes' `display.busy_input_mode` says: it never interrupts
+        or steers a turn (Enter's typed text steers before it gets here, `_on_composer`; Esc and `/stop` interrupt,
+        the send-now key and `/steer` steer). `notice` goes under
         its row (`_submit_prompt`). One that starts a turn waits for Hermes' default model to be checked
         (`_start_turn`), and what is sent while that wait is on queues behind it (`_queue_waits`); a queue the
         person holds (`queue_held`) waits for this very prompt to go on. `images` go with it, queued too.
@@ -6079,8 +6136,6 @@ class App(ModesMixin, AgentViewMixin):
             self.transcript.add_aside(NoticeBlock(notice))
         if not queued:
             self.queue_held = False  # the person started a turn: the queue goes on behind it
-        self.sticky = shown or text
-        self.flushed_since_prompt = 0
         self._clear_roster()  # the agents shown were the last turn's
         self.bg_done = None  # a turn starts: the finished row's offer was for an idle session
         self.turn_pending = True
@@ -7432,7 +7487,7 @@ class App(ModesMixin, AgentViewMixin):
 
         The old session's open requests are declined, yolo the TUI set there
         is turned off, and its runtime closed; everything that belonged to it
-        (transcript, queue, sticky prompt, attachments, HUD snapshot,
+        (transcript, queue, attachments, HUD snapshot,
         subagents) is dropped before the new one is adopted.
         The caller says so in the new transcript, after its own notice.
         """
@@ -7463,8 +7518,6 @@ class App(ModesMixin, AgentViewMixin):
             self.transcript.add_notice(
                 QUEUE_BACK_SWITCH_NOTICE.format(count=len(back), s="" if len(back) == 1 else "s"), NOTICE_WARN
             )
-        self.sticky = ""
-        self.flushed_since_prompt = 0  # rows printed above the region from the last prompt's first row on
         # Hermes held nothing of a draft's or the queue's images; what it staged for a prompt went with that session.
         self._reset_staging(UNSENT_BACK_SWITCH)
         self.hud = None
@@ -7520,14 +7573,16 @@ class App(ModesMixin, AgentViewMixin):
         self._settle_list()
 
     def _picker_arms(self, event: Key | Paste) -> bool:
-        """Whether `event` hands a waiting session picker the keys: Up, Down, Esc or Ctrl+C. Anything else stays the
+        """Whether `event` hands a waiting session picker the keys: Up, Down, Ctrl+N, Ctrl+P, Esc or Ctrl+C. Anything else stays the
         composer's, Enter included (it sends what was typed), and so does the next prompt typed after it: a prompt
         being typed never becomes the filter, as its filter row says."""
         picker = self.picker
         if picker is None:
             return False
         own = isinstance(event, Key) and (
-            event.name in (UP, DOWN, ESCAPE) or (event.name == CHAR and event.ctrl and event.char == "c")
+            event.name in (UP, DOWN, ESCAPE) or (event.name == CHAR and event.ctrl and (
+                event.char == "c" or (event.char in ("n", "p") and not (event.alt or event.shift or event.reported_shift))
+            ))
         )
         if own:
             picker.waiting = False
@@ -8065,9 +8120,6 @@ class App(ModesMixin, AgentViewMixin):
             return
         text = pager.handle_mouse(event, self.size[1], self.clock())
         self.dirty = True
-        if self.pager_by_wheel and event.button == WHEEL_DOWN and event.pressed and pager.at_end(self.size[1]):
-            self._leave_pager()  # the wheel brought the view back to where the screen was: the screen is back
-            return
         if text:
             pager.note = self._copy_selection(text).line(self.size[0], self.theme)
             self.copy_noted_at = self.clock()
@@ -8076,10 +8128,11 @@ class App(ModesMixin, AgentViewMixin):
         """A report on the main screen while it takes the mouse (`_takes_mouse`), not a click the agent list or the
         /theme picker took: the pager's selection over the rows the live region printed.
 
-        The wheel up opens the transcript view, Ctrl+O's (the open question's,
-        while one is asked), already scrolled one notch up from its end, which
-        is where the screen was; the wheel down does nothing, nor does the wheel
-        while a drag is under way. A press starts a drag, or picks a word or a
+        The wheel up hands the mouse to the terminal (`wheel_lent`): reports go
+        off, so the next notches scroll the terminal's own scrollback, as in
+        any shell, and the next key takes them back; the wheel down does
+        nothing, nor does the wheel while a drag is under way or over the
+        agent list. A press starts a drag, or picks a word or a
         row (`Selection`); the text a release or a double or triple click picks
         goes to the clipboard without the rail or any other gutter cell, and
         the notice row says what the copy did. Rows are read only where
@@ -8101,12 +8154,11 @@ class App(ModesMixin, AgentViewMixin):
         now = self.clock()
         selection = self.selection
         if event.button in (WHEEL_UP, WHEEL_DOWN):
-            over_list = last - (event.y - 1) in self.clickable  # the agent list's rows: the wheel opens nothing there
+            over_list = last - (event.y - 1) in self.clickable  # the agent list's rows: the wheel does nothing there
             if event.pressed and event.button == WHEEL_UP and not selection.dragging and not over_list:
                 self._drop_selection()
-                if self._transcript_view() and self.pager is not None:
-                    self.pager.handle_mouse(event, rows, now)  # one notch up from the end, as the wheel scrolls it
-                    self.pager_by_wheel = True
+                self.wheel_lent = True
+                self._set_mouse(False)  # this notch is spent; the terminal scrolls on the next ones
             return
         row = min(event.y - 1, last)  # a report counts from 1; one under the region is on its last row
         stable = self._last_stable_doc()
@@ -8142,13 +8194,13 @@ class App(ModesMixin, AgentViewMixin):
         limit = budget.total - budget.agents - budget.info  # the info line's row
         working = min(self._working_rows(), budget.tail)
         if working:
-            limit = min(limit, budget.sticky_gap + budget.sticky + budget.tail + budget.pad - working)
+            limit = min(limit, budget.tail + budget.pad - working)
         return first + limit - 1
 
     def _transcript_view(self) -> bool:
-        """What the mouse opens where it selects nothing: Ctrl+O's view, the open question while one is asked, else the
-        whole transcript at its end; nothing, and no notice, when the transcript has no rows to show (a trackpad's
-        wheel would say so on every notch). True when a view opened."""
+        """What a drag from a row the region did not print opens: Ctrl+O's view, the open question while one is asked,
+        else the whole transcript at its end; nothing, and no notice, when the transcript has no rows to show. True
+        when a view opened."""
         if self.slot is not None:
             self._question_view()
         else:
@@ -8237,17 +8289,17 @@ class App(ModesMixin, AgentViewMixin):
         return {doc: span for doc in range(held[0], held[1] + 1) if (span := self.selection.span_on(doc)) is not None}
 
     def _takes_mouse(self) -> bool:
-        """Whether the main screen takes the mouse (a drag selects, the wheel opens the transcript view): only with
-        OMH_TUI_MOUSE=1; by default the terminal keeps its wheel and selection there."""
-        return self.environ.get(MOUSE_ENV) == MOUSE_TAKEN
+        """Whether the main screen takes the mouse (a drag selects, the wheel up hands it to the terminal until the next
+        key): unless OMH_TUI_MOUSE=0 leaves the wheel and selection to the terminal there."""
+        return self.environ.get(MOUSE_ENV) != MOUSE_NATIVE
 
     def _take_main_mouse(self, clicks: bool) -> None:
         """Mouse reports on the main screen after a frame: with a held button's motion wherever the TUI takes the mouse
         (`_takes_mouse`), else only while something takes `clicks` (the agent list, the /theme picker), and either way
-        only while the row a report lands on is certain."""
+        only while the row a report lands on is certain; none while the wheel lent the mouse to the terminal."""
         certain = self.region.last_row(self.size[1]) is not None
         if self._takes_mouse():
-            self._set_mouse(certain, drag=True)
+            self._set_mouse(certain and not self.wheel_lent, drag=True)
         else:
             self._set_mouse(clicks and certain)
 
@@ -8589,7 +8641,6 @@ class App(ModesMixin, AgentViewMixin):
         self._drop_selection()  # the main screen comes back with it, and the next frame there paints it off
         self._stop_board_reader()  # a board this replaces reads no more
         self.pager = pager
-        self.pager_by_wheel = False
         self.log_agent = ""
         self.composer._drop_pending()
 
@@ -8957,10 +9008,18 @@ class App(ModesMixin, AgentViewMixin):
         return ground if ground is not None and self._shown_look() in SCENES else None
 
     def _sync_cursor_shape(self) -> None:
-        """Vim mode's cursor: a beam in INSERT, a block in NORMAL (DECSCUSR), written only when it changes. Without
-        vim mode, or where the composer does not have the keys, the terminal's own shape is back."""
-        label = self.composer.vim_label if self._composer_open() else ""
-        shape = CURSOR_SHAPE_BLOCK if label == VIM_NORMAL else CURSOR_SHAPE_BEAM if label == VIM_INSERT else None
+        """Keep modal and non-modal typing carets stable; hidden selection cursors use the terminal default."""
+        label = self.composer.vim_label if self._composer_open() or (self.picker is not None and self.picker.waiting) else ""
+        shape = None
+        if label in (VIM_NORMAL, f"{VIM_NORMAL} · SPC", VIM_VISUAL, "VISUAL LINE"):
+            shape = CURSOR_SHAPE_BLOCK
+        elif label == VIM_REPLACE:
+            shape = CURSOR_SHAPE_UNDERLINE
+        elif label == VIM_INSERT or (self._draft().vim and (
+            (self.slot is not None and not self.slot.picking) or self.search is not None
+            or self.picker is not None or self.rewind_picker is not None or self.model_picker is not None
+        )):
+            shape = CURSOR_SHAPE_BEAM
         self.terminal.set_cursor_shape(shape)  # the terminal writes only a change
 
     def _restore_cursor_shape(self) -> None:
@@ -9102,7 +9161,6 @@ class App(ModesMixin, AgentViewMixin):
             self.terminal.write(self.pager.frame(*self.size, self.theme, self._erase_ground()))
             return
         stable = self.transcript.take_stable_lines(cols, self.theme, live_rows=self.size[1])
-        prompt_row = self.transcript.prompt_row
         head: list[Line] = []
         if self.banner_facts is not None:
             background = self._surface()
@@ -9119,13 +9177,6 @@ class App(ModesMixin, AgentViewMixin):
             self.card_state = CARD_KEPT
         if head:
             stable = head + stable
-            prompt_row = None if prompt_row is None else prompt_row + len(head)
-        # Counted from the prompt's own first row: not the blank row or the held rows above it, and after a full
-        # redraw only the rows retaken from the prompt on.
-        if prompt_row is not None:
-            self.flushed_since_prompt = len(stable) - prompt_row
-        else:
-            self.flushed_since_prompt += len(stable)
         if not self._menu_rows():
             self.menu_below = None
         # On the screen's last row the region keeps its height (what the flush below covers aside), so what shrinks
@@ -9134,13 +9185,10 @@ class App(ModesMixin, AgentViewMixin):
         pinned = self.region.last_row(rows) == rows - 1
         min_height = max(self.region.height - len(stable), 0) if pinned else 0
         # The frame a turn ends with, on the bottom rows: the turn's last frame. Its working rows, their spacer and
-        # the done line balance out, but the sticky prompt (and the blank row over it) and the blank row over the plan
-        # have nothing in this frame to take their rows. The sticky came in once the prompt had scrolled off, scrolling
-        # as many transcript rows into scrollback, and nothing brings those back, so kept they would stand as blank
-        # rows between the done line and the composer. The region gives them up and the composer rises by them.
+        # the done line balance out, but the blank row over the plan has nothing in this frame to take its row, so
+        # kept it would stand as a blank row between the done line and the composer. The region gives it up and
+        # the composer rises by it (below, once the frame is built).
         ended = self.frame_budget if pinned and self.frame_busy and not self._busy() else None
-        if ended is not None:
-            min_height = max(min_height - ended.sticky - ended.sticky_gap, 0)
         top = self.region.top_row(rows)
         if not pinned and self.launch_layout and top is not None:
             # Until the first prompt the launch fills the screen: the rows under the banner pad the region down to the
@@ -9220,22 +9268,14 @@ class App(ModesMixin, AgentViewMixin):
             if card:
                 build = partial(build, tail=[*build.keywords["tail"], *card, *([()] * (room - len(card)))])
                 frame = build()
-        sticky_row = None
-        # The rows above the region once the flush below and this frame are drawn: transcript rows.
-        if self._sticky_needed(self.region.rows_above(rows, len(stable), frame.height)):
-            sticky = self._drawn(
-                "the sticky prompt", lambda: [sticky_line(self.sticky, cols, self.theme, self.known_slash)], cols
-            )
-            frame = build(sticky=sticky[0])
-            sticky_row = sticky[0]
         # Flushed before the frame, the lines cover the region's top rows, where the lines leaving
         # the tail were drawn (a settled tool group is those same rows, moved above the region), and
         # the frame is drawn under them. Flush and frame are one write, so no screen between them shows.
         # The wallpaper paints the blank tails of the rows above the region too, the transcript's included, so it stays
         # in view over a full session (owner's choice of 2026-10-29; `screen` names what that costs a selection).
         lower = max(self.region.height - len(stable) - frame.height, 0) if padded is not None else 0
-        if lower and not self.region.can_lower(rows, lower):  # the frame grew again (a sticky prompt): pad as before
-            frame = padded() if sticky_row is None else padded(sticky=sticky_row)
+        if lower and not self.region.can_lower(rows, lower):  # the frame grew again: pad as before
+            frame = padded()
             lower = 0
         self._keep_selection_true(stable, frame.lines)
         self.region.render(frame.lines, frame.cursor, cols, flush=stable, screen_rows=rows, ambient=self._ambient(),
@@ -9303,7 +9343,7 @@ class App(ModesMixin, AgentViewMixin):
         `composer_blank`).
         """
         if self.slot is not None:
-            return self.slot.picking
+            return self.slot.picking or self.slot.inline_field
         return (
             (self.picker is not None and not self.picker.waiting) or self.rewind_picker is not None
             or self.model_picker is not None
@@ -9411,10 +9451,11 @@ class App(ModesMixin, AgentViewMixin):
         """The open picker's caret, at the end of its filter row (its last render's), or the history search's, at
         the end of its query; None with neither open.
 
-        A question answered by picking has none: no key types anywhere there.
+        A question answered by picking has none: no key types anywhere there. A framed question whose text field is
+        open has it on the field's row, where what is typed shows (`PromptSlot.inline_field`).
         """
         if self.slot is not None:
-            return None
+            return self.slot.caret if self.slot.inline_field else None
         picker = self._front_picker()
         return picker.caret if picker is not None and picker is not self.launch_picker else None  # type: ignore[attr-defined]
 
@@ -9479,18 +9520,6 @@ class App(ModesMixin, AgentViewMixin):
         on: from the first frame on a terminal that answers the query.
         """
         return self.decoder.protocol_reported
-
-    def _sticky_needed(self, above: int) -> bool:
-        """Whether the sent prompt needs echoing above the composer: only once it has scrolled off.
-
-        `above` is how many screen rows lie above the live region. Everything
-        there is transcript, so while the rows printed from the prompt's first
-        row on still fit there, the prompt itself is on screen and an echo
-        would only repeat it.
-        """
-        if not (self._busy() and self.sticky.strip()):
-            return False
-        return self.flushed_since_prompt > above
 
     def _tail(self, cols: int) -> list[Line]:
         self.tail_spacer = False  # until the rows below say otherwise: a tail that raises (`_drawn`) has no spacer
@@ -10100,10 +10129,10 @@ def _run(
                     open_terminal(),
                     client,
                     environ,
-                    # The bot board reads the bots' home: the launcher's `HERMES_HOME`, or on the TUI's own runtime
-                    # the home `omh` named beside it (`BOTS_HOME_ENV`).
-                    poller=make_poller(environ.get("OMH_HOME") or None,
-                                       environ.get(BOTS_HOME_ENV) or environ.get("HERMES_HOME") or None),
+                    # The HUD reads the home the session runs on: its state database and the `processes.json` its
+                    # background terminals land in. On the TUI's own runtime that is the TUI home, never the bots'
+                    # (`BOTS_HOME_ENV`, which only the bot board reads).
+                    poller=make_poller(environ.get("OMH_HOME") or None, environ.get("HERMES_HOME") or None),
                     theme=initial_theme(ready.payload, environ.get("OMH_HOME") or None),
                     make_client=make_client,
                     # The session's directory as the launcher names it; with none named, no branch (never the TUI's

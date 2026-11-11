@@ -4,7 +4,7 @@
 // folder, account, view, the agent's own conversation id, whether it was running, and the last messages of its
 // chat, which omher draws itself). These functions are pure; resumeBoot.ts reads, writes and applies them.
 import type { PanelTabId } from "../state/store";
-import { isAgentId, type AgentId } from "../sessions/agents";
+import { CONTINUES, isAgentId, type AgentId } from "../sessions/agents";
 
 export const RESUME_KEY = "omher.resume";
 export const RESUME_VERSION = 1;
@@ -31,6 +31,8 @@ export interface SavedSession {
   view: "chat" | "terminal";
   /** Its program ran (or was starting) when omher closed. */
   running: boolean;
+  /** A New session chat that never started: it comes back as a draft and is never started by the restart. */
+  draft?: boolean;
   /** Ended ones: how. */
   failed?: boolean;
   exitCode?: number | null;
@@ -91,6 +93,10 @@ function parseSession(v: unknown): SavedSession | null {
     running: v.running === true,
   };
   if (v.failed === true) out.failed = true;
+  if (v.draft === true) {
+    out.draft = true;
+    out.running = false;
+  }
   if (typeof v.exitCode === "number" || v.exitCode === null) out.exitCode = v.exitCode;
   const error = str(v.error, MAX_TEXT);
   if (error) out.error = error;
@@ -152,7 +158,7 @@ export function forBots(snap: ResumeSnap, bots: readonly string[]): ResumeSnap {
 export interface ResumeInput {
   bot: string | null;
   bots: readonly string[];
-  view: "chat" | "settings" | "session";
+  view: "chat" | "settings" | "session" | "automations" | "plugins";
   session: string | null;
   panelOpen: boolean;
   panelTab: PanelTabId;
@@ -192,6 +198,7 @@ export function buildResume(i: ResumeInput, now: number): ResumeSnap {
   };
 }
 
-/** Claude Code and Codex chats continue their own conversation by themselves; anything else waits for Resume. */
+/** Chats whose agent continues a conversation (Claude Code, Codex, OmO: `CONTINUES`) continue it by themselves
+ *  after a restart; anything else waits for Resume. The caller checks the agent runs as a chat on this machine. */
 export const continuesItself = (s: Pick<SavedSession, "agent" | "view" | "agentSession">): boolean =>
-  (s.agent === "claude" || s.agent === "codex") && !!s.agentSession;
+  CONTINUES.includes(s.agent) && !!s.agentSession;

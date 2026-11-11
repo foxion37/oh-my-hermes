@@ -1,6 +1,10 @@
 mod accounts;
 mod agent_chat;
+mod appimage;
 mod bridge;
+mod dsh_chat;
+mod hermes_auth;
+mod session_files;
 mod sessions;
 mod setup;
 
@@ -49,11 +53,24 @@ async fn open_external(url: String) -> Result<(), String> {
     }
     // A Discord web link opens the Discord app when it is installed, the browser otherwise.
     if let Some(app_url) = discord_app_url(&url) {
-        if discord_app_installed() && tauri_plugin_opener::open_url(&app_url, None::<&str>).is_ok() {
+        if discord_app_installed() && system_open_url(&app_url).is_ok() {
             return Ok(());
         }
     }
-    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string())
+    system_open_url(&url)
+}
+
+/// The system opener for an address. On Linux it goes through `appimage::open`, which hands a link to
+/// `xdg-open` without the AppImage's bundled-library environment (a plain install is unaffected).
+fn system_open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        appimage::open(url)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
+    }
 }
 
 /// `https://discord.com/channels/G/C` -> `discord://discord.com/channels/G/C` (the form the Discord app
@@ -64,7 +81,7 @@ pub(crate) fn discord_app_url(url: &str) -> Option<String> {
 }
 
 /// Whether the Discord desktop app is there to take `discord://`. macOS and Linux report a missing handler as
-/// an open error (so the browser fallback runs); Windows would show an "find an app" dialog instead, so there
+/// an open error (`xdg-open` exits non-zero, so the browser fallback runs); Windows would show an "find an app" dialog instead, so there
 /// we look for the app first.
 fn discord_app_installed() -> bool {
     #[cfg(windows)]
@@ -209,7 +226,7 @@ async fn account_login_cancel(shell: State<'_, Shell>, login: u32) -> Result<(),
     Ok(())
 }
 
-/// The allow-listed agent programs (claude, codex, omh, pi, omp, grok), how each opens and where each
+/// The allow-listed agent programs (claude, codex, omo, dsh, omh, pi, omp, grok), how each opens and where each
 /// was found, if anywhere.
 #[tauri::command]
 async fn sessions_agents() -> Result<Vec<AgentInfo>, String> {
@@ -218,7 +235,7 @@ async fn sessions_agents() -> Result<Vec<AgentInfo>, String> {
 
 /// Start allow-listed agent `agent` in folder `cwd` in a new pseudo-terminal (its own terminal UI). Only an
 /// agent id crosses from the UI: no program path, command line or argument; `resume` is a Claude Code
-/// session id that the shell checks is one (so the terminal view continues a chat); `account` is the account a
+/// session id or a DSH conversation id that the shell checks is a UUID (so the terminal continues it); `account` is the account a
 /// session restarted after an app restart ran with (checked by `accounts::session_env_for`). Terminal output goes
 /// to `on_data` as raw bytes, the exit code (null after a signal) once to `on_exit`.
 #[tauri::command]
@@ -304,7 +321,51 @@ async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume:
 #[tauri::command]
 async fn chat_input(shell: State<'_, Shell>, id: u32, input: agent_chat::Input) -> Result<(), String> {
     let chats = shell.chats.clone();
-    tauri::async_runtime::spawn_blocking(move || chats.input(id, input)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut input = input;
+        // attached pictures: only files omher saved under its own session folder are read
+        input.resolve(&user_home()?)?;
+        chats.input(id, input)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Save one file the person attached in SESSIONS chat (or dropped on its terminal) `x-session` as
+/// `~/.omher/session-files/<session>/<n>-<name>` and return that path. The body is the file's bytes; the name
+/// comes percent-encoded in `x-name`. Nothing else is written.
+#[tauri::command]
+async fn session_file_save(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let header = |k: &str| request.headers().get(k).and_then(|v| v.to_str().ok()).map(str::to_string).unwrap_or_default();
+    let (session, name) = (header("x-session"), session_files::percent_decode(&header("x-name")));
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("expected the file's bytes".into()) };
+    let data = data.clone();
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || session_files::save(&home, &session, &name, &data).map(|p| p.to_string_lossy().into_owned()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The bytes of a file saved by `session_file_save` (a sent bubble's picture after omher restarted). Any other
+/// path is refused.
+#[tauri::command]
+async fn session_file_read(path: String) -> Result<tauri::ipc::Response, String> {
+    let home = user_home()?;
+    let real = session_files::check(&home, &path)?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(real)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Remove session `session`'s saved files (it was closed).
+#[tauri::command]
+async fn session_files_remove(session: String) -> Result<(), String> {
+    session_files::remove(&user_home()?, &session)
+}
+
+/// Remove the saved files of every session not in `keep` (omher started; the others are gone).
+#[tauri::command]
+async fn session_files_prune(keep: Vec<String>) -> Result<(), String> {
+    session_files::prune(&user_home()?, &keep)
 }
 
 /// Stop the chat's program and forget the session.
@@ -330,7 +391,14 @@ async fn open_media(shell: State<'_, Shell>, path: String, reveal: Option<bool>)
     if reveal.unwrap_or(false) {
         tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
     } else {
-        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+        #[cfg(target_os = "linux")]
+        {
+            appimage::open(&path.to_string_lossy())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -341,6 +409,14 @@ pub(crate) fn media_target<S: Fn(&str) -> bool>(path: &str, served: S) -> Result
         return Err("not a file this bot sent".into());
     }
     Ok(p)
+}
+
+/// Settings › Providers "Add key": open the system terminal running exactly
+/// `hermes auth add <provider> --type api-key` (rule 23). Hermes asks for the key there and stores it; omher
+/// takes only the provider id, checked by `hermes_auth::valid_provider`, and never sees the key.
+#[tauri::command]
+async fn open_hermes_auth(provider: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || hermes_auth::open(&provider)).await.map_err(|e| e.to_string())?
 }
 
 /// Start the bridge again (the Retry button on the failed screen).
@@ -380,8 +456,13 @@ pub fn run() {
             chat_start,
             chat_input,
             chat_close,
+            session_file_save,
+            session_file_read,
+            session_files_remove,
+            session_files_prune,
             chat_close_all,
-            open_media
+            open_media,
+            open_hermes_auth
         ])
         .setup(|app| {
             let bridge = Bridge::new();
