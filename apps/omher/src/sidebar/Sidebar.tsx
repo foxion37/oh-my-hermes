@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { getRestarts } from "./restart";
 import "./sidebar.css";
 import logo from "../assets/omher-mark.png";
 import { selectAsks, selectSidebarBots, useStore } from "../state/store";
@@ -12,6 +13,7 @@ import { SessionList, SessionsHeader } from "../sessions/SessionsSection";
 import { HiddenList, NeedsStrip } from "./Needs";
 import { UpdateButton } from "./UpdateButton";
 import { FirstRunHint } from "../onboarding/FirstRun";
+import { OmhNotice } from "./OmhNotice";
 import { t } from "../i18n";
 
 export function Sidebar() {
@@ -40,6 +42,7 @@ export function Sidebar() {
           <b>omher</b>
         </div>
         <div className="side-add">
+          <OmhNotice />
           <IconButton label={t("nav.addBot")} onClick={() => AddBot && setAdding((v) => !v)} aria-expanded={adding} disabled={!AddBot}>
             <PlusIcon />
           </IconButton>
@@ -78,6 +81,8 @@ export function Sidebar() {
                 pinned,
                 onPin: () => s.pinBot(b.name, !pinned),
                 onEdit: () => s.openSettings(`bot:${b.name}`),
+                onRestart: () => void getRestarts().press(b.name),
+                offline: b.status === "offline",
                 onHide: () => s.hideBot(b.name, true),
                 onShowHidden: hiddenCount ? () => setShowHidden(true) : undefined,
               }}

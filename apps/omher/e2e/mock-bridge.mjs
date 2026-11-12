@@ -12,6 +12,9 @@
 // at start and on every reset), mock.botMade {bot, kind: routine|plugin} (the bot made an automation or installed a
 // plugin from its chat: the bridge's poll would emit routines.update + routine.added, or plugin.added + plugins.update),
 // mock.offline {bot, on} (a bot's gateway down for the Automations / Plugins writes),
+// mock.restart {bot, outcome: "ok"|"refused"|"failed"|"slow", work?, line?} (what Hermes' restart answers next),
+// mock.pluginLoad {load: "live"|"reload"|"restart"|"failed"} (what the next plugin install / reload says),
+// mock.botStatus {bot, status} (a bot goes offline or online),
 // mock.manual {bot, on} (a message to that bot, or to its folder chats, starts a turn that runs no script: the test
 // drives it with mock.emit).
 import http from "node:http";
@@ -197,7 +200,7 @@ const PLUGIN_SEED = [
     category: "platform", catalog_name: "homeassistant", tools: 4, hooks: 0, update_available: true, needs_env: [],
     description: "Home Assistant as a gateway platform: state changes come in as events, and the bot can switch devices and send notifications." },
   { name: "omh", key: "omh", title: "", version: "0.9.4", source: "user", enabled: true, tier: "user", category: "tools", catalog_name: null,
-    tools: 23, hooks: 6, update_available: false, needs_env: [], description: "oh-my-hermes for Hermes: dag runs, status and evidence gathering." },
+    tools: 23, hooks: 6, live_tools: 23, update_available: false, needs_env: [], description: "oh-my-hermes for Hermes: dag runs, status and evidence gathering." },
   { name: "elevenlabs-music", key: "elevenlabs-music", title: "ElevenLabs Music", version: "1.0.0", source: "user", enabled: false, tier: "official",
     category: "voice", catalog_name: "elevenlabs-music", tools: 8, hooks: 0, update_available: false, needs_env: ["ELEVENLABS_API_KEY"],
     description: "Describe a song or paste lyrics and the bot writes, generates and saves the track." },
@@ -437,6 +440,73 @@ function cliSeed() {
   return [live, ...runs];
 }
 
+// The mock SESSIONS Claude chat's own run (the MockHost's Claude session id, in the e2e folder): the agent's record
+// of the two subagents of "/subagents", as CliRuns reads it from the session's transcript. Its title is the agent's
+// ("Claude Code session"): the session panel shows the session row's name instead.
+// The session's own record as the bridge reads it from the transcript of the run the chat shows ("/subagents"),
+// the message sent `ago` seconds back: each subagent starts at its call and the first ends when its hand-back
+// reached the chat, after the time the chat's row says (3.7s, by Claude Code's own count, as the transcript's
+// stamps do); the second starts when its call reached the chat and takes 9.4s. With `hold` it is still out, as in
+// "/subagents hold". The same moments as host.ts's MockChat "/subagents" (0.6s and 0.17s after the send).
+/** The record OmO 5.1.56 wrote for the MockHost OmO session's two subagents, as CliRuns.omo reads it from
+ *  `senpi-task/tasks/st_*.json` (one run per session, lane `explore`, executor omo): the same run the chat shows for
+ *  "/subagents", each subagent ending when its result reached the chat (0.6 s and 1.4 s after the send) after the
+ *  time its row says (3.7 s and 9.4 s, OmO's `duration_ms`). The run is first start to last end, as the card's. */
+function omoSessionRun({ ago = 30 } = {}) {
+  const sent = now() - ago;
+  const sid = "01a1ce7b-1c30-7e45-8913-aa00b3b32296";
+  const node = (id, label, summary, ended, secs) => ({
+    id, label, deps: [], layer: 0, state: "done", model: "claude-haiku-5-5", provider: "anthropic", executor: "omo", lane: "explore",
+    started: ended - secs, ended, summary, attempts: [{ n: 1, outcome: "completed", started: ended - secs, ended }],
+  });
+  const nodes = [node("st_01a1ce7b", "Read a.txt first line", "alpha line", sent + 0.6, 3.7), node("st_01a1ce7c", "Count lines of b.txt", "3", sent + 1.4, 9.4)];
+  const started = Math.min(...nodes.map((n) => n.started));
+  const ended = Math.max(...nodes.map((n) => n.ended));
+  return {
+    id: `omo:${sid}`, kind: "session", agent: "omo", owner: { type: "session", id: sid }, title: "OmO session",
+    cwd: "/Users/you/code/omher", state: "done", started, updated: ended, ended, nodes,
+  };
+}
+
+/** The records OmO 5.1.56 wrote for a foreground batch (omo-13-batch, tests/fixtures/omo-home), as CliRuns.omo reads
+ *  them: the MockHost OmO session's "/batch" run, ended `ago` seconds back. */
+function omoBatchRun({ ago = 2 } = {}) {
+  const end = now() - ago;
+  const sid = "01a1ce7b-1c30-7e45-8913-aa00b3b32296";
+  const node = (id, label, summary, started, ended) => ({
+    id, label, deps: [], layer: 0, state: "done", model: "claude-haiku-5-5", provider: "anthropic", executor: "omo",
+    started, ended, summary, attempts: [{ n: 1, outcome: "completed", started, ended }],
+  });
+  const nodes = [
+    node("st_01a1d076", "helper-a-first-line: read a.txt and reply FIRST_LINE: <first line>", "FIRST_LINE: alpha line", end - 28.851, end - 8.926),
+    node("st_01a1d077", "helper-b-line-count: count lines of a.txt and reply LINE_COUNT: <number>", "LINE_COUNT: 3", end - 28.594, end),
+  ];
+  return {
+    id: `omo:${sid}`, kind: "session", agent: "omo", owner: { type: "session", id: sid }, title: "OmO session",
+    cwd: "/Users/you/code/omher", state: "done", started: end - 28.851, updated: end, ended: end, nodes,
+  };
+}
+
+function sessionRun({ ago = 30, hold = false } = {}) {
+  const sent = now() - ago;
+  const node = (id, label, summary, started, ended) => ({
+    id, label, deps: [], layer: 0, state: ended === undefined ? "running" : "done", model: "claude-fable-5-2", executor: "claude",
+    lane: "general-purpose", started, attempts: [{ n: 1, outcome: ended === undefined ? "open" : "completed", started, ...(ended === undefined ? {} : { ended }) }],
+    ...(ended === undefined ? {} : { summary, ended }),
+  });
+  const back = sent + 0.6;
+  const second = sent + 0.17;
+  const nodes = [node("sa-1", "Read a.txt first line", "alpha line", back - 3.7, back), node("sa-2", "Count lines of b.txt", "3", second, hold ? undefined : second + 9.4)];
+  const t = back - 3.7;
+  const end = second + 9.4;
+  return {
+    id: "claude:11111111-2222-4333-8444-555555555555", kind: "claude-task", agent: "claude",
+    owner: { type: "session", id: "11111111-2222-4333-8444-555555555555" }, title: "Claude Code session",
+    cwd: "/Users/you/code/omher", state: hold ? "running" : "done", started: t, updated: hold ? now() : end,
+    ...(hold ? {} : { ended: end }), nodes,
+  };
+}
+
 // the bridge's run_summary: `failed` = open failures; a failure its repairs all fixed counts as `repaired`
 const runCounts = (r) => {
   const fixed = r.nodes.filter(
@@ -475,12 +545,20 @@ let submits = [];
 let bots, history, models, turns, pending, idSeq, queues, avatars, folders, runs, cliRuns, cliTitles;
 // Automations and plugins: what the pages read and change (reset with everything else).
 let automations, plugins, inspected, offlineWrites;
+/** bots.restart: what the next restart answers per bot, which bot refused last (for "Restart anyway"). */
+let restartNext, restartRefused, pluginLoadNext;
+const STANDALONE = new Set(["omh-tui"]);
+const gatewayOf = (name) => (STANDALONE.has(name) ? name : "default");
+const gatewayBots = (gw) => Object.values(bots).filter((x) => gatewayOf(x.name) === gw);
+const restartTimers = new Set();
 // Every ask event sent, by request id: chat.open sends the ones still pending again, as the bridge does.
 let asked;
 /** Timers of subagents still reporting after their turn ended (cleared by mock.reset). */
 const subTimers = new Set();
 // Bots whose turns the test drives by hand (mock.manual).
 let manual;
+// Bots whose skills.list is empty (mock.noSkills).
+let noSkills;
 
 // What each bot has done (bots.info): sessions per place, skills, routines.
 const INFO_SEED = {
@@ -502,6 +580,9 @@ const SKILL_SEED = [
   { name: "research", description: "Find sources, read them and answer with citations." },
   { name: "review", description: "Review a diff for correctness, tests and risk, worst first." },
 ];
+// Skills that arrive later (mock.skills): an install that registers oh-my-hermes' skills, listed from the
+// `after`-th skills.list read on (0 = at once). Cleared by mock.reset.
+let skillsLater = { add: [], after: 0 };
 
 // Subscription usage (usage.read). "default": Codex 73 % / 60 %, Claude limited (no %), Grok on PATH only.
 // "stale": the same Codex record after both reset times passed (no numbers). Switch with mock.usage {fixture}.
@@ -539,7 +620,7 @@ const USAGE = {
 const ACCT_CLIS = ["claude", "codex", "pi", "omp", "grok", "gemini"];
 const CPA_EMAILS = ["ana@example.com", "ben@example.com", "cho@example.com", "team@example.org"];
 const ACCT_INSTALLED = { claude: true, codex: true, pi: true, omp: false, grok: false, gemini: false };
-let acct, acctActive, acctLimited, acctLabels;
+let acct, acctActive, acctLimited, acctLabels, acctUsage;
 const ACCT_ID = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 function accountsList() {
   return {
@@ -553,7 +634,7 @@ function accountsList() {
           email: a.email ?? "",
           state,
           dir: a.id === "default" ? null : `/mock/.omher/accounts/${cli}/${a.id}`,
-          usage: cli === "codex" && a.id === "default" ? USAGE.default()[0] : null,
+          usage: acctUsage[`${cli}:${a.id}`] ?? (cli === "codex" && a.id === "default" ? USAGE.default()[0] : null),
           ...(limited ? { resets_at: limited } : {}),
           ...(cli === "claude" && a.email === "owner@example.com" ? { in_cpa: true } : {}),
         };
@@ -585,6 +666,7 @@ function acctFind(p) {
 
 function reset() {
   usageFixture = "default";
+  skillsLater = { add: [], after: 0 };
   providerFixture = "default";
   acct = {
     claude: [{ id: "default", label: "", email: "owner@example.com", logged_in: true }],
@@ -597,6 +679,7 @@ function reset() {
   acctActive = Object.fromEntries(ACCT_CLIS.map((c) => [c, "default"]));
   acctLimited = {};
   acctLabels = {};
+  acctUsage = {};
   for (const t of Object.values(turns ?? {})) t?.timers.forEach(clearTimeout);
   for (const h of subTimers) clearTimeout(h);
   subTimers.clear();
@@ -621,9 +704,15 @@ function reset() {
     default: structuredClone(PLUGIN_SEED.filter((x) => x.source === "bundled")), "omh-tui": structuredClone(PLUGIN_SEED.filter((x) => x.source === "bundled")) };
   inspected = new Map(); // `<bot>:<catalog name>` -> the sha plugins.inspect handed out
   offlineWrites = new Set();
+  restartNext = new Map();
+  for (const h of restartTimers) clearTimeout(h);
+  restartTimers.clear();
+  restartRefused = new Set();
+  pluginLoadNext = null;
   pending = new Map();
   asked = new Map();
   manual = new Set();
+  noSkills = new Set();
   idSeq = 0;
   calls = [];
   submits = [];
@@ -755,6 +844,13 @@ function needBot(p) {
   const b = bots[p.bot];
   if (!b) throw new OpError("unknown_bot", `no bot named ${p.bot}`);
   if (b.status === "offline") throw new OpError("bot_offline", `${p.bot} is offline`);
+  return b;
+}
+/** A bot by name whatever its status (an offline bot can be started). */
+function needBotAny(p) {
+  if (typeof p.bot !== "string" || !p.bot) throw new OpError("bad_request", "missing bot");
+  const b = bots[p.bot];
+  if (!b) throw new OpError("unknown_bot", `no bot named ${p.bot}`);
   return b;
 }
 function needFolder(p, b) {
@@ -980,7 +1076,12 @@ const OPS = {
       routines: (ROUTINE_SEED[b.name] ?? []).length,
     };
   },
-  "skills.list": (p) => (needBot(p), { skills: SKILL_SEED.map((x) => ({ ...x })) }),
+  "skills.list": (p) => {
+    needBot(p);
+    if (noSkills.has(p.bot)) return { skills: [] };
+    const late = skillsLater.after-- <= 0 ? skillsLater.add : [];
+    return { skills: [...SKILL_SEED, ...late].sort((a, b) => a.name.localeCompare(b.name)).map((x) => ({ ...x })) };
+  },
   "links.places": (p) => ({ places: structuredClone(LINK_PLACES[needBot(p).name] ?? { slack: {}, discord: {} }) }),
   "panel.terminal": (p) => ({
     runs: (PANEL_RUNS[needBot(p).name] ?? []).map(({ ago, ...r }) => ({ ...r, session_id: "s-" + r.id, ts: now() - ago })),
@@ -1031,7 +1132,7 @@ const OPS = {
       .sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.updated - a.updated),
   }),
   "runs.cli": (p) => {
-    const AGENTS = ["claude", "codex", "pi", "omp", "grok"];
+    const AGENTS = ["claude", "codex", "omo", "pi", "omp", "grok"];
     if (p.agent !== undefined && !AGENTS.includes(p.agent)) throw new OpError("bad_request", `agent must be one of ${AGENTS.join(", ")}`);
     if (p.cwd !== undefined && (typeof p.cwd !== "string" || !p.cwd)) throw new OpError("bad_request", "cwd must be a folder path");
     if (p.since !== undefined && typeof p.since !== "number") throw new OpError("bad_request", "since must be epoch seconds");
@@ -1066,10 +1167,10 @@ const OPS = {
     return { title: cliTitles.get(`${p.agent}:${p.session}`) ?? "" };
   },
   "runs.get": (p) => {
-    const b = needBot(p);
     const id = needStr(p, "run");
     const cli = cliRuns.find((r) => r.id === id);
     if (cli) return { run: cli, handoffs: {} };
+    const b = needBot(p);
     const run = (runs[b.name] ?? []).find((r) => r.id === id);
     if (!run) throw new OpError("not_found", `no run ${id} for ${b.name}`);
     return { run, handoffs: HANDOFFS[id] ?? {} };
@@ -1140,7 +1241,10 @@ const OPS = {
     list.push({ name: entry.name, key: entry.name, title: entry.title === entry.name ? "" : entry.title, version: entry.version, source: "user",
       enabled: entry.requires_env.length === 0, tier: entry.tier, category: entry.category, catalog_name: entry.name, tools: entry.tools.length,
       hooks: entry.hooks.length, update_available: false, needs_env: [...entry.requires_env] });
-    return { name: entry.name, enabled: entry.requires_env.length === 0, restart_required: entry.hooks.length > 0, warnings: [], missing_env: [...entry.requires_env] };
+    const load = pluginLoadNext ?? "live";
+    pluginLoadNext = null;
+    return { name: entry.name, enabled: entry.requires_env.length === 0, restart_required: load !== "live", load, restart_bot: "default",
+      warnings: [], missing_env: [...entry.requires_env] };
   },
   "plugins.toggle": (p) => {
     const row = pluginOf(p, "key");
@@ -1234,6 +1338,17 @@ const OPS = {
     return {};
   },
   // ---- test control (not part of the protocol)
+  // a bot whose gateway runs without oh-my-hermes' tools yet (installed while it ran): its omh row, enabled, 0 live
+  "mock.omhUnloaded": (p) => {
+    const b = needBot(p);
+    const omh = PLUGIN_SEED.find((x) => x.name === "omh");
+    plugins[b.name] = [...(plugins[b.name] ?? []).filter((x) => x.name !== "omh"), { ...structuredClone(omh), live_tools: 0 }];
+    return {};
+  },
+  "mock.skills": (p) => {
+    skillsLater = { add: Array.isArray(p.add) ? p.add : [], after: Number(p.after) || 0 };
+    return {};
+  },
   "mock.usage": (p) => {
     if (!(p.fixture in USAGE)) throw new OpError("bad_request", "unknown usage fixture");
     usageFixture = p.fixture;
@@ -1247,6 +1362,15 @@ const OPS = {
   "mock.accounts": (p) => {
     const cli = typeof p.cli === "string" ? p.cli : "codex";
     if (typeof p.limit === "string") acctLimited[`${cli}:${p.limit}`] = now() + 2 * 3600;
+    // usage {id, windows: [{label, used_percent?, resets_in_min?}]}: that account's own usage record
+    if (p.usage && typeof p.usage === "object") {
+      const windows = (p.usage.windows ?? []).map((w) => ({
+        label: w.label,
+        ...(typeof w.used_percent === "number" ? { used_percent: w.used_percent } : {}),
+        ...(typeof w.resets_in_min === "number" ? { resets_at: now() + w.resets_in_min * MIN } : {}),
+      }));
+      acctUsage[`${cli}:${p.usage.id}`] = { id: cli, state: "ok", source_mtime: now() - 60, windows };
+    }
     if (p.signed_in && typeof p.signed_in === "object") {
       const a = acct[cli]?.find((x) => x.id === p.signed_in.id);
       if (a) Object.assign(a, { logged_in: true, email: p.signed_in.email ?? "" });
@@ -1278,6 +1402,80 @@ const OPS = {
     }
     throw new OpError("bad_request", "kind is routine or plugin");
   },
+  // Hermes' own restart of one bot (the real bridge runs `hermes -p <bot> gateway restart`); the mock answers what
+  // mock.restart set, then "attaches again" after a short while (bot.restarted)
+  // which gateway process serves a bot: OMH TUI runs its own (standalone, as on the owner's Mac); the host gateway
+  // (default) serves the others
+  "bots.restart_scope": (p) => {
+    const b = needBotAny(p);
+    const gw = gatewayOf(b.name);
+    return { gateway: gw, bots: gatewayBots(gw).map((x) => ({ name: x.name, display_name: x.display_name })) };
+  },
+  "bots.restart": (p) => {
+    const b = needBotAny(p);
+    const interrupt = p.interrupt === true;
+    const gw = gatewayOf(b.name);
+    if (interrupt && !restartRefused.has(gw)) throw new OpError("bad_request", "Restart anyway follows a refusal for live work");
+    const next = restartNext.get(b.name) ?? { outcome: "ok" };
+    restartRefused.delete(gw);
+    if (next.outcome === "refused" && !interrupt) {
+      restartRefused.add(gw);
+      // the real bridge reads Hermes' unit lines into these plain parts (work_unit): no ids, pids or brackets
+      return { outcome: "refused", work: next.work ?? [{ kind: "chat", name: null, secs: 180, bot: b.name }] };
+    }
+    restartNext.delete(b.name);
+    if (next.outcome === "failed") return { outcome: "failed", line: next.line ?? "Gateway service restart failed." };
+    const takes = gatewayBots(gatewayOf(b.name));
+    const back = () => {
+      for (const x of takes) {
+        x.status = "online";
+        x.running = false;
+        broadcast({ event: "bot.status", bot: x.name, status: "online", running: false });
+        broadcast({ event: "bot.restarted", bot: x.name, ok: true });
+      }
+    };
+    // "slow" holds the restarting state until the test calls mock.restartDone
+    if (next.outcome === "slow") restartNext.set(b.name, { outcome: "held", back });
+    else {
+      const h = setTimeout(() => {
+        restartTimers.delete(h);
+        back();
+      }, 600);
+      restartTimers.add(h);
+    }
+    return { outcome: "ok", bots: takes.map((x) => x.name) };
+  },
+  "plugins.reload": (p) => {
+    const b = needBot(p);
+    const load = pluginLoadNext ?? "live";
+    pluginLoadNext = null;
+    if (load === "failed") return { load: "failed", line: `${b.display_name}'s Hermes did not answer.` };
+    return { load: load === "reload" ? "live" : load, missing: load === "restart" ? ["numpy"] : [], restart_bot: "default" };
+  },
+  "mock.restart": (p) => {
+    needStr(p, "bot");
+    restartNext.set(p.bot, { outcome: p.outcome, work: p.work, line: p.line });
+    return {};
+  },
+  "mock.restartDone": (p) => {
+    const held = restartNext.get(needStr(p, "bot"));
+    if (held?.back) {
+      restartNext.delete(p.bot);
+      held.back();
+    }
+    return {};
+  },
+  "mock.pluginLoad": (p) => {
+    pluginLoadNext = p.load ?? null;
+    return {};
+  },
+  "mock.botStatus": (p) => {
+    const b = bots[needStr(p, "bot")];
+    if (!b) throw new OpError("unknown_bot", p.bot);
+    b.status = p.status;
+    broadcast({ event: "bot.status", bot: b.name, status: p.status, running: false });
+    return {};
+  },
   "mock.offline": (p) => {
     needStr(p, "bot");
     if (p.on === false) offlineWrites.delete(p.bot);
@@ -1290,6 +1488,10 @@ const OPS = {
     else manual.add(p.bot);
     return {};
   },
+  "mock.noSkills": (p) => {
+    noSkills.add(needStr(p, "bot"));
+    return {};
+  },
   "mock.cliTitle": (p) => {
     cliTitles.set(`${p.agent}:${p.session}`, String(p.title ?? ""));
     return {};
@@ -1300,6 +1502,12 @@ const OPS = {
     if (!Array.isArray(p.events)) throw new OpError("bad_request", "events must be an array");
     for (const ev of p.events) broadcast(ev);
     return { count: p.events.length };
+  },
+  // mock.sessionRun: the MockHost Claude session's own record appears (as the agent writes it during "/subagents")
+  "mock.sessionRun": (p) => {
+    const ago = typeof p.ago === "number" ? p.ago : undefined;
+    cliRuns = [...cliRuns.filter((r) => r.owner?.type !== "session"), p.agent === "omo" ? (p.batch ? omoBatchRun({ ago }) : omoSessionRun({ ago })) : sessionRun({ ago, hold: p.hold === true })];
+    return { ok: true };
   },
   "mock.reset": () => {
     reset();

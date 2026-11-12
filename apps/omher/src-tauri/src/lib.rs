@@ -1,8 +1,10 @@
 mod accounts;
+mod acp_chat;
 mod agent_chat;
 mod appimage;
 mod bridge;
 mod dsh_chat;
+mod git_branch;
 mod hermes_auth;
 mod session_files;
 mod sessions;
@@ -205,6 +207,14 @@ async fn account_status(cli: String, id: String) -> Result<Option<accounts::Logi
     tauri::async_runtime::spawn_blocking(move || accounts::status(&home, &cli, &id)).await.map_err(|e| e.to_string())?
 }
 
+/// The CLI's version through its fixed `--version` (Claude Code, Codex); only the version token comes back,
+/// `null` for other CLIs or output with no version in it.
+#[tauri::command]
+async fn account_version(cli: String) -> Result<Option<String>, String> {
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || accounts::version(&home, &cli)).await.map_err(|e| e.to_string())?
+}
+
 /// Start the CLI's own sign-in (`claude auth login`, `codex login`) with omher account `id` as its home. The
 /// browser part happens in the CLI; its plain output lines and then its exit arrive on `on_event`.
 #[tauri::command]
@@ -297,15 +307,22 @@ async fn session_close_all(shell: State<'_, Shell>) -> Result<(), String> {
 
 /// Start allow-listed agent `agent` in folder `cwd` as a chat: its structured mode (the fixed arguments in
 /// the allow-list), with events for the chat view on `on_event` and, once, `{event:"exit", code, error}`.
-/// Only an agent id, a folder, optionally a Claude Code session id or Codex thread id, and optionally the account a
-/// restarted session ran with cross from the UI.
+/// Only an agent id, a folder, optionally a Claude Code session id or Codex thread id, optionally the account a
+/// restarted session ran with, and the SESSIONS id (`s<digits>`, whose attachment folder a Claude Code chat may
+/// read) cross from the UI.
 #[tauri::command]
-async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume: Option<String>, account: Option<String>, on_event: Channel<serde_json::Value>) -> Result<u32, String> {
+async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume: Option<String>, account: Option<String>, session: Option<String>, on_event: Channel<serde_json::Value>) -> Result<u32, String> {
     let chats = shell.chats.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // The same account as a terminal session of this agent: its home variable, or nothing ("This computer").
         let account_env = user_home().map(|h| accounts::session_env_for(&h, &agent, account.as_deref())).unwrap_or_default();
-        chats.start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref(), &account_env, move |out| {
+        // Claude Code: the session's attachment folder (`s<digits>` under ~/.omher/session-files), made now so its
+        // copies are readable without a card; no folder (a bad id, a link) only means a card per read
+        let files = match (agent.as_str(), session.as_deref()) {
+            ("claude", Some(s)) => user_home().and_then(|h| session_files::session_dir(&h, s)).ok(),
+            _ => None,
+        };
+        chats.start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref(), &account_env, files.as_deref(), move |out| {
             let _ = on_event.send(match out {
                 ChatOut::Event(e) => e,
                 ChatOut::Exit(code, error) => serde_json::json!({"event": "exit", "code": code, "error": error}),
@@ -316,8 +333,9 @@ async fn chat_start(shell: State<'_, Shell>, agent: String, cwd: String, resume:
     .map_err(|e| e.to_string())?
 }
 
-/// What the person did in chat `id`: `{kind:"send", text}`, `{kind:"interrupt"}`,
-/// `{kind:"approve", request_id, choice}`, `{kind:"clarify", request_id, answer}`, `{kind:"model", model}`.
+/// What the person did in chat `id`: `{kind:"send", text, images, id}`, `{kind:"interrupt"}`,
+/// `{kind:"approve", request_id, choice}`, `{kind:"clarify", request_id, answer}`, `{kind:"model", model}`,
+/// `{kind:"mode", mode}` (one of `agent_chat::modes_for`), `{kind:"effort", effort}`.
 #[tauri::command]
 async fn chat_input(shell: State<'_, Shell>, id: u32, input: agent_chat::Input) -> Result<(), String> {
     let chats = shell.chats.clone();
@@ -354,6 +372,12 @@ async fn session_file_read(path: String) -> Result<tauri::ipc::Response, String>
     let real = session_files::check(&home, &path)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(real)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// The git branch of a session's folder, from its `.git/HEAD` only (no program runs); "" outside a repository.
+#[tauri::command]
+async fn session_branch(cwd: String) -> Result<String, String> {
+    Ok(git_branch::branch(std::path::Path::new(&cwd)))
 }
 
 /// Remove session `session`'s saved files (it was closed).
@@ -445,6 +469,7 @@ pub fn run() {
             account_env,
             account_clis,
             account_status,
+            account_version,
             account_login_start,
             account_login_cancel,
             sessions_agents,
@@ -460,6 +485,7 @@ pub fn run() {
             session_file_read,
             session_files_remove,
             session_files_prune,
+            session_branch,
             chat_close_all,
             open_media,
             open_hermes_auth

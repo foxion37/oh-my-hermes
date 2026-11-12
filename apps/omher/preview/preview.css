@@ -19,6 +19,12 @@
 html .window.panel-open:has(.pn-wide[data-tab="runs"]) {
   --panel-w: 552px;
 }
+/* In that 400px chat the places chip gives way to the model name by the app's own rule (elsewhere.css). */
+/* That leaves the subagent card's head ~290px in the 400px chat: a running card's line ("Running · 1 of 2 done
+   · 2m 48s") and its run name fit side by side with a slightly tighter gap. */
+.sa-head {
+  gap: 5px;
+}
 .pv-toast {
   position: fixed;
   left: 50%;

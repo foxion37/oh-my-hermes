@@ -44,6 +44,7 @@ function snapshot(): ResumeSnap {
         cwd: r.cwd,
         startedAt: r.startedAt,
         view: r.view,
+        ...(r.open ? { open: r.open } : {}),
         // a paused one was running before the last restart and still waits for Resume
         running: r.status === "running" || r.status === "starting" || !!r.paused,
         ...(r.status === "draft" ? { draft: true } : {}),
@@ -57,6 +58,8 @@ function snapshot(): ResumeSnap {
         ...(r.title ? { title: r.title } : {}),
         ...(r.agentTitle ? { agentTitle: r.agentTitle } : {}),
         ...(r.promptTitle ? { promptTitle: r.promptTitle } : {}),
+        ...(r.mode ? { mode: r.mode } : {}),
+        ...(r.effort ? { effort: r.effort } : {}),
       })),
       messages: (id) => {
         const key = ss.chatKey(id);

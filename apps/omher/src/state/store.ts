@@ -2,10 +2,10 @@
 // its actions; they never edit this file.
 import { useSyncExternalStore } from "react";
 import { BridgeClient, type BridgeStatus } from "../lib/bridge";
-import { noteFor, showNote, windowWatched } from "../lib/notify";
+import { noteFor, sessionNote, showNote, windowWatched, type SessionNote } from "../lib/notify";
 import { appSounds, soundFor, type SoundBoard } from "../lib/sounds";
 import { promptText } from "../chat/parts/attachFiles";
-import { toWire } from "../chat/parts/skillTokens";
+import { findTokens, toWire } from "../chat/parts/skillTokens";
 import { forBots, parseResume, RESUME_KEY, type ResumeSnap } from "../app/resume";
 import { LANG_KEY, readLang, setLang, t as tr, type Key, type Lang } from "../i18n";
 import type {
@@ -32,6 +32,7 @@ import type {
   WorktreeDiff,
   MediaFile,
   SubagentState,
+  AskSubagent,
   AttachKind,
   AttachResult,
   AccountCli,
@@ -42,6 +43,8 @@ import type {
   InspectResult,
   OpMap,
   PluginRow,
+  DiffFile,
+  PlanItem,
 } from "../lib/protocol";
 import type { AgentRunSummary, CliAgent, NodePr, RunDetail } from "../lib/runs";
 
@@ -56,8 +59,14 @@ export interface Step {
   startedAt: number; // ms
   endedAt?: number; // ms
   ok?: boolean;
+  /** Still running when the person pressed Stop (`ok` false, `endedAt` the Stop). */
+  stopped?: boolean;
+  /** A stopped step the agent later said it finished (Codex runs a command on after Stop): how it ended and when. */
+  late?: { ok: boolean; endedAt: number; ms: number };
   /** delegate_task: the dag parts this call handed out (one plain line each in the activity details). */
   dag?: { run: string; node: string }[];
+  /** A file edit's change, per file (SESSIONS agents), for the step's diff view. */
+  diff?: DiffFile[];
 }
 
 export interface Turn {
@@ -74,6 +83,10 @@ export interface Turn {
   streaming: string;
   /** The fan-outs (delegate_task children) this turn started, as Hermes' subagent events tell them. */
   fanouts?: Fanout[];
+  /** The agent's own todo list as it last stood in this turn (SESSIONS agents). */
+  plan?: PlanItem[];
+  /** What the agent thought, when it sends the text (SESSIONS agents); at most THINKING_MAX characters. */
+  thinking?: string;
 }
 
 /** One subagent of a fan-out, as its latest event left it. */
@@ -81,6 +94,11 @@ export interface SubagentRow {
   id: string;
   index: number;
   goal: string;
+  /** Which agent reported it (a session's CLI) and its name or type, when the agent gives them. */
+  agent?: string;
+  name?: string;
+  /** Its recent steps, oldest first (at most SUB_STEPS): what the row shows when opened. */
+  steps?: { tool?: string; text: string }[];
   model?: string;
   dag?: { run: string; node: string };
   state: SubagentState;
@@ -113,12 +131,17 @@ export type MessageItem = {
   text: string;
   /** user rows only: the send failed (text of the bridge error). */
   error?: string;
+  /** user rows only: sent while a turn ran, and the agent has not taken it yet (`queued`), or Stop threw it away
+   *  before the agent read it (`dropped`). */
+  wait?: "queued" | "dropped";
   /** user rows only: sent with "Reply there" (where the person pointed the bot). */
   reply?: { source: string; label: string };
   /** user rows only: files sent with it, shown from the local copies (never read back). */
   files?: SentFile[];
   /** user rows only: the prompt text actually sent when it differs from `text` (files add `@file:` refs). */
   sent?: string;
+  /** user rows only: the skills its `$name` tokens called, drawn as pills in the bubble. */
+  skills?: string[];
 };
 
 /** A file the person sent, as their own bubble shows it. `url` is a blob URL for pictures and video. */
@@ -148,6 +171,8 @@ export type ApprovalItem = {
   choices: ApprovalChoice[];
   /** The folder the command runs in, when the agent says. */
   cwd?: string;
+  /** Asked inside a subagent: which one. */
+  subagent?: AskSubagent;
   resolved?: ApprovalChoice;
   expired?: AskExpiry;
 };
@@ -162,6 +187,7 @@ export type ClarifyItem = {
   multi?: boolean;
   /** An interview: every question of the ask (2-5), answered in one card. */
   questions?: ClarifyQuestion[];
+  subagent?: AskSubagent;
   answer?: string;
   /** Interview answers per question id (null = skipped). */
   answers?: ClarifyAnswers;
@@ -333,6 +359,20 @@ export function activityText(name: string, detail: string): string {
 export const WORKING = "Working…";
 /** The status a turn gets from `thinking`, before any tool or status text. */
 export const THINKING = "Thinking…";
+/** How much of a turn's thinking text is kept (the start; the rest is dropped, never shown cut mid-word). */
+export const THINKING_MAX = 20_000;
+
+/** A plan as the agent sent it: rows with text, an unknown status read as pending. */
+export function parsePlan(items: unknown): PlanItem[] {
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((x) => {
+    if (!x || typeof x !== "object") return [];
+    const { text, status } = x as { text?: unknown; status?: unknown };
+    if (typeof text !== "string" || !text.trim()) return [];
+    const st = status === "in_progress" || status === "completed" ? status : "pending";
+    return [{ text, status: st }];
+  });
+}
 
 export function liveLabel(t: Turn): { verb: string; code?: string } {
   const status = t.status || WORKING;
@@ -346,7 +386,7 @@ export function liveLabel(t: Turn): { verb: string; code?: string } {
 /** Whether a running turn has something for its activity line to say: a tool or skill ran, or the bot sent a
  *  status of its own. Before that (only thinking) the chat shows the typing bubble instead of the line. */
 export function turnHasActivity(t: Turn): boolean {
-  return t.steps.length > 0 || t.skills.length > 0 || !!(t.status && t.status !== THINKING && t.status !== WORKING);
+  return t.steps.length > 0 || t.skills.length > 0 || !!(t.status && t.status !== THINKING && t.status !== WORKING) || !!t.plan?.length || !!t.thinking;
 }
 
 // ---- state helpers --------------------------------------------------------------------------
@@ -461,6 +501,19 @@ function doneWaiting(c: Chat): Chat {
   return patchTurn(c, (x) => ({ ...x, status: last && last.endedAt === undefined ? activityText(last.name, last.detail) : "" }));
 }
 
+/** The agent took back the person's last message: it and everything after it leave the chat. */
+function rewind(c: Chat): Chat {
+  let at = -1;
+  for (let i = c.items.length - 1; i >= 0; i--) {
+    if (c.items[i].kind === "user") {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return c;
+  return { ...withItems(c, c.items.slice(0, at)), lastTurn: c.turn ? c.lastTurn : null };
+}
+
 /** How long a status that came before its turn still opens that turn (Hermes sends it right before). */
 const EARLY_STATUS_MS = 5_000;
 
@@ -491,6 +544,8 @@ function patchTurnById(chat: Chat, id: string, fn: (t: Turn) => Turn): Chat {
 }
 
 const SUB_DONE: SubagentState[] = ["done", "failed", "cancelled"];
+/** How many of a subagent's own steps its row keeps. */
+export const SUB_STEPS = 8;
 export const subagentEnded = (s: Pick<SubagentRow, "state">) => SUB_DONE.includes(s.state);
 
 /** A subagent event into its fan-out. A fan-out is named by its delegation id once Hermes gives one; the turn that
@@ -528,6 +583,9 @@ function withSubagent(chat: Chat, ev: EventOf<"subagent">, now: number): Chat {
       goal: ev.goal || old?.goal || "",
       state: old && subagentEnded(old) && !ended ? old.state : ev.state,
       ...(ev.model ? { model: ev.model } : {}),
+      ...(ev.agent ? { agent: ev.agent } : {}),
+      ...(ev.name ? { name: ev.name } : {}),
+      ...(ev.step && ev.step !== old?.steps?.at(-1)?.text ? { steps: [...(old?.steps ?? []), { tool: ev.tool, text: ev.step }].slice(-SUB_STEPS) } : {}),
       ...(ev.dag ? { dag: ev.dag } : {}),
       // the step line is the current tool's; it goes when the child ends (its result line takes its place)
       ...(ev.step !== undefined ? { step: ev.step, tool: ev.tool } : {}),
@@ -539,17 +597,33 @@ function withSubagent(chat: Chat, ev: EventOf<"subagent">, now: number): Chat {
   });
 }
 
-/** Closes the running turn (if any) and moves it to lastTurn. */
+/** Closes the running turn (if any) and moves it to lastTurn. A step still open when the person stopped the turn
+ *  reads as stopped, not as finished. */
 function endTurn(chat: Chat, now: number, outcome: NonNullable<Turn["outcome"]>, error?: string): Chat {
   if (!chat.turn) return chat;
+  const stop = outcome === "interrupted";
   const patched = patchTurn(chat, (t) => ({
     ...t,
     endedAt: now,
     outcome,
     ...(error ? { error } : {}),
-    steps: t.steps.map((s) => (s.endedAt ? s : { ...s, endedAt: now })),
+    steps: t.steps.map((s) => (s.endedAt ? s : { ...s, endedAt: now, ...(stop ? { ok: false, stopped: true } : {}) })),
   }));
   return { ...patched, lastTurn: patched.turn, turn: null };
+}
+
+/** The end of a step the person stopped, reported after its turn was over (Codex's command ran on): the stopped
+ *  step, in whichever turn holds it, says it kept running and how it ended. Any other step end outside its turn
+ *  is dropped. */
+function lateStepEnd(chat: Chat, ev: EventOf<"tool.end">, now: number): Chat {
+  const held = [...chat.items]
+    .reverse()
+    .find((i): i is ActivityItem => i.kind === "activity" && i.turn.steps.some((s) => s.id === ev.tool_id && s.stopped && !s.late));
+  if (!held) return chat;
+  return patchTurnById(chat, held.id, (t) => ({
+    ...t,
+    steps: t.steps.map((s) => (s.id === ev.tool_id ? { ...s, late: { ok: ev.ok, endedAt: now, ms: ev.ms > 0 ? ev.ms : now - s.startedAt } } : s)),
+  }));
 }
 
 function touchChat(state: AppState, bot: string, fn: (c: Chat) => Chat): AppState {
@@ -588,7 +662,9 @@ export function replyChipFor(a: Away): ReplyChip | null {
 }
 const SOURCE_NAMES: Record<string, string> = { slack: "Slack", discord: "Discord", telegram: "Telegram" };
 
-function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string): Chat {
+/** `since`: when the chat.open request went out. A turn that started or ended after that is newer than the reply's
+ *  `running`, which then changes nothing: the live events are the truth for it. */
+function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string, since = Infinity): Chat {
   const server: MessageItem[] = res.messages.map((m) => ({
     kind: m.role,
     id: m.id,
@@ -604,8 +680,9 @@ function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string):
     if (i.id.startsWith("local-")) {
       const sent = i.sent ?? i.text;
       const twin = server.find((s) => s.kind === "user" && s.text === sent && s.ts >= i.ts - 120);
-      // keep the local pictures, and the text as typed (skill tokens go out hoisted)
-      if (twin && (i.files || i.sent)) Object.assign(twin, { text: i.text, sent, ...(i.files ? { files: i.files } : {}) });
+      // keep the local pictures, and the text as typed with its skill tokens (they go out hoisted)
+      if (twin && (i.files || i.sent || i.skills))
+        Object.assign(twin, { text: i.text, sent, ...(i.files ? { files: i.files } : {}), ...(i.skills ? { skills: i.skills } : {}) });
       return !twin;
     }
     return i.ts >= lastServerTs;
@@ -618,9 +695,9 @@ function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string):
     loaded: true,
     sessionId: res.session_id,
   };
-  if (res.running && !next.turn) {
+  if (res.running && !next.turn && !((next.lastTurn?.endedAt ?? -Infinity) >= since)) {
     next = newTurn(next, bot, now, WORKING)[0];
-  } else if (!res.running && next.turn) {
+  } else if (!res.running && next.turn && next.turn.startedAt < since) {
     next = endTurn(next, now, "done");
   }
   return next;
@@ -635,7 +712,7 @@ export type Action =
   | { type: "error"; message: string | null }
   | { type: "bots"; bots: Bot[] }
   | { type: "select"; bot: string }
-  | { type: "chat.opened"; bot: string; res: ChatOpenResult; now: number }
+  | { type: "chat.opened"; bot: string; res: ChatOpenResult; now: number; since?: number }
   | {
       type: "local.user";
       bot: string;
@@ -645,6 +722,7 @@ export type Action =
       reply?: { source: string; label: string };
       files?: SentFile[];
       sent?: string;
+      skills?: string[];
     }
   | { type: "reply.set"; bot: string; chip: ReplyChip | null }
   | { type: "send.failed"; bot: string; id: string; error: string }
@@ -679,7 +757,10 @@ export type Action =
   /** After a restart: the panel, Plans view and open session as they were (resume.ts). */
   | { type: "ui.restore"; ui: Pick<Ui, "panelOpen" | "panelTab" | "runsFull" | "runId"> & { session: string | null } }
   /** Drop a chat that is gone for good (a closed SESSIONS chat): its open asks go with it. */
-  | { type: "chat.forget"; bot: string };
+  | { type: "chat.forget"; bot: string }
+  /** A SESSIONS chat ended with `error`: its last turn, failed with that same reason, no longer repeats it (the
+   *  Ended line above the composer says it once, beside Restart). */
+  | { type: "turn.reasonMoved"; bot: string; error: string };
 
 // ---- chats that are not a bot's main chat ------------------------------------------------------
 //
@@ -727,12 +808,33 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
         const early = c.early && now - c.early.at <= EARLY_STATUS_MS ? c.early.text : "";
         return { ...newTurn(endTurn(c, now, "done"), bot, now, early)[0], early: null };
       });
-    case "status":
-      return touchChat(state, bot, (c) =>
-        c.turn ? patchTurn(c, (t) => ({ ...t, status: ev.text })) : { ...c, early: { text: ev.text, at: now } },
-      );
+    case "status": {
+      // the agent's own retry of this turn: the line says which try, in the person's language
+      const text = ev.retry ? tr("live.retrying", { n: ev.retry.attempt, max: ev.retry.max }) : ev.text;
+      return touchChat(state, bot, (c) => (c.turn ? patchTurn(c, (t) => ({ ...t, status: text })) : { ...c, early: { text, at: now } }));
+    }
     case "thinking":
-      return touchChat(state, bot, (c) => (c.turn && !c.turn.status ? patchTurn(c, (t) => ({ ...t, status: THINKING })) : c));
+      return touchChat(state, bot, (c) => {
+        if (!c.turn) return c;
+        const text = typeof ev.text === "string" ? ev.text : "";
+        const had = c.turn.thinking ?? "";
+        const kept = text && had.length < THINKING_MAX ? (had + text).slice(0, THINKING_MAX) : had;
+        if (c.turn.status && kept === had) return c;
+        return patchTurn(c, (t) => ({ ...t, ...(t.status ? {} : { status: THINKING }), ...(kept ? { thinking: kept } : {}) }));
+      });
+    case "tool.diff": {
+      const files = Array.isArray(ev.files) ? ev.files.filter((f) => f && typeof f.path === "string" && Array.isArray(f.lines)) : [];
+      if (!files.length) return state;
+      // the step's line says the same counts as its change (`calc.py +4`, `a.ts +3 -1, b.ts +1`)
+      const detail = files.map((f) => `${f.path}${f.added ? ` +${f.added}` : ""}${f.removed ? ` -${f.removed}` : ""}`).join(", ");
+      return touchChat(state, bot, (c) =>
+        patchTurn(c, (t) => ({ ...t, steps: t.steps.map((s) => (s.id === ev.tool_id ? { ...s, diff: files, detail } : s)) })),
+      );
+    }
+    case "plan":
+      return touchChat(state, bot, (c) => patchTurn(c, (t) => ({ ...t, plan: parsePlan(ev.items) })));
+    case "rewound":
+      return touchChat(state, bot, (c) => rewind(c));
     case "tool.start":
       return touchChat(state, bot, (c) =>
         patchTurn(c, (t) => ({
@@ -746,10 +848,12 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
       );
     case "tool.end":
       return touchChat(state, bot, (c) =>
-        patchTurn(c, (t) => ({
-          ...t,
-          steps: t.steps.map((s) => (s.id === ev.tool_id ? { ...s, endedAt: now, ok: ev.ok } : s)),
-        })),
+        c.turn?.steps.some((s) => s.id === ev.tool_id)
+          ? patchTurn(c, (t) => ({
+              ...t,
+              steps: t.steps.map((s) => (s.id === ev.tool_id ? { ...s, endedAt: now, ok: ev.ok } : s)),
+            }))
+          : lateStepEnd(c, ev, now),
       );
     case "subagent": {
       const c = state.chats[bot];
@@ -789,6 +893,7 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
           command: ev.command,
           choices: ev.choices,
           ...(ev.cwd ? { cwd: ev.cwd } : {}),
+          ...(ev.subagent?.id ? { subagent: ev.subagent } : {}),
         };
         return withItems(base, [...base.items, item]);
       });
@@ -806,6 +911,7 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
           choices: ev.choices,
           ...(ev.multi_select ? { multi: true } : {}),
           ...(qs.length > 1 ? { questions: qs } : {}),
+          ...(ev.subagent?.id ? { subagent: ev.subagent } : {}),
         };
         return withItems(base, [...base.items, item]);
       });
@@ -838,6 +944,7 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
       };
     case "elsewhere.update":
     case "bots.update":
+    case "bot.restarted":
     case "accounts.update":
       return state; // the store refetches; nothing to change here
     case "routine.added": {
@@ -878,6 +985,24 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
       );
       return bumpUnread(next, bot);
     }
+    // a message sent while a turn ran (a SESSIONS chat): waiting until the agent takes it, or thrown away by Stop
+    case "message.queued":
+    case "message.taken":
+    case "message.dropped": {
+      const id = (ev as { id?: unknown }).id;
+      if (typeof id !== "string" || !state.chats[bot]?.items.some((i) => i.kind === "user" && i.id === id)) return state;
+      const wait = ev.event === "message.queued" ? ("queued" as const) : ev.event === "message.dropped" ? ("dropped" as const) : undefined;
+      return touchChat(state, bot, (c) =>
+        withItems(
+          c,
+          c.items.map((i) => {
+            if (i.kind !== "user" || i.id !== id) return i;
+            const { wait: _old, ...rest } = i;
+            return wait ? { ...rest, wait } : rest;
+          }),
+        ),
+      );
+    }
     default:
       return state;
   }
@@ -908,7 +1033,7 @@ export function reduce(state: AppState, a: Action): AppState {
     case "select":
       return { ...state, selectedBot: a.bot, unread: { ...state.unread, [a.bot]: 0 }, ui: { ...state.ui, view: "chat" } };
     case "chat.opened":
-      return touchChat(state, a.bot, (c) => ({ ...applyOpened(c, a.res, a.now, a.bot), openError: null }));
+      return touchChat(state, a.bot, (c) => ({ ...applyOpened(c, a.res, a.now, a.bot, a.since), openError: null }));
     case "local.user":
       return touchChat(state, a.bot, (c) =>
         withItems(c, [
@@ -921,6 +1046,7 @@ export function reduce(state: AppState, a: Action): AppState {
             ...(a.reply ? { reply: a.reply } : {}),
             ...(a.files?.length ? { files: a.files } : {}),
             ...(a.sent !== undefined && a.sent !== a.text ? { sent: a.sent } : {}),
+            ...(a.skills?.length ? { skills: a.skills } : {}),
           },
         ]),
       );
@@ -1051,6 +1177,12 @@ export function reduce(state: AppState, a: Action): AppState {
     }
     case "ui.focusAsk":
       return { ...state, ui: { ...state.ui, focusAsk: { bot: a.bot, id: a.id, seq: (state.ui.focusAsk?.seq ?? 0) + 1 } } };
+    case "turn.reasonMoved": {
+      const c = state.chats[a.bot];
+      const last = c?.lastTurn;
+      if (!c || !last || last.outcome !== "error" || last.error?.trim() !== a.error.trim()) return state;
+      return { ...state, chats: { ...state.chats, [a.bot]: patchTurnById(c, last.id, ({ error: _, ...t }) => t) } };
+    }
     case "chat.forget": {
       if (!state.chats[a.bot]) return state;
       const chats = { ...state.chats };
@@ -1162,7 +1294,7 @@ export interface Actions {
   init(): Promise<void>;
   selectBot(bot: string): Promise<void>;
   /** Sends to the main chat; a "Reply there" chip goes along as `reply_to` and is then cleared. Skill tokens
-   *  (`./name`) go out hoisted to the front as `/name`; the bubble keeps the text as typed. */
+   *  (`$name`) go out hoisted to the front as `/name`; the bubble keeps the text as typed. */
   send(text: string): Promise<void>;
   /** Put (or clear, with null) the composer's "Reply there" chip for a bot. Sends nothing. */
   setReplyTo(chip: ReplyChip | null, bot?: string): void;
@@ -1233,8 +1365,9 @@ export interface Actions {
   renameBot(bot: string, name: string): Promise<void>;
   setAvatar(bot: string, data: string | null): Promise<void>;
   botInfo(bot: string): Promise<BotInfo>;
-  /** The bot's skills for the composer's `./` picker, read once per bot; [] when the bridge cannot list them. */
-  skills(bot: string): Promise<Skill[]>;
+  /** The bot's skills for the composer's `$` picker, read once per bot (`fresh`: read again, e.g. right after an
+   *  install); [] when the bridge cannot list them. */
+  skills(bot: string, fresh?: boolean): Promise<Skill[]>;
   /** Channel names for Slack / Discord link chips, read once per bot; empty when the bridge cannot say. */
   linkPlaces(bot: string): Promise<LinkPlaces>;
   avatarOf(bot: string): Promise<{ rev: number | null; data: string | null }>;
@@ -1266,6 +1399,12 @@ export interface Actions {
   systemNote(text: string, bot?: string): void;
   /** Every bridge event, for views that keep their own copy (Accounts listens for `accounts.update`). */
   onBridgeEvent(fn: (ev: BridgeEvent) => void): () => void;
+  /** Hermes' own restart of the gateway that serves `bot`, only on the person's press (`interrupt` only for "Restart anyway"). */
+  restartBot(bot: string, interrupt?: boolean): Promise<OpMap["bots.restart"]["result"]>;
+  /** The gateway that serves `bot` and every bot that goes down with its restart. */
+  restartScope(bot: string): Promise<OpMap["bots.restart_scope"]["result"]>;
+  /** Hermes' own `reload-plugins` on the bot's gateway (restarts nothing). */
+  reloadPlugins(bot: string, name?: string): Promise<OpMap["plugins.reload"]["result"]>;
 }
 
 export type BridgeLike = Pick<BridgeClient, "connect" | "request" | "onAny" | "onStatus">;
@@ -1325,6 +1464,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   // skills.list per bot: the promise (asked once) and the names, for hoisting tokens when a message is sent
   const skillLists = new Map<string, Promise<Skill[]>>();
   const skillNames = new Map<string, string[]>();
+  const tokenNames = (text: string, bot: string) => [...new Set(findTokens(text, skillNames.get(bot) ?? []).map((k) => k.name))];
 
   const dispatch = (a: Action) => {
     const next = reduce(state, a);
@@ -1339,6 +1479,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
 
   const loadChat = async (bot: string) => {
     let res: ChatOpenResult;
+    const since = now();
     try {
       res = await bridge.request("chat.open", { bot });
     } catch (e) {
@@ -1346,7 +1487,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       dispatch({ type: "chat.failed", bot, message: errText(e) });
       throw e;
     }
-    dispatch({ type: "chat.opened", bot, res, now: now() });
+    dispatch({ type: "chat.opened", bot, res, now: now(), since });
   };
   const loadElsewhere = async (bot?: string) => {
     const b = botArg(bot);
@@ -1439,6 +1580,8 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
         if (ev.event === "routine.ran") void loadRoutines(ev.bot);
         if (ev.event === "routine.ran" || ev.event === "routines.update" || ev.event === "routine.added") void loadAutomations();
         if (ev.event === "bots.update") void reloadBots();
+        // a restarted bot is attached again: its chat re-reads itself, as after a reconnect
+        if (ev.event === "bot.restarted" && ev.ok && state.chats[ev.bot]?.loaded) void loadChat(ev.bot).catch(() => {});
       });
       await bridge.connect();
       try {
@@ -1452,11 +1595,14 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
         const first =
           state.selectedBot && bots.some((b) => b.name === state.selectedBot) ? state.selectedBot : (back?.bot ?? bots[0]?.name);
         void loadAutomations();
-        if (first) await selectBot(first);
+        // the panel and view come back as the bot is selected, before its chat and lists load: put back only once
+        // those reads ended, a click on the panel in the meantime (the places chip, ⌘.) was undone by it
+        const loading = first ? selectBot(first) : Promise.resolve();
         if (back?.bot) {
           const { panelOpen, panelTab, runsFull, runId, session } = back;
           dispatch({ type: "ui.restore", ui: { panelOpen, panelTab, runsFull, runId, session } });
         } else if (back?.session) dispatch({ type: "ui.session", id: back.session });
+        await loading;
         // Load the other chats too, so the sidebar can show previews and unread counts.
         await Promise.allSettled(
           bots.filter((b) => b.name !== first && online(b)).map((b) => loadChat(b.name)),
@@ -1476,7 +1622,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       const chip = state.replyTo[bot] ?? null;
       const reply = chip ? { source: chip.source, label: chip.place } : undefined;
       const wire = toWire(t, skillNames.get(bot) ?? []);
-      dispatch({ type: "local.user", bot, id, text: t, now: now(), reply, sent: wire });
+      dispatch({ type: "local.user", bot, id, text: t, now: now(), reply, sent: wire, skills: tokenNames(t, bot) });
       if (chip) dispatch({ type: "reply.set", bot, chip: null });
       try {
         await bridge.request("chat.send", chip ? { bot, text: wire, reply_to: chip.session_id } : { bot, text: wire });
@@ -1503,7 +1649,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       const sent = toWire(promptText(text, results), skillNames.get(bot) ?? []);
       const id = `local-${++localSeq}`;
       const shown: SentFile[] = files.map(({ name, size, kind, url }) => ({ name, size, kind, url }));
-      dispatch({ type: "local.user", bot, id, text: text.trim(), now: now(), files: shown, sent });
+      dispatch({ type: "local.user", bot, id, text: text.trim(), now: now(), files: shown, sent, skills: tokenNames(text.trim(), bot) });
       try {
         await bridge.request("chat.send", { bot, text: sent });
       } catch (e) {
@@ -1694,7 +1840,8 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       dispatch({ type: "bots", bots: state.bots.map((b) => (b.name === bot ? { ...b, avatar_rev: r.avatar_rev } : b)) });
     },
     botInfo: (bot) => bridge.request("bots.info", { bot }),
-    skills(bot) {
+    skills(bot, fresh) {
+      if (fresh) skillLists.delete(bot);
       let list = skillLists.get(bot);
       if (!list) {
         list = bridge
@@ -1749,6 +1896,9 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       eventFns.add(fn);
       return () => eventFns.delete(fn);
     },
+    restartBot: (bot, interrupt) => bridge.request("bots.restart", interrupt ? { bot, interrupt: true } : { bot }),
+    restartScope: (bot) => bridge.request("bots.restart_scope", { bot }),
+    reloadPlugins: (bot, name) => bridge.request("plugins.reload", name ? { bot, name } : { bot }),
   };
 
   return {
@@ -1836,6 +1986,14 @@ export function notifySessionEvent(ev: BridgeEvent, state: AppState): void {
     if (route) route.open();
     else void singleton?.actions.selectBot(note.bot);
   });
+}
+
+/** A system notification for what session `id` did outside its chat (its program ended, it could not start, its
+ *  terminal rang), unless the person is looking at that session. A click opens the session. */
+export function notifySessionNote(id: string, n: SessionNote, state: AppState): void {
+  if (!notifyEnabled()) return;
+  if (windowWatched() && state.ui.view === "session" && state.ui.session === id) return;
+  void showNote(sessionNote(id, n), () => singleton?.actions.openSession(id));
 }
 
 /** Set by SESSIONS: the chat key shown for a session id (so its own notifications stay quiet). */

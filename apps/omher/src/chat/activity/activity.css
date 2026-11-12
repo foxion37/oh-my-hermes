@@ -128,6 +128,12 @@
   text-overflow: ellipsis;
   color: var(--muted);
 }
+/* a failed turn's reason ends with what to do: it wraps instead of being cut */
+.act-sum.wrap {
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 .act-el {
   color: var(--quiet);
   font-size: 11px;
@@ -190,6 +196,17 @@
 .act-step.fail .v,
 .act-step.fail .s {
   color: var(--danger);
+}
+/* stopped by the person: not a failure; its own mark and verb, the time in words */
+.act-step.stopped .k,
+.act-step.stopped .s {
+  color: var(--muted);
+}
+.act-step .act-ic {
+  align-self: center;
+  font-size: 8px;
+  width: 8px;
+  margin-right: -4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -282,6 +299,45 @@
   gap: 8px;
   min-width: 0;
   line-height: 18px;
+  /* a quiet row button: no box, no fill; it opens the subagent's steps and answer */
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sa-top:disabled {
+  cursor: default;
+}
+.sa-top:focus-visible {
+  outline: 1px solid var(--line-strong, var(--muted));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.sa-det {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.sa-step code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: none;
+  padding: 0;
+  color: var(--body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sa-ans {
+  color: var(--body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .sa-goal {
   flex: 1;
@@ -310,6 +366,10 @@
 .sa-st.stopped,
 .sa-st.queued {
   color: var(--quiet);
+}
+/* its approval or question waits on the person: the sidebar's amber for a waiting session */
+.sa-st.waiting {
+  color: var(--needs-text);
 }
 .sa-t {
   flex: none;

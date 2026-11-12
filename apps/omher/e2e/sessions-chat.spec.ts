@@ -80,10 +80,11 @@ test("Claude Code opens as a chat: bubbles, one progress line, no terminal", asy
   await expect(page.getByTestId("session-agent")).toHaveText("Claude Code");
   await expect(page.getByTestId("session-cwd")).toHaveText("~/code/omher");
   await expect(page.getByTestId("model-label")).toHaveText("Opus 5.5");
-  // the UI sent only an agent id and a folder
+  // the UI sent only an agent id, a folder and the session's own id (whose attachment folder Claude Code may read)
   const st = (await calls(page)).find((c) => c.op === "chat.start")!;
-  expect(Object.keys(st).sort()).toEqual(["agent", "cwd", "id", "op"]);
+  expect(Object.keys(st).sort()).toEqual(["agent", "cwd", "id", "op", "session"]);
   expect(st).toMatchObject({ agent: "claude", cwd: "/Users/you/code/omher" });
+  expect(st.session).toMatch(/^s\d+$/);
   await expect(page.getByTestId("bubble-user")).toHaveText("explain the sessions feature");
   await expect(row.getByTestId("live-ring")).toBeVisible(); // the answer ring while the turn runs, as on a bot row
   await expect(row.getByTestId("live-dot")).toHaveCount(0); // a chat row rings; only a terminal row keeps the dot
@@ -97,7 +98,7 @@ test("Claude Code opens as a chat: bubbles, one progress line, no terminal", asy
   await expect(page.getByTestId("activity-step")).toHaveText(/Read\s*README\.md/);
   await expect(row.getByTestId("live-ring")).toHaveCount(0);
   const send = (await calls(page)).find((c) => c.op === "chat.input")!;
-  expect(send.input).toEqual({ kind: "send", text: "explain the sessions feature" });
+  expect(send.input).toEqual({ kind: "send", text: "explain the sessions feature", id: "local-s1" });
   // a session chat never goes to the bot's main chat
   expect((await bridgeCalls()).filter((c) => c.op === "chat.send")).toHaveLength(0);
 });
@@ -185,9 +186,10 @@ test("Esc and Stop send the agent's own interrupt; the model button switches the
   await page.getByTestId("model-opt").nth(1).click();
   await expect(page.getByTestId("model-label")).toHaveText("GPT-6.1 Terra");
   expect((await calls(page)).find((c) => c.input?.kind === "model")!.input).toEqual({ kind: "model", model: "gpt-6.1-terra" });
-  // the header keeps the toggle and the model button only
+  // the header keeps the toggle, the model button and the panel button (the session's Plans) only
   await page.keyboard.press("Escape");
-  expect(await page.locator("[data-testid=head-right] > *").count()).toBe(2);
+  expect(await page.locator("[data-testid=head-right] > *").count()).toBe(3);
+  await expect(page.locator("[data-testid=head-right] > *").last()).toHaveAttribute("data-testid", "panel-button");
 });
 
 test("a chat session resets first and loads xterm only when its Terminal view opens", async ({ page }) => {

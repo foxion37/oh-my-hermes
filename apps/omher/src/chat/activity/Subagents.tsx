@@ -1,13 +1,15 @@
 // The subagents of a fan-out in the chat: ONE card per delegate_task in the turn's activity, one row per subagent,
-// updating in place from Hermes' subagent events. Running: "2 subagents running · 1 of 2 · 41s"; done: "Ran 2
-// subagents · 3m". Each row: the model's vendor mark, the goal in a few words, its state, its current step or
-// its result line, and its time. The card's run name opens that run in Plans. Read-only: nothing here assigns,
-// steers or stops a subagent. `SubagentLine` is the row alone, for any chat that shows subagents (SESSIONS too).
-import { useEffect, useState } from "react";
-import type { Fanout, SubagentRow } from "../../state/store";
-import { getStore, subagentEnded } from "../../state/store";
+// updating in place from Hermes' subagent events. Running: "Running · 1 of 2 done · 41s", the way Plans counts;
+// done: "Ran 2 subagents · 3m". Each row: the model's vendor mark, the goal in a few words, its state ("waiting" in
+// amber while its approval or question waits on the person), its current step or its result line, and its time. The
+// card's run name opens that run in Plans. Read-only: nothing here assigns, steers or stops a subagent.
+// `SubagentLine` is the row alone, for any chat that shows subagents (SESSIONS too).
+import { useState } from "react";
+import type { ChatItem, Fanout, SubagentRow } from "../../state/store";
+import { askOpen, getStore, subagentEnded, useStore } from "../../state/store";
 import { ModelIcon, Spinner } from "../../ui";
 import { elapsed } from "../../app/time";
+import { useClock } from "../../app/clock";
 import { t } from "../../i18n";
 import { modelName } from "../../runs/format";
 
@@ -30,33 +32,66 @@ export function fewWords(goal: string, n = 60): string {
 }
 
 /** A subagent's time: its own run time when it ended, else counted from when omher first heard of it. */
-const rowMs = (s: SubagentRow, now: number) => (s.seconds !== undefined ? s.seconds * 1000 : (s.endedAt ?? now) - s.startedAt);
+export const rowMs = (s: SubagentRow, now: number) => (s.seconds !== undefined ? s.seconds * 1000 : (s.endedAt ?? now) - s.startedAt);
 
-export function SubagentLine({ sub, now, live = true }: { sub: SubagentRow; now: number; live?: boolean }) {
+/** The subagents whose approval or question is open in `items` (an ask that names its subagent). */
+export function waitingSubs(items: ChatItem[] | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const it of items ?? []) if ((it.kind === "approval" || it.kind === "clarify") && it.subagent?.id && askOpen(items!, it)) out.add(it.subagent.id);
+  return out;
+}
+
+export function SubagentLine({ sub, now, live = true, waiting = false }: { sub: SubagentRow; now: number; live?: boolean; waiting?: boolean }) {
   const ended = subagentEnded(sub);
-  // a turn that ended with the child still out and nothing more heard (the bridge dropped, the chat reopened)
-  const state = !ended && !live ? "stopped" : sub.state;
+  const [open, setOpen] = useState(false);
+  // a turn that ended with the child still out and nothing more heard (the bridge dropped, the chat reopened); a
+  // child whose ask is open waits on the person, and runs again once it is answered
+  const state = !ended && !live ? "stopped" : !ended && waiting ? "waiting" : sub.state;
   const line = ended ? sub.summary : sub.step;
+  // its name and its task: "general-purpose · Read a.txt first line"; either alone when the agent gives one
+  const title = [sub.name, fewWords(sub.goal)].filter(Boolean).join(" · ") || t("sub.untitled", { n: sub.index + 1 });
+  const canOpen = !!(sub.steps?.length || (ended && sub.summary));
   return (
-    <div className={`sa-row s-${state}`} data-testid="subagent-row" data-state={state} data-sub={sub.id}>
+    <div className={`sa-row s-${state}${open ? " open" : ""}`} data-testid="subagent-row" data-state={state} data-sub={sub.id} data-agent={sub.agent}>
       <span className="sa-mark" title={sub.model ? modelName(sub.model) : undefined}>
         <ModelIcon model={sub.model} size={12} />
       </span>
       <span className="sa-main">
-        <span className="sa-top">
-          <span className="sa-goal" title={sub.goal} data-testid="subagent-goal">
-            {fewWords(sub.goal) || t("sub.untitled", { n: sub.index + 1 })}
+        <button
+          type="button"
+          className="sa-top"
+          aria-expanded={canOpen ? open : undefined}
+          disabled={!canOpen}
+          onClick={() => setOpen((v) => !v)}
+          data-testid="subagent-open"
+        >
+          <span className="sa-goal" title={[sub.name, sub.goal].filter(Boolean).join(" · ")} data-testid="subagent-goal">
+            {title}
           </span>
           <span className={`sa-st ${state}`} data-testid="subagent-state">
-            {state === "stopped" ? t("sub.stopped") : t(STATE_KEY[sub.state])}
+            {state === "stopped" ? t("sub.stopped") : state === "waiting" ? t("sub.waiting") : t(STATE_KEY[sub.state])}
           </span>
           <span className="sa-t" data-testid="subagent-time">
             {elapsed(rowMs(sub, now))}
           </span>
-        </span>
-        {line && (
+        </button>
+        {line && !open && (
           <span className={`sa-line${ended ? " result" : ""}`} title={line} data-testid="subagent-line">
             {!ended && sub.tool ? <code>{line}</code> : line}
+          </span>
+        )}
+        {open && (
+          <span className="sa-det" data-testid="subagent-detail">
+            {sub.steps?.map((s, i) => (
+              <span key={i} className="sa-step" data-testid="subagent-step">
+                <code>{s.text}</code>
+              </span>
+            ))}
+            {ended && sub.summary && (
+              <span className="sa-ans" data-testid="subagent-answer">
+                {sub.summary}
+              </span>
+            )}
           </span>
         )}
       </span>
@@ -64,20 +99,20 @@ export function SubagentLine({ sub, now, live = true }: { sub: SubagentRow; now:
   );
 }
 
-export function FanoutCard({ fan, live }: { fan: Fanout; live: boolean }) {
+export function FanoutCard({ fan, live, bot }: { fan: Fanout; live: boolean; bot: string }) {
   const subs = fan.subs;
   const total = Math.max(fan.count, subs.length);
   const done = subs.filter(subagentEnded).length;
   const running = live && done < total;
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const h = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(h);
-  }, [running]);
-  const now = Date.now();
-  const ends = subs.map((s) => s.startedAt + rowMs(s, now));
-  const span = elapsed((running ? now : Math.max(fan.startedAt, ...ends)) - fan.startedAt);
+  // the app's one clock (a quarter second): this card, the activity line above it and Plans read the same instant
+  const now = useClock(running);
+  // a row reads "waiting" while its own ask is open in this chat
+  const waiting = waitingSubs(useStore().chats[bot]?.items);
+  // the fan-out's elapsed time: from its first subagent's start (one that ended with its own time began that long
+  // before it ended, which can be before omher heard of it) to now, or to its last end; never less than its longest row
+  const begun = Math.min(fan.startedAt, ...subs.map((s) => (s.seconds !== undefined && s.endedAt !== undefined ? s.endedAt - s.seconds * 1000 : s.startedAt)));
+  const ends = subs.map((s) => s.endedAt ?? s.startedAt + rowMs(s, now));
+  const span = elapsed(Math.max((running ? now : Math.max(begun, ...ends)) - begun, ...subs.map((s) => rowMs(s, now))));
   const failed = subs.filter((s) => s.state === "failed").length;
   const run = subs.find((s) => s.dag)?.dag?.run ?? null;
   const open = () => getStore().actions.openRun(run ?? (fan.delegation ? `delegate:${fan.delegation}` : null));
@@ -87,7 +122,7 @@ export function FanoutCard({ fan, live }: { fan: Fanout; live: boolean }) {
         {running ? <Spinner size={10} label={t("ui.working")} /> : <span className={`sa-ic${failed ? " failed" : ""}`} aria-hidden="true" />}
         <span className="sa-sum" data-testid="fanout-summary">
           {running
-            ? t(total === 1 ? "sub.running1" : "sub.runningN", { n: total, done, t: span })
+            ? t("sub.runningDone", { n: total, done, t: span })
             : t(total === 1 ? "sub.ran1" : "sub.ranN", { n: total, t: span }) + (failed ? ` · ${t("sub.nfailed", { n: failed })}` : "")}
         </span>
         {(run || fan.delegation) && (
@@ -98,7 +133,7 @@ export function FanoutCard({ fan, live }: { fan: Fanout; live: boolean }) {
       </div>
       <div className="sa-rows">
         {subs.map((s) => (
-          <SubagentLine key={s.id} sub={s} now={now} live={live} />
+          <SubagentLine key={s.id} sub={s} now={now} live={live} waiting={waiting.has(s.id)} />
         ))}
       </div>
     </div>

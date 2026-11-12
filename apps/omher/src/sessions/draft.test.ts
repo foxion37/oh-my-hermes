@@ -31,10 +31,10 @@ describe("draft defaults", () => {
   it("the + menu: installed agents first with the last one used on top, then the missing ones, in list order", () => {
     const ids = (l: AgentInfo[]) => l.map((a) => a.id);
     const all = info(["claude", "codex", "omo", "dsh"]);
-    expect(ids(menuOrder(all, []))).toEqual(["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok"]);
-    expect(ids(menuOrder(all, [rec("claude", "/a", 1), rec("dsh", "/b", 3)]))).toEqual(["dsh", "claude", "codex", "omo", "omh", "pi", "omp", "grok"]);
+    expect(ids(menuOrder(all, []))).toEqual(["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode"]);
+    expect(ids(menuOrder(all, [rec("claude", "/a", 1), rec("dsh", "/b", 3)]))).toEqual(["dsh", "claude", "codex", "omo", "omh", "pi", "omp", "grok", "opencode"]);
     // the last one used is no longer installed: it stays with the missing ones
-    expect(ids(menuOrder(info(["codex", "grok"]), [rec("pi", "/a", 1)]))).toEqual(["codex", "grok", "claude", "omo", "dsh", "omh", "pi", "omp"]);
+    expect(ids(menuOrder(info(["codex", "grok"]), [rec("pi", "/a", 1)]))).toEqual(["codex", "grok", "claude", "omo", "dsh", "omh", "pi", "omp", "opencode"]);
     // the install lines of the two new harnesses
     expect(INSTALL.omo).toBe("npm i -g omo-ai");
     expect(missingNote("omo")).toBe("omo was not found on this computer · install: npm i -g omo-ai");
@@ -66,6 +66,8 @@ describe("draft defaults", () => {
       sub: "~/code/app",
       live: false,
       needsYou: false,
+      mark: null,
+      over: false,
       ts: 1,
     });
     expect(rowModel({ ...d, cwd: "" }).sub).toBe("Codex");
@@ -168,7 +170,8 @@ describe("a New session chat", () => {
     const start = calls().find((c) => c.op === "chat.start")!;
     expect(start).toMatchObject({ agent: "codex", cwd: "/w/api" });
     const send = calls().find((c) => c.op === "chat.input")!;
-    expect(send.input).toEqual({ kind: "send", text: "run the tests" });
+    // with the bubble's id, so a message sent while a turn runs can be shown waiting
+    expect(send.input).toEqual({ kind: "send", text: "run the tests", id: expect.stringMatching(/^local-/) });
     expect(calls().indexOf(start)).toBeLessThan(calls().indexOf(send));
     const key = ss.chatKey(id)!;
     expect(store.getState().chats[key].items.find((i) => i.kind === "user")).toMatchObject({ text: "run the tests" });

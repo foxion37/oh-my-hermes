@@ -19,13 +19,13 @@ import {
 import { MockHost } from "./host";
 
 describe("session agents", () => {
-  it("is the fixed list of eight, in menu order, matching the Rust allow-list", () => {
-    expect(AGENTS.map((a) => a.id)).toEqual(["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok"]);
-    expect(AGENTS.map((a) => a.label)).toEqual(["Claude Code", "Codex", "OmO", "DSH", "oh-my-hermes", "pi", "oh-my-pi", "Grok"]);
+  it("is the fixed list of nine, in menu order, matching the Rust allow-list", () => {
+    expect(AGENTS.map((a) => a.id)).toEqual(["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode"]);
+    expect(AGENTS.map((a) => a.label)).toEqual(["Claude Code", "Codex", "OmO", "DSH", "oh-my-hermes", "pi", "oh-my-pi", "Grok", "OpenCode"]);
     for (const a of AGENTS) expect(a.program).toBe(a.id);
   });
 
-  it("opens claude, codex, omo, dsh, pi and omp as chats, omh as a Hermes chat, grok as a terminal (same as the Rust list)", () => {
+  it("opens claude, codex, omo, dsh, pi, omp and opencode as chats, omh as a Hermes chat, grok as a terminal (same as the Rust list)", () => {
     expect(AGENTS.map((a) => [a.id, a.mode])).toEqual([
       ["claude", "chat"],
       ["codex", "chat"],
@@ -35,6 +35,7 @@ describe("session agents", () => {
       ["pi", "chat"],
       ["omp", "chat"],
       ["grok", "terminal"],
+      ["opencode", "chat"],
     ]);
     // the Terminal toggle says whether the terminal view continues the conversation or starts fresh
     expect(terminalNote("claude")).toMatch(/continuing this conversation/);
@@ -43,7 +44,7 @@ describe("session agents", () => {
   });
 
   it("accepts only those ids", () => {
-    for (const id of ["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok"]) expect(isAgentId(id)).toBe(true);
+    for (const id of ["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode"]) expect(isAgentId(id)).toBe(true);
     for (const bad of ["", "sh", "/bin/sh", "claude --yolo", "Claude", " claude", null, 1, {}]) expect(isAgentId(bad)).toBe(false);
   });
 
@@ -64,7 +65,7 @@ describe("session agents", () => {
 
   it("row model: folder as the title, agent and state below, live while running", () => {
     const base: SessionRec = { id: "s1", agent: "claude", cwd: "/Users/k/app", startedAt: 1_700_000_000_000, status: "running", view: "terminal" };
-    expect(rowModel(base)).toEqual({ title: "app", titleSource: "folder", folder: "app", sub: "Claude Code", live: true, needsYou: false, ts: 1_700_000_000 });
+    expect(rowModel(base)).toEqual({ title: "app", titleSource: "folder", folder: "app", sub: "Claude Code", live: true, needsYou: false, mark: null, over: false, ts: 1_700_000_000 });
     expect(rowModel({ ...base, status: "starting" })).toMatchObject({ sub: "Claude Code · Starting…", live: true });
     expect(rowModel({ ...base, status: "exited", exitCode: 0 })).toMatchObject({ sub: "Claude Code · Ended", live: false });
     expect(rowModel({ ...base, status: "exited", exitCode: null }).sub).toBe("Claude Code · Ended");
@@ -121,6 +122,8 @@ describe("session agents", () => {
     expect(missingNote("omp")).toBe("omp was not found on this computer · install: curl -fsSL https://omp.sh/install | sh");
     expect(missingNote("grok")).toBe("grok was not found on this computer · install: curl -fsSL https://x.ai/cli/install.sh | bash");
     for (const a of AGENTS) expect(missingNote(a.id)).not.toMatch(/mariozechner|see .* docs|npm i -g @oh-my-pi/);
+    // OpenCode's own docs (opencode.ai/v1/docs): the npm package is opencode-ai, its program `opencode`
+    expect(missingNote("opencode")).toBe("opencode was not found on this computer · install: npm install -g opencode-ai");
     expect(Object.keys(INSTALL).sort()).toEqual(AGENTS.map((a) => a.id).sort());
   });
 
@@ -202,7 +205,8 @@ describe("mock session host", () => {
     await host.chatInput(id, { kind: "send", text: "/slow" });
     await host.chatInput(id, { kind: "interrupt" });
     await wait(60);
-    expect(ev.pop()).toEqual({ event: "turn.end", outcome: "interrupted" });
+    // the turn ends, then (an agent that reports it) how full the context is
+    expect(ev.filter((e) => e.event === "turn.end").pop()).toEqual({ event: "turn.end", outcome: "interrupted" });
     await host.chatClose(id);
     await expect(host.chatInput(id, { kind: "send", text: "x" })).rejects.toThrow();
     const ops = (g.__omherSessionCalls as { op: string; input?: unknown }[]).map((c) => c.op);
@@ -211,10 +215,10 @@ describe("mock session host", () => {
     expect(ops.filter((o) => o === "start")).toHaveLength(0); // a chat never starts a terminal
   });
 
-  it("reports claude, codex and omh installed and omo, dsh, pi, omp, grok missing", async () => {
+  it("reports claude, codex and omh installed and omo, dsh, pi, omp, grok, opencode missing", async () => {
     const list = await new MockHost({}).agents();
     expect(list.filter((a) => a.path).map((a) => a.id)).toEqual(["claude", "codex", "omh"]);
-    expect(list.filter((a) => !a.path).map((a) => a.id)).toEqual(["omo", "dsh", "pi", "omp", "grok"]);
-    expect(list.map((a) => a.mode)).toEqual(["chat", "chat", "chat", "chat", "hermes", "chat", "chat", "terminal"]);
+    expect(list.filter((a) => !a.path).map((a) => a.id)).toEqual(["omo", "dsh", "pi", "omp", "grok", "opencode"]);
+    expect(list.map((a) => a.mode)).toEqual(["chat", "chat", "chat", "chat", "hermes", "chat", "chat", "terminal", "chat"]);
   });
 });

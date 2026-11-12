@@ -4,9 +4,15 @@
 // answer ring around the agent mark and the turn's elapsed time while a turn runs, and the amber dot with
 // "waiting" while one of its approvals or questions is open (the same asks the Needs-you strip lists). A
 // terminal row keeps a live dot while its program runs: a terminal has no turn to ring for.
+// Every row ends line 2 with a small mark for the view it opens to: an outlined speech bubble for omher's chat, a
+// solid little prompt window for the agent's terminal (a draft shows the way picked for it). A session's state takes
+// the time's place on line 1 as a sign and a word: a yellow warning triangle and "waiting" while it waits for the
+// person (an open ask, or its terminal rang), a red exclamation mark and "error" when it stopped on an error, a green
+// check and "done" when it finished something the person has not opened yet. No dots: the row already has the live
+// dot. A session that no longer runs steps back.
 // Line 1 is the session's name (the person's, the agent's own title, a summary of the first message, else the
 // folder) and line 2 the folder and the agent. Double-click the name, or right-click › Rename, to name it.
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { selectAsks, useStore, type AppState } from "../state/store";
 import { CloseIcon, LiveRing, PlusIcon, Popover, TypingDots } from "../ui";
 import { busyFor, shortTime } from "../app/time";
@@ -14,8 +20,9 @@ import { useNow } from "../elsewhere/useNow";
 import { t } from "../i18n";
 import { composing } from "../lib/ime";
 import { AgentMark } from "./AgentMark";
-import { agentDef, folderName, menuOrder, missingNote, rowModel, type AgentId, type ChatLive, type RowContext, type SessionRec } from "./agents";
+import { agentDef, agentLabel, draftOpen, folderName, hermesOnly, menuOrder, missingNote, rowModel, type AgentId, type ChatLive, type RowContext, type RowMark, type SessionRec, type Unseen } from "./agents";
 import { getSessions, useSessions } from "./sessions";
+import { getAddOmh } from "./addOmh";
 import type { Account, AccountCli, AccountGroup } from "../lib/protocol";
 import { useAccounts } from "../settings/accounts/useAccounts";
 import { accountForNewSessions } from "../settings/accounts/rules";
@@ -78,6 +85,94 @@ export function SessionsHeader() {
 /** The menu spans the section, 8px inside both sidebar edges. */
 const MENU_W = "min(240px, calc(var(--side-w) - 16px))";
 
+/** Space kept between the menu and what it must not cover. */
+const MENU_GAP = 6;
+/** Space kept between the menu's edge and a sidebar row it stops at. */
+const ROW_CLEAR = 2;
+/** Opened above its row, the menu keeps this much air under the row above it: a band of the sidebar's own colour
+ *  (`.ss-pop.ui-pop-top::before`, the same height) covers what lies there. Sidebar rows stand 2px apart, so the air
+ *  reaches into the next row's empty top padding, which the band hides; no row shows half. */
+export const MENU_AIR = 6;
+
+/** Where the + menu goes and how tall it may be in all (`max`). It opens under its row when the whole list fits above the sidebar's
+ *  bottom rows (Automations, Plugins, Settings, You), else on the side with more room, scrolling inside. The edge
+ *  that lies over the sidebar stops on a row boundary, so no row shows half under it. */
+export function fitMenu(
+  anchor: { top: number; bottom: number },
+  natural: number,
+  gap: number,
+  limits: { top: number; bottom: number },
+  rows: { top: number; bottom: number }[],
+): { side: "top" | "bottom"; max: number } {
+  const below = limits.bottom - (anchor.bottom + gap);
+  const above = anchor.top - gap - limits.top;
+  if (natural <= below || below >= above) {
+    let end = Math.min(anchor.bottom + gap + natural, limits.bottom);
+    // pull the edge back past every row it would cross (moving it can reach the row before)
+    for (let cut; (cut = rows.find((r) => r.top < end + ROW_CLEAR && r.bottom > end && r.top >= anchor.bottom)); ) end = cut.top - ROW_CLEAR;
+    return { side: "bottom", max: Math.max(0, end - anchor.bottom - gap) };
+  }
+  let start = Math.max(anchor.top - gap - natural, limits.top);
+  // a row that begins above the band must end above it; one that begins in the band is hidden by it and the menu. The
+  // edge lands within a px of `start` (offsets round), so a row within 1px of the band counts as in it, and the menu
+  // then stops 1px further down; with rows 2px apart that never reaches the next row's top.
+  for (let cut; (cut = rows.find((r) => r.top < start - MENU_AIR + 1 && r.bottom > start - MENU_AIR - 1 && r.bottom <= anchor.top)); ) start = cut.bottom + MENU_AIR + 1;
+  return { side: "top", max: Math.max(0, anchor.top - gap - start) };
+}
+
+/** Measure the open menu `box` (its list scrolls in `.ss-scroll`) against the sidebar, and again on resize. */
+function useMenuFit(box: RefObject<HTMLDivElement | null>, ready: boolean) {
+  const [fit, setFit] = useState<{ side: "top" | "bottom"; max: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!ready) return;
+    const measure = () => {
+      const menu = box.current;
+      const pop = menu?.closest<HTMLElement>(".ss-pop");
+      const list = menu?.querySelector<HTMLElement>(".ss-scroll");
+      // the row the menu is placed against (its positioned container)
+      const anchor = pop?.offsetParent;
+      if (!menu || !pop || !list || !(anchor instanceof HTMLElement)) return;
+      const side = anchor.closest(".side");
+      const a = anchor.getBoundingClientRect();
+      const top = side?.querySelector(".side-top")?.getBoundingClientRect().bottom ?? 0;
+      const foot = side?.querySelector(".side-foot")?.getBoundingClientRect().top ?? innerHeight;
+      // the menu's own header, padding and border around the list, and the list's full height
+      const chrome = pop.offsetHeight - list.clientHeight;
+      const natural = chrome + list.scrollHeight;
+      // the gap between the row and the menu, the same on both sides (offsets ignore the pop-in transform)
+      const gap = Math.max(0, pop.classList.contains("ui-pop-bottom") ? pop.offsetTop - anchor.offsetHeight : -pop.offsetTop - pop.offsetHeight);
+      const rows = [...(side?.querySelectorAll(".bot-list > *, .ss-list > *, .side-sec > .side-sh, .side > :not(.side-sec)") ?? [])].map((r) => r.getBoundingClientRect());
+      const f = fitMenu(a, natural, gap, { top: Math.max(top, 0) + MENU_GAP, bottom: Math.min(foot, innerHeight) - MENU_GAP }, rows);
+      // whole px down: a fraction up would set the menu's edge into the row it stops at
+      setFit({ side: f.side, max: Math.max(0, Math.floor(f.max - chrome)) });
+    };
+    measure();
+    addEventListener("resize", measure);
+    return () => removeEventListener("resize", measure);
+    // measured again once placed on its side: the gap to the row differs above and below
+  }, [box, ready, fit?.side]);
+  return fit;
+}
+
+/** Whether the list `el` has more below what it shows: its bottom edge then fades, saying it scrolls. */
+function useMoreBelow(el: RefObject<HTMLDivElement | null>, on: boolean) {
+  const [more, setMore] = useState(false);
+  useLayoutEffect(() => {
+    const list = el.current;
+    if (!on || !list) return;
+    const read = () => setMore(list.scrollTop + list.clientHeight < list.scrollHeight - 1);
+    read();
+    list.addEventListener("scroll", read, { passive: true });
+    const ro = new ResizeObserver(read);
+    ro.observe(list);
+    return () => {
+      list.removeEventListener("scroll", read);
+      ro.disconnect();
+    };
+  }, [el, on]);
+  return more;
+}
+
 /** The SESSIONS + menu: every agent with its mark and name, the installed ones first (the last one used on top),
  *  the missing ones dimmed with their install line in the tooltip. Picking one opens its New session chat at once
  *  (the folder is the chip under that chat's composer). Arrow keys move, Enter picks, Esc closes. */
@@ -91,9 +186,14 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
   const agents = ss.agents ? menuOrder(ss.agents, ss.recent) : null;
   // the first row takes the focus once the list is there (installed first, so it is the one Enter should pick)
   const ready = agents !== null;
+  const fit = useMenuFit(box, ready);
+  // once placed (a hidden menu cannot take focus)
+  const placed = fit !== null;
+  const list = useRef<HTMLDivElement>(null);
+  const more = useMoreBelow(list, placed);
   useEffect(() => {
-    if (ready) box.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
-  }, [ready]);
+    if (placed) box.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus({ preventScroll: true });
+  }, [placed]);
   const close = (why: "escape" | "outside" | "pick") => {
     onClose();
     if (why === "escape") trigger.current?.focus();
@@ -103,7 +203,7 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
     getSessions().draft(id);
   };
   return (
-    <Popover open onClose={close} align="left" width={MENU_W} label={t("sessions.new")} className="ss-pop">
+    <Popover open onClose={close} align="left" side={fit?.side ?? "bottom"} width={MENU_W} label={t("sessions.new")} className={`ss-pop${ready && !fit ? " ss-pop-measuring" : ""}`}>
       <div
         ref={box}
         role="menu"
@@ -115,13 +215,16 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
           const to = e.key === "ArrowDown" ? i + 1 : e.key === "ArrowUp" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : null;
           if (to === null || !items.length) return;
           e.preventDefault();
-          items[(to + items.length) % items.length]?.focus();
+          const next = items[(to + items.length) % items.length];
+          next?.focus({ preventScroll: true });
+          next?.scrollIntoView({ block: "nearest" });
         }}
       >
         <div className="ss-h">{t("sessions.new")}</div>
         {agents === null && <div className="ss-empty">{t("ss.lookingAgents")}</div>}
+        <div ref={list} className={`ss-scroll${more ? " more" : ""}`} style={fit ? { maxHeight: fit.max } : undefined} data-testid="session-menu-list">
         {(agents ?? []).map((a) => {
-          const def = agentDef(a.id);
+          const label = agentLabel(a.id, ss.agents);
           const account = sessionAccountSuffix(accounts.groups, a.id);
           const missing = !a.path;
           return (
@@ -140,8 +243,8 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
               <span className="ss-ic">
                 <AgentMark agent={a.id} />
               </span>
-              <span className="ss-n ss-n-as" title={account ? `${def.label} ${account}` : def.label}>
-                <span className="ss-l">{def.label}</span>
+              <span className="ss-n ss-n-as" title={account ? `${label} ${account}` : label}>
+                <span className="ss-l">{label}</span>
                 {account && (
                   <span className="ss-as" data-testid={`session-account-${a.id}`}>
                     {account}
@@ -152,13 +255,40 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
             </button>
           );
         })}
+        </div>
+        {hermesOnly(ss.agents) && <AddOmhLine onPick={() => close("pick")} />}
       </div>
     </Popover>
   );
 }
 
+/** The + menu's one quiet line for a person who has Hermes but not oh-my-hermes: "Add oh-my-hermes" closes the menu
+ *  and opens the sidebar's "!" popover (shown again if it was hidden), the one place its installer runs. */
+function AddOmhLine({ onPick }: { onPick: () => void }) {
+  return (
+    <div className="ss-add-omh" data-testid="session-add-omh-wrap">
+      <button
+        type="button"
+        role="menuitem"
+        className="ss-item ss-add-omh-b"
+        title={t("omh.add.tip")}
+        onClick={() => {
+          onPick();
+          getAddOmh().offer();
+        }}
+        data-testid="session-add-omh"
+      >
+        <span className="ss-ic">
+          <PlusIcon size={12} />
+        </span>
+        <span className="ss-n">{t("omh.add.line")}</span>
+      </button>
+    </div>
+  );
+}
+
 /** The coding agents the New session tooltip names: the CLIs a person launches to code with (omh stays in the + menu). */
-const CODING: AgentId[] = ["claude", "codex", "omo", "dsh", "pi", "omp", "grok"];
+const CODING: AgentId[] = ["claude", "codex", "omo", "dsh", "pi", "omp", "grok", "opencode"];
 
 /** The empty section: one "New session" row built like the sidebar's nav rows, opening the same + menu under it.
  *  What it does and the installed coding agents sit in its tooltip; nothing else shows, nothing is centred or boxed. */
@@ -218,7 +348,7 @@ export function SessionList() {
   };
   if (ss.list.length === 0) return <SessionStart />;
   // a draft's folder is not settled yet: it never makes another row show its parent
-  const ctx: RowContext = { cwds: ss.list.filter((r) => r.status !== "draft").map((r) => r.cwd), home: ss.home };
+  const ctx: RowContext = { cwds: ss.list.filter((r) => r.status !== "draft").map((r) => r.cwd), home: ss.home, agents: ss.agents };
   return (
     <nav className="bot-list ss-list" aria-label={t("nav.sessions")} data-testid="session-list">
       {ss.list.map((rec) =>
@@ -255,7 +385,16 @@ export function SessionList() {
             </button>
           </div>
         ) : (
-          <Row key={rec.id} rec={rec} ctx={ctx} active={current === rec.id} onClose={() => ask(rec)} />
+          <Row
+            key={rec.id}
+            rec={rec}
+            ctx={ctx}
+            // a draft has no view yet: its mark is the way picked for it
+            view={rec.status === "draft" ? draftOpen(rec.agent, ss.agents, ss.opens) : rec.view}
+            unseen={ss.unseen[rec.id]}
+            active={current === rec.id}
+            onClose={() => ask(rec)}
+          />
         ),
       )}
     </nav>
@@ -266,7 +405,7 @@ export function SessionList() {
 function chatLive(s: AppState, key: string | null): ChatLive | undefined {
   const c = key ? s.chats[key] : undefined;
   if (!c) return undefined;
-  return { turn: !!c.turn, needsYou: selectAsks(s).some((a) => a.bot === key) };
+  return { turn: !!c.turn, needsYou: selectAsks(s).some((a) => a.bot === key), failed: !c.turn && c.lastTurn?.outcome === "error" };
 }
 
 /** Right-click menu of a session row: Rename, Close session. Placed at the pointer, inside the window. */
@@ -368,11 +507,59 @@ function NameInput({ initial, auto, onDone }: { initial: string; auto: boolean; 
   );
 }
 
-function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; active: boolean; onClose: () => void }) {
+/** The sign before a row's state word: a warning triangle (it waits for you), an exclamation mark (it stopped on an
+ *  error), a check (it finished). Three shapes, so the state reads without its colour. */
+function StateSign({ mark }: { mark: RowMark }) {
+  if (mark === "needs")
+    return (
+      <svg width="13" height="12" viewBox="0 0 13 12" aria-hidden="true">
+        <path d="M6.5 1.3 11.9 10.7H1.1Z" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        <path d="M6.5 4.5v2.8" fill="none" stroke="var(--needs-ink, #1b1204)" strokeWidth="1.4" strokeLinecap="round" />
+        <circle cx="6.5" cy="9.2" r="0.8" fill="var(--needs-ink, #1b1204)" />
+      </svg>
+    );
+  if (mark === "error")
+    return (
+      <svg width="5" height="12" viewBox="0 0 5 12" aria-hidden="true">
+        <path d="M2.5 1.5v5.6" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+        <circle cx="2.5" cy="10.3" r="1.25" fill="currentColor" />
+      </svg>
+    );
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <path d="M2 6.4 4.8 9.2 10 3.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** The row's view mark. The two must differ at a glance at 16 by 13: the terminal is a solid window with the prompt
+ *  cut out of it, the chat an outlined bubble. The header's line icons at this size both read as "a small box". */
+function ViewMark({ view }: { view: "chat" | "terminal" }) {
+  return view === "terminal" ? (
+    <svg width="16" height="13" viewBox="0 0 16 13" aria-hidden="true">
+      <rect width="16" height="13" rx="3" fill="currentColor" />
+      <path d="M4 4 6.5 6.5 4 9M8.3 9.2h3.9" fill="none" stroke="var(--ss-cut)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg width="16" height="13" viewBox="0 0 16 13" aria-hidden="true">
+      <path
+        d="M3 .8h10a2.2 2.2 0 0 1 2.2 2.2v4.2A2.2 2.2 0 0 1 13 9.4H7.6l-3.1 2.8V9.4H3A2.2 2.2 0 0 1 .8 7.2V3A2.2 2.2 0 0 1 3 .8Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function Row({ rec, ctx, view, unseen, active, onClose }: { rec: SessionRec; ctx: RowContext; view: "chat" | "terminal"; unseen?: Unseen; active: boolean; onClose: () => void }) {
   const s = useStore();
   const key = getSessions().chatKey(rec.id);
   const chat = rec.view === "chat" ? chatLive(s, key) : undefined;
-  const m = rowModel(rec, chat, ctx);
+  const m = rowModel(rec, chat, ctx, unseen);
+  // what the state's sign says, for a pointer and a screen reader (an error says its own text when it has one)
+  const markSays = m.mark === "needs" ? t("ss.mark.bell") : m.mark === "error" ? rec.error || t("ss.mark.error") : t("ss.mark.done");
   const [editing, setEditing] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -418,9 +605,19 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
               )}
             </span>
           )}
-          {m.needsYou ? (
-            <span className="bot-t wait" data-testid="bot-time">
-              {t("ss.waiting")}
+          {m.mark ? (
+            <span className={`bot-t ${m.mark === "needs" ? "wait" : m.mark === "error" ? "err" : "ok"}`} data-testid="bot-time">
+              <span
+                className={`ss-sign ${m.mark}`}
+                data-testid={m.needsYou ? "needs" : "session-mark"}
+                data-mark={m.mark}
+                role="img"
+                aria-label={m.needsYou ? t("ss.needsAnswer") : markSays}
+                title={m.needsYou ? t("ss.needsAnswer") : markSays}
+              >
+                <StateSign mark={m.mark} />
+              </span>
+              {t(m.mark === "needs" ? "ss.waiting" : m.mark === "error" ? "ss.at.error" : "ss.at.done")}
             </span>
           ) : busySince !== null ? (
             <span className="bot-t busy" data-testid="bot-time">
@@ -437,10 +634,16 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
             {m.sub}
           </span>
           {ring && <TypingDots size={3} testId="bot-typing" />}
-          {m.needsYou && (
-            // the bot row's plain amber dot: no number (the strip carries the count)
-            <span className="needs-dot" data-testid="needs" role="status" aria-label={t("ss.needsAnswer")} title={t("ss.needsAnswer")} />
-          )}
+          <span
+            className="ss-view"
+            role="img"
+            data-testid="session-view"
+            data-view={view}
+            aria-label={t(view === "terminal" ? "ss.open.terminal" : "ss.open.chat")}
+            title={t(view === "terminal" ? "ss.open.terminal" : "ss.open.chat")}
+          >
+            <ViewMark view={view} />
+          </span>
         </span>
       </span>
     </>
@@ -448,10 +651,11 @@ function Row({ rec, ctx, active, onClose }: { rec: SessionRec; ctx: RowContext; 
   return (
     <div
       ref={wrap}
-      className={`ss-row bot${active ? " active" : ""}${m.needsYou ? " needs" : ""}${menu ? " menu-open" : ""}`}
+      className={`ss-row bot${active ? " active" : ""}${m.needsYou ? " needs" : ""}${m.over ? " over" : ""}${menu ? " menu-open" : ""}`}
       data-testid={`session-${rec.id}`}
       data-status={rec.status}
       data-needs-you={m.needsYou ? "true" : undefined}
+      data-mark={m.needsYou ? "needs" : (m.mark ?? undefined)}
       onContextMenu={(e) => {
         e.preventDefault();
         if (editing) return;

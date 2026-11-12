@@ -1,5 +1,5 @@
 //! Agent sessions: omher starts one agent program from a FIXED list (`claude`, `codex`, `omo`, `dsh`, `omh`,
-//! `pi`, `omp`, `grok`) in a pseudo-terminal (its own terminal UI) or, for a chat, through [`crate::agent_chat`], in a folder the person picked, and stops it when the session is closed or
+//! `pi`, `omp`, `grok`, `opencode`) in a pseudo-terminal (its own terminal UI) or, for a chat, through [`crate::agent_chat`], in a folder the person picked, and stops it when the session is closed or
 //! the app quits.
 //!
 //! The UI only ever names an agent id. The program, its path and its arguments are decided here: an id that
@@ -48,7 +48,7 @@ pub enum Mode {
 }
 
 /// The whole allow-list. Adding a program here is a boundary change (docs/OMHER-BOUNDARY.md rule 11).
-pub const AGENTS: [Agent; 8] = [
+pub const AGENTS: [Agent; 9] = [
     Agent { id: "claude", program: "claude", label: "Claude Code", mode: Mode::Chat },
     Agent { id: "codex", program: "codex", label: "Codex", mode: Mode::Chat },
     // OmO (`omo-ai`, oh-my-openagent on the senpi engine) speaks pi's RPC: `omo --mode rpc`, checked against omo
@@ -64,11 +64,15 @@ pub const AGENTS: [Agent; 8] = [
     // Grok's headless stream is read-only (approvals need ACP, `grok agent stdio`), and grok is not on this
     // machine to verify against, so it keeps the terminal view.
     Agent { id: "grok", program: "grok", label: "Grok", mode: Mode::Terminal },
+    // OpenCode (`opencode-ai`) speaks the Agent Client Protocol (`opencode acp`, crate::acp_chat), checked against 1.19.5.
+    Agent { id: "opencode", program: "opencode", label: "OpenCode", mode: Mode::Chat },
 ];
 
 /// Claude Code's structured mode: one long-lived `-p` process reading and writing stream-json, with tool
-/// approvals sent to us over the same stream (`--permission-prompt-tool stdio`) instead of a TUI prompt.
-pub const CLAUDE_CHAT_ARGS: [&str; 9] = [
+/// approvals sent to us over the same stream (`--permission-prompt-tool stdio`) instead of a TUI prompt, and each
+/// message the person sent echoed back when Claude Code takes it (`--replay-user-messages`), so a message sent
+/// while a turn runs shows as waiting until then.
+pub const CLAUDE_CHAT_ARGS: [&str; 10] = [
     "-p",
     "--input-format",
     "stream-json",
@@ -78,6 +82,7 @@ pub const CLAUDE_CHAT_ARGS: [&str; 9] = [
     "--include-partial-messages",
     "--permission-prompt-tool",
     "stdio",
+    "--replay-user-messages",
 ];
 
 /// The fixed arguments that start agent `id` in its structured mode, or `None` when it has none here. These
@@ -88,6 +93,7 @@ pub fn chat_args(id: &str) -> Option<&'static [&'static str]> {
             "claude" => &CLAUDE_CHAT_ARGS[..],
             "codex" => &["app-server"][..],
             "pi" | "omp" | "omo" => &["--mode", "rpc"][..],
+            "opencode" => &["acp"][..],
             _ => return None,
         }),
         _ => None,
@@ -519,18 +525,41 @@ pub struct AgentInfo {
     pub mode: Mode,
     /// Where the program was found, or `None` when it is not installed.
     pub path: Option<String>,
+    /// `hermes`: the oh-my-hermes row of a person who has Hermes but not `omh`. Its session is the same Hermes chat
+    /// in the folder (through the bridge, no program), `path` is where Hermes was found, and it has no terminal view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<&'static str>,
 }
+
+/// What the oh-my-hermes row says the person has. Its session never runs `omh`: it is a Hermes chat in the folder
+/// through the bridge, so Hermes alone is enough to open one. `omh` found: the row as always ("oh-my-hermes", its
+/// path; the terminal view starts `omh`). Only Hermes (`hermes`, its Python): the row reads "Hermes" and is `via`
+/// Hermes. Neither: not installed.
+pub fn hermes_row(omh: Option<PathBuf>, hermes: Option<PathBuf>) -> AgentInfo {
+    let a = agent("omh").expect("omh is on the allow-list");
+    let info = |label, path: Option<PathBuf>, via| AgentInfo { id: a.id, label, mode: a.mode, path: path.map(|p| p.to_string_lossy().into_owned()), via };
+    match (omh, hermes) {
+        (Some(p), _) => info(a.label, Some(p), None),
+        (None, Some(h)) => info(HERMES_LABEL, Some(h), Some("hermes")),
+        (None, None) => info(a.label, None, None),
+    }
+}
+
+/// The oh-my-hermes row's name when only Hermes is there.
+pub const HERMES_LABEL: &str = "Hermes";
 
 /// Every allow-listed agent with where it was found on this machine.
 pub fn agents_on_this_machine() -> Vec<AgentInfo> {
     let dirs = host_dirs();
     AGENTS
         .iter()
-        .map(|a| AgentInfo {
-            id: a.id,
-            label: a.label,
-            mode: a.mode,
-            path: find_agent(a, &dirs).map(|p| p.to_string_lossy().into_owned()),
+        .map(|a| {
+            let found = find_agent(a, &dirs);
+            if a.id == "omh" {
+                // Hermes as the bridge finds it (the same look-up the first-run screen keys on)
+                return hermes_row(found, crate::bridge::discover_python(host_env, |p| p.is_file()).ok());
+            }
+            AgentInfo { id: a.id, label: a.label, mode: a.mode, path: found.map(|p| p.to_string_lossy().into_owned()), via: None }
         })
         .collect()
 }
@@ -850,6 +879,119 @@ pub(crate) fn signal_group(pid: Option<u32>, hard: bool) {
 #[cfg(not(unix))]
 pub(crate) fn signal_group(_pid: Option<u32>, _hard: bool) {}
 
+/// Every process a chat's program started, so closing the chat (or the start deadline) stops all of them, not only
+/// the program itself. Unix: the program leads its own process group (`process_group(0)` in the chat's command), so
+/// the group is killed. Windows has no process groups, and an npm agent runs as `cmd.exe /c <shim>.cmd`, which starts
+/// `node.exe`: killing `cmd.exe` leaves node running. There the program goes into a Job Object that kills every
+/// process in it when [`ProcessTree::kill`] ends it or the last handle closes (also when omher itself ends);
+/// processes it starts later join the job on their own.
+pub(crate) struct ProcessTree {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    job: job::Handle,
+}
+
+#[cfg(windows)]
+unsafe impl Send for ProcessTree {}
+#[cfg(windows)]
+unsafe impl Sync for ProcessTree {}
+
+impl ProcessTree {
+    /// The tree of `child`, or `None` when the system refuses one (the caller then kills `child` alone).
+    #[cfg(unix)]
+    pub(crate) fn adopt(child: &std::process::Child) -> Option<ProcessTree> {
+        Some(ProcessTree { pid: child.id() }).filter(|t| t.pid > 1)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn adopt(child: &std::process::Child) -> Option<ProcessTree> {
+        use std::os::windows::io::AsRawHandle;
+        unsafe {
+            let h = job::CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if h.is_null() {
+                return None;
+            }
+            let tree = ProcessTree { job: h };
+            let mut info: job::ExtendedLimits = std::mem::zeroed();
+            info.basic.limit_flags = job::KILL_ON_JOB_CLOSE;
+            let size = std::mem::size_of::<job::ExtendedLimits>() as u32;
+            if job::SetInformationJobObject(h, job::EXTENDED_LIMIT_INFORMATION, &mut info as *mut _ as *mut _, size) == 0 {
+                return None;
+            }
+            if job::AssignProcessToJobObject(h, child.as_raw_handle() as job::Handle) == 0 {
+                return None;
+            }
+            Some(tree)
+        }
+    }
+
+    /// End every process in the tree now. Unix: SIGKILL to the group only, so it is safe after the program itself has
+    /// ended and been reaped (the group id stays taken while any member lives; an empty group is ESRCH).
+    pub(crate) fn kill(&self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        unsafe {
+            job::TerminateJobObject(self.job, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        // kill-on-close: whatever is still in the job ends here
+        unsafe {
+            job::CloseHandle(self.job);
+        }
+    }
+}
+
+/// The kernel32 calls and structures [`ProcessTree`] uses (winnt.h layout, 64-bit).
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    pub type Handle = *mut c_void;
+    pub const EXTENDED_LIMIT_INFORMATION: i32 = 9; // JobObjectExtendedLimitInformation
+    pub const KILL_ON_JOB_CLOSE: u32 = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+    #[repr(C)]
+    pub struct BasicLimits {
+        pub per_process_user_time_limit: i64,
+        pub per_job_user_time_limit: i64,
+        pub limit_flags: u32,
+        pub minimum_working_set_size: usize,
+        pub maximum_working_set_size: usize,
+        pub active_process_limit: u32,
+        pub affinity: usize,
+        pub priority_class: u32,
+        pub scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    pub struct ExtendedLimits {
+        pub basic: BasicLimits,
+        pub io: [u64; 6],
+        pub process_memory_limit: usize,
+        pub job_memory_limit: usize,
+        pub peak_process_memory_used: usize,
+        pub peak_job_memory_used: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> Handle;
+        pub fn SetInformationJobObject(job: Handle, class: i32, info: *mut c_void, length: u32) -> i32;
+        pub fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        pub fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+        pub fn CloseHandle(handle: Handle) -> i32;
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------------------------
@@ -869,10 +1011,32 @@ mod tests {
         move |p| set.contains(p)
     }
 
+    /// A person with Hermes and no `omh` gets a usable "Hermes" row; with both, the row is as it always was; with
+    /// neither, it is not installed. The row never names a program to start: `launch_for("omh")` still needs `omh`.
     #[test]
-    fn allow_list_is_exactly_the_eight_agents() {
+    fn the_hermes_row_without_omh_with_both_and_with_neither() {
+        let omh = PathBuf::from("/Users/k/.local/bin/omh");
+        let py = PathBuf::from("/Users/k/.hermes/hermes-agent/venv/bin/python");
+        let only = hermes_row(None, Some(py.clone()));
+        assert_eq!((only.id, only.label, only.mode, only.via), ("omh", "Hermes", Mode::Hermes, Some("hermes")));
+        assert_eq!(only.path.as_deref(), Some(py.to_str().unwrap()));
+        let both = hermes_row(Some(omh.clone()), Some(py));
+        assert_eq!((both.label, both.via, both.path.as_deref()), ("oh-my-hermes", None, Some(omh.to_str().unwrap())));
+        let neither = hermes_row(None, None);
+        assert_eq!((neither.label, neither.via, neither.path), ("oh-my-hermes", None, None));
+        // the shell's JSON: `via` only on the Hermes row
+        assert_eq!(serde_json::to_value(&only).unwrap()["via"], "hermes");
+        assert!(serde_json::to_value(&both).unwrap().get("via").is_none());
+        // `omh` on a dir list is found as before; nothing named `hermes` is ever looked up as a session program
+        let dirs = [PathBuf::from("/Users/k/.local/bin")];
+        assert_eq!(find_in_layouts("omh", "omh", &dirs, &env_of(&[]), fs_of(&[&omh]), |p: &Path| p.to_path_buf(), Os::Unix), Some(omh));
+        assert!(AGENTS.iter().all(|a| a.program != "hermes"));
+    }
+
+    #[test]
+    fn allow_list_is_exactly_the_nine_agents() {
         let ids: Vec<&str> = AGENTS.iter().map(|a| a.id).collect();
-        assert_eq!(ids, ["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok"]);
+        assert_eq!(ids, ["claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode"]);
         for a in &AGENTS {
             assert_eq!(a.id, a.program, "the id is the program name; nothing else is ever run");
         }
@@ -891,17 +1055,19 @@ mod tests {
                 ("omh", Mode::Hermes),
                 ("pi", Mode::Chat),
                 ("omp", Mode::Chat),
-                ("grok", Mode::Terminal)
+                ("grok", Mode::Terminal),
+                ("opencode", Mode::Chat)
             ]
         );
         assert_eq!(
             chat_args("claude").unwrap(),
-            ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio"]
+            ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--replay-user-messages"]
         );
         assert_eq!(chat_args("codex").unwrap(), ["app-server"]);
         assert_eq!(chat_args("pi").unwrap(), ["--mode", "rpc"]);
         assert_eq!(chat_args("omp").unwrap(), ["--mode", "rpc"]);
         assert_eq!(chat_args("omo").unwrap(), ["--mode", "rpc"]);
+        assert_eq!(chat_args("opencode").unwrap(), ["acp"]);
         // DSH's chat takes its arguments per message (dsh_turn_args), not here
         for none in ["omh", "grok", "dsh", "sh", "", "claude -p"] {
             assert!(chat_args(none).is_none(), "{none}");
@@ -947,7 +1113,8 @@ mod tests {
                 assert!(resume_args(agent, bad).is_err(), "{agent} {bad:?}");
             }
         }
-        for agent in ["pi", "omp", "grok", "omh"] {
+        // OpenCode continues over its protocol (session/resume), never by an argument
+        for agent in ["pi", "omp", "grok", "omh", "opencode"] {
             assert!(resume_args(agent, id).is_err(), "{agent}");
         }
         let s = Sessions::default();
@@ -1019,6 +1186,24 @@ mod tests {
             assert!(agent(bad).is_none(), "{bad:?} must be refused");
             assert!(launch_for(bad).is_err(), "{bad:?} must not launch");
         }
+    }
+
+    /// A New session may open any agent as its terminal (the person picks Chat or Terminal), so `start_agent` takes
+    /// every allow-listed id except `dsh` (DeepSeek Harness ships no terminal profile). The folder is relative, so
+    /// `spawn` refuses it after the program is resolved and no process ever starts, installed or not.
+    #[test]
+    fn start_agent_accepts_every_allow_listed_agent_for_a_terminal_except_dsh() {
+        let s = Sessions::default();
+        for a in AGENTS.iter() {
+            let err = s.start_agent(a.id, Path::new("relative/dir"), None, &[], 80, 24, |_| {}).unwrap_err();
+            if a.id == "dsh" {
+                assert!(err.contains("no terminal view"), "{err}");
+            } else {
+                assert!(!err.contains("unknown agent") && !err.contains("no terminal view"), "{}: {err}", a.id);
+                assert!(err.contains("not installed") || err.contains("not a folder"), "{}: {err}", a.id);
+            }
+        }
+        assert_eq!(s.count(), 0);
     }
 
     #[test]
@@ -1467,6 +1652,18 @@ mod tests {
         let work = home.join(".omher").join("accounts").join("claude").join("work");
         assert!(text.contains(&format!("cfg={}", work.display())), "{text:?}");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// The rows this machine's shell would send. Ignored by default (reads the real machine): a machine without
+    /// `omh` is simulated with `env -i HOME=<scratch home> PATH=/usr/bin:/bin OMHER_HERMES_PYTHON=<hermes python>`,
+    /// `cargo test real_rows_without_omh -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_rows_without_omh() {
+        let row = agents_on_this_machine().into_iter().find(|a| a.id == "omh").unwrap();
+        println!("omh row: {row:?}");
+        assert_eq!((row.label, row.via), ("Hermes", Some("hermes")));
+        assert!(launch_for("omh").is_err(), "no `omh` program to start");
     }
 
     /// The real check on a developer machine: `claude --version` / `codex --version` through the same
