@@ -4,6 +4,27 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **omher's terminal find reads at a glance, follows a theme change and leaves nothing behind.** Five fixes to
+  the session terminal that shipped in omher 0.2.7. The text inside find's active match now reads at 7:1 on its
+  fill on all 38 themes (it was 4.5:1). Korean text, whose thin strokes draw lighter than their colour on a 1x
+  screen, measured 3.9 to 4.4 by its darkest pixel and now measures 6.4 to 6.7 (the lowest of three words on six
+  themes, Chromium, standard renderer).
+  The fill is the theme's own yellow in a shade dark text reads on, on dark and light themes alike, outlined in
+  that text's colour (on a 2x screen the old colours already measured what they were picked for). A terminal
+  theme that changes while find is open recolours the matches at once; they kept the old theme's colours until
+  the next Enter. Leaving a terminal with find open (another session, Settings, a bot) clears its highlights, so
+  none are left on a terminal that shows no bar to close them with. With the app theme on System, an open
+  terminal follows the OS when it turns light or dark; it kept the colours the app started with while the rest
+  of the page changed. And on Solarized Dark and Light, bold coloured text keeps its colour: those themes hold
+  greys in their bright slots, so a program's bold green, yellow, blue and cyan showed as grey. (#2860)
+- **omher.app shows the bot faces as a moving scene under the desktop app.** Between the omher block and the
+  OMH hero there is now a band with nine soft 3D characters in the style of omher's built-in bot faces, bouncing
+  and blinking on a 4-second loop, with one line of copy in English, Korean, Japanese and Chinese and one
+  `Download omher` link. The link downloads the build for the visitor's system, the same file as the first
+  download button above it, and opens the releases page when the system is unknown. The loop pauses while it is
+  off screen or the tab is hidden, and shows a still picture under reduced motion. On phones the copy sits above
+  the picture. Four of the nine faces ship in the app today (blob, ghost, mochi, star); the other five are in
+  the picture only.
 - **The OMH TUI sends its desktop notification only while the terminal window is not in front.** A turn that ran 10 s
   or more, a question and a finished background process each rang the bell and, in iTerm2, WezTerm, Ghostty, foot
   and rxvt, raised a notification (OSC 9 or 777) even with the window focused, where the person already sees it.
@@ -72,6 +93,24 @@ All notable changes will be documented here.
   attached to a shared gateway, the gateway child sends them as the owner's
   revision-fenced `session.mutate rename` / `delete`, as Hermes' Ink TUI does.
   A refusal is said on the row.
+- **omher runs six more coding agents in SESSIONS.** Kilo Code, Gemini CLI,
+  Qwen Code, Kimi Code, Copilot CLI and Cline open as session chats through
+  the same Agent Client Protocol adapter as OpenCode: answers stream, tool
+  steps show, and each approval is a card with Deny and Allow once. Kilo Code
+  starts only with ask rules built from its own `kilo agent list`, so nothing
+  you allow runs unasked and nothing you deny becomes askable; its free
+  models need no account. Both Kilo Code and OpenCode check every permission
+  and each agent's mode, refuse file/env tokens before listing again, and
+  compare rules as Windows does there. Rules are read at session start;
+  a deny added later applies from the next session. An agent that is
+  installed but not signed in ends
+  in one line with its own sign-in command (Gemini CLI is not signed in. Run
+  `gemini` in a terminal and sign in.) and Open in Terminal; omher never
+  signs in for it, never sends the protocol's `authenticate` and never takes
+  a key. The + menu lists the agents installed on this computer and folds the
+  rest under one More agents row, each with its whole install line; a click
+  copies it. Continue a conversation stays under that row, there as the menu
+  first opens.
 - **A dag-ulw node can be read-only.** `omh_dag` define, repair and extend take
   `read_only: true` on a node; its child's `write_file` and `patch` inside the
   run's workspace are blocked, except its own handoff report, with a message
@@ -88,6 +127,18 @@ All notable changes will be documented here.
   reminder no longer applies. Image turns count too: there the reminder is
   read after the ask Hermes stamps on the turn, so a quoted reminder never
   does. The `omh_active_workflow` metadata still comes with every call.
+- **An omher session's header says "waiting" about background work that waits
+  for you, and keeps its name and model whole.** While a background subagent
+  only waited for your approval, the header read "1 still running in the
+  background" though its row, its card and the sidebar said "waiting". When
+  every background subagent omher knows of waits on an open approval or
+  question, the header now reads "1 waiting in the background" (four
+  languages); a count that holds a background command, or a subagent still
+  running, keeps the old words. With that label and its Stop showing, a narrow
+  chat (a 900 or 1100px window, the right panel open) cut the model name to
+  "Opu…" or the session's name to nothing: the label now takes a short form
+  ("1 waiting", the sentence in its tooltip) and goes under the name with Stop
+  when the line is tight, and the path gives way first.
 - **A toolcall rule can ask you instead of blocking.** With `"effect": "ask"`,
   a matching call goes to Hermes' approval prompt with the rule's message,
   keyed `omh-toolcall-rule:<name>` so `[a]lways` covers that one rule. Where
@@ -160,6 +211,15 @@ All notable changes will be documented here.
   The wheel opens the transcript view as it did with `OMH_TUI_MOUSE=1`;
   `OMH_TUI_MOUSE=0` gives the wheel and native selection back to the
   terminal.
+
+- **An omher left open shows the Update button without a restart.** omher
+  looked for a new version once at launch and then every 6 hours, and a check
+  that failed waited for the next 6-hour turn. A failed check is now tried
+  again after 2 minutes, then less often, at most once an hour; and coming
+  back to the window (shown or focused again) checks when the last good check
+  is 30 minutes old or more, which does not depend on a timer and so also
+  covers a Mac that slept. Still one request at a time, to the same address,
+  and silent when a check fails.
 
 - **The Desktop pane stays on the focused chat and folds large DAGs by
   layer.** The yolo chip follows the focused chat instead of whichever
@@ -258,6 +318,93 @@ All notable changes will be documented here.
   refused; a plain-HTTP ask never goes through `HTTP_PROXY`, so the key is not
   sent in clear to a proxy; and `typesafe_model` never applies to TypeSafe's
   own host however it is spelled. Thanks @brentkearney. (#2716)
+- **omher 0.2.7.** Find and continue sessions, choose how their terminals look,
+  answer and stop background work, read a plan before allowing it, and open
+  a Codex subagent's file change to its diff.
+  - **A subagent's approval that comes after its turn ended reaches you in omher.**
+    When Claude Code ran a subagent in the background, the turn ended first and
+    the subagent asked afterwards (or asked during the turn and the turn ended
+    with the ask open). omher showed that ask as "Not answered" with no buttons,
+    left it out of Needs you and kept the header on Ready, while the subagent
+    waited for an answer nobody could give. Now it is a live card with Deny,
+    Allow once and Allow for session, the session reads "Needs you" in its
+    header and its sidebar row, and the answer reaches Claude Code with no turn
+    running; the subagent then finishes. The ask reads "Not answered" once its
+    subagent ends, Claude Code withdraws it (Stop), or the session's program
+    ends. A Codex subagent's approval follows the same rule. (#2845)
+  - **You can stop what a Claude Code session still runs in the background after its turn.** While no turn
+    runs, the session header's "1 still running in the background" now ends with a quiet "Stop". It sends Claude
+    Code's own interrupt and, for a background command, its own `stop_task`: the subagent's row reads "stopped",
+    the count goes, an open late ask reads "Not answered" and the header is Ready. Esc still stops a running turn
+    only, and the composer keeps Send. Codex, OmO, OpenCode and DSH get no such Stop, because their own Stop does
+    nothing to that work. Also: the subagent card and its ask end at one right edge; a card whose rows all wait on
+    you says "Waiting", not "Running"; the needs strip no longer ends on a lone "·"; and a background subagent's row
+    shows its model. (#2849)
+  - **An omher session that closed normally no longer gives a warning as why it
+    ended.** A Codex session you closed showed "Ended · user (~/.codex/config.toml):
+    `mcp_servers.playwright.type` is ignored.", a line Codex prints at start about
+    your own config. A session whose program ends with code 0 now reads only
+    "Ended", for every chat agent. A program that really fails shows the last line
+    it printed about the failure, not a warning from its start. (#2850)
+  - **Claude Code's plan-mode card shows the plan as text.** When Claude Code
+    finished a plan in plan mode, omher asked "Allow ExitPlanMode?" over a cut-off
+    JSON string. The card now asks "Start working on this plan?" and shows the
+    whole plan the way an answer reads, scrolling inside the card, with Deny and
+    Allow once (Claude Code offers nothing to keep for the session there). Other
+    tools that are neither a command nor a file edit (a skill, a web fetch, MCP
+    tools) show one readable line instead of their input as JSON. (#2850)
+  - **An edit Codex hands to its subagent opens to its diff.** The subagent's row
+    showed the edit only as a line like `README.md +2, calc.py +4`. Opening that
+    step now shows the removed and added lines per file, as an edit Codex makes
+    itself does. (#2850)
+  - **omher's session terminals take Orca's themes and options, find, links and
+    bounded output.** Settings › Terminal is a new page: 38 themes (omher's own
+    two and 36 carried over from Orca, their MIT notices in
+    `apps/omher/THIRD_PARTY_NOTICES.md`, which now ships inside the app), one
+    picked for the dark app theme and one for the light, with a search field and
+    a live preview drawn by the real terminal; font, size, line height, cursor
+    shape and blink, scrollback, minimum contrast, padding, Option as Meta on
+    macOS, and the renderer. A change reaches every open terminal at once, one
+    that is hidden when it is shown again, and the settings are one record on
+    this computer.
+    In a terminal, Cmd+F (Ctrl+F on Windows and Linux at a prompt, Ctrl+Shift+F
+    anywhere) finds in the scrollback, with a count and the active match as the
+    strongest thing on the screen in colours taken from the terminal's own
+    theme. A web address in the output opens in the browser on Cmd+click or
+    Ctrl+click, and a hint beside the pointer names the key; a hyperlink the
+    program marks itself (OSC 8) follows the same rule and no longer goes
+    through a confirm dialog. Copy on select and Right-click pastes are two
+    switches, both off by default.
+    The shell now reads a program only 2 MiB ahead of what the terminal has
+    drawn, so a runaway program no longer fills memory and Ctrl+C is answered at
+    once. Measured against a model of the page written in Rust, not the app's
+    window: with a page that needs 20 ms a message, ten seconds of `yes` held 15
+    MB instead of 1,211 MB, and Ctrl+C stopped the output in under half a second
+    instead of 69 s; with a page that draws 100 MB/s, after 14 ms instead of 865
+    ms. A session that is not the one on screen keeps drawing, so a background
+    agent is not held at that mark.
+    What did not get faster, as measured: throughput against the 100 MB/s page
+    is unchanged (75.6 and 75.7 MB/s), a keystroke's echo is unchanged (31.7 and
+    31.1 ms run alternately), and a page that needs 20 ms for every message
+    draws 5.3% fewer bytes a second because its messages are smaller. The GPU
+    renderer is 1.2 to 3.4 times slower than the standard one on a full-screen
+    redraw in WebKit, over two measurement runs (2.2, 3.4 and 1.3 times in one;
+    1.7, 3.0 and 1.2 in the other), so Auto uses the standard renderer on every
+    platform (nothing was measured on Windows or Linux) and On still tries the
+    GPU. No number here was taken in the Tauri window; the tables are in
+    `apps/omher/bench/render/README.md` and `apps/omher/bench/pty/README.md`. (#2841)
+  - **omher sessions are easy to find, reopen and switch.** A session row's right-click menu now holds Rename,
+    Show in Finder / Explorer, Open in Terminal (your own system terminal in that folder), Copy conversation id,
+    New session here and Close session. The sidebar search also filters sessions by name and folder. The SESSIONS
+    `+` menu ends with "Continue a conversation" for Claude Code and Codex: their recent conversations in your recent
+    folders and home, read-only from their own files, and picking one continues it in omher with its last messages
+    shown. ⌘N (Ctrl+N) opens the `+` menu and ⌘⇧] / ⌘⇧[ move to the next and previous session. The Dock shows how
+    many approvals and questions wait (Linux launchers that show counts too; Windows gets a dot on the taskbar
+    button). BOUNDARY rule 30. (#2839)
+  - **omher.app's preview.** The hero preview runs omher 0.2.6; restart,
+    terminal and rewind controls explain their preview-only limits instead
+    of acting on a real profile. (#2846)
+
 - **omher 0.2.6.** A session chat shows what its agent did and the subagents
   it starts, a session can run in the agent's own terminal, OpenCode joins
   SESSIONS, a bot restarts with one press, and omher works without
@@ -724,6 +871,29 @@ All notable changes will be documented here.
   is `not_observed`. `visual-qa` records in the capture manifest whether
   emulation was on.
 
+- **`phone_check.py` measures horizontal overflow from the page's start
+  side and survives named HTML tree links.** On a page whose `<body>` is
+  `direction: rtl`, or in a `-rl` vertical writing mode, the overflowing
+  side is the left. The script reads that start side from `<body>`, writing
+  mode before direction, takes overflow from the scrolling element (with
+  the root as the fallback when none exists), and lists elements left of
+  document x 0 under `elements_past_right_edge`, each with `left`.
+  `first_action_y` deliberately keeps the earlier geometric edge test on
+  both start sides: it neither adds a link in the left overflow nor predicts
+  whether a tap activates one. A hit-test addition was withdrawn after it
+  counted links whose iframe, object or embed took the event, and controls
+  changed by `:hover` / `:active` when touched. The existing misses remain,
+  including a control wholly in the left overflow or one a container clips.
+  The start side, root, body, scrolling element and every tree-walk step
+  use interface-prototype reads, so named forms or controls cannot replace
+  those values or loop a walk through `parentElement` or `offsetParent`.
+  A left-start page keeps its prior output except where these named tree
+  links formerly hung the script, misplaced a control under a fixed ancestor,
+  or corrupted a listed path. Measurement sends no tap, scroll or focus.
+  Page scripts can still corrupt other measurement APIs; the toolkit README
+  describes the omitted or misplaced controls this can produce. Measured in
+  Chromium only.
+
 - **frontend names the layout before it builds a new page, and reviews
   what the page says about itself.** A new `references/editorial-layout.md`
   asks for one value and one reason per axis (skeleton, first screen,
@@ -768,6 +938,43 @@ All notable changes will be documented here.
   record and runs two rounds by default before an open rebuild goes to the
   person; and every name the kit's checkers print maps to an edit. The
   skill body is unchanged.
+
+- **The Windows installer skips an MSYS2 or MinGW Python instead of failing
+  halfway.** When `python` on PATH was MSYS2's mingw64 build, the one-liner
+  and omher's Install button built `%LOCALAPPDATA%\omh\venv` with it and
+  stopped at "Install OMH package" with `...\venv\Scripts\python.exe is not
+  recognized`: that build puts a venv's `python.exe` in `bin\`. The
+  installer now asks each candidate where its venvs put `python.exe`, skips
+  one that answers `bin` with a line saying why, and moves on to `py`, the
+  next name, Hermes' own interpreter or uv. A Python running from a venv,
+  such as Hermes' own, is still accepted. Reported and first fixed by
+  @kinanshihab in #2847.
+
+- **The toolkit scripts refuse a path under an unreadable folder on Python
+  3.14 too.** From 3.14, `Path.is_symlink()` answers "not a link" for an
+  entry inside a folder that cannot be searched, where 3.11 to 3.13 raised.
+  The frontend, biomedical-evidence, geospatial, sprite-forge,
+  molecular-docking and show-reel helpers walked past such a path unchecked
+  on 3.14 and stopped with a bare traceback on older Pythons. Each now
+  checks the entry with `lstat` first and refuses with `path could not be
+  checked`. Missing paths and the symlink rules are unchanged. Reported and
+  first fixed for the frontend helper by @Kenmege in #2855.
+
+- **`omh update` no longer refuses a config whose webhook route, or any
+  other section, carries its own `skills:`, `memory:`, `plugins:` or
+  `display:` key.** The section shape guard counted every line that named
+  the section as a mapping key, and its pattern let `\s*` eat indentation,
+  so a route's nested `skills:` list read as a second top-level `skills`
+  section and the refresh stopped with `duplicate skills sections are
+  ambiguous`; that profile's OMH skills then went stale. Only a column-0
+  line whose own root key is the section now counts, so plain, quoted,
+  explicit and flow forms of a real top-level section are unchanged, two
+  column-0 sections are still refused as duplicates, a flow or explicit-only
+  section is still noncanonical, and only a document whose whole root is
+  indented stays user-owned. A profile with no `skills:` yet beside a
+  route's own `skills:` list now gets its first block. The uninstall report reads its `section.key`
+  presence the same way, so a name inside another root key's flow mapping is
+  no longer reported as OMH's own. Reported by @PabloJustDevelops in #2829.
 
 ## 4.0.7 - 2026-11-09
 

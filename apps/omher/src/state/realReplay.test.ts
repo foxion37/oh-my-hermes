@@ -29,7 +29,7 @@ describe("real agent streams through the reducer", () => {
   const all = replays as Replay[];
 
   it("covers every agent", () => {
-    expect(new Set(all.map((r) => r.agent))).toEqual(new Set(["claude", "codex", "codex-resume", "codex-resume-gone", "codex-helpers", "codex-helper-stop", "codex-late", "omo", "omo-batch", "omo-single", "omp", "pi", "pi-noauth"]));
+    expect(new Set(all.map((r) => r.agent))).toEqual(new Set(["claude", "codex", "codex-resume", "codex-resume-gone", "codex-helpers", "codex-helper-stop", "codex-late", "codex-sub-edit", "omo", "omo-batch", "omo-single", "omp", "pi", "pi-noauth"]));
     expect(all.length).toBeGreaterThanOrEqual(43);
   });
 
@@ -89,6 +89,40 @@ describe("real agent streams through the reducer", () => {
     const asks = selectAsks(s).filter((a) => a.bot === "agent:s1");
     expect(asks).toHaveLength(1);
     expect((asks[0].item as { subagent?: { name: string } }).subagent?.name).toBe("Write c.txt via echo");
+  });
+
+  it("Claude Code's background subagent asks after the turn ended: open, in Needs you, until the answer, then done", () => {
+    // claude-13-late-ask.jsonl (Claude Code 2.1.322): turn.end, then the subagent's approval; the person answered it
+    const r = all.find((x) => x.name === "claude-13-late-ask.jsonl")!;
+    const ask = r.events.findIndex((e) => e.event === "approval.request");
+    expect(r.events.findIndex((e) => e.event === "turn.end")).toBeLessThan(ask);
+    const s = replay({ ...r, events: r.events.slice(0, ask + 1) });
+    expect(s.chats["agent:s1"].turn).toBeNull();
+    expect(selectAsks(s).filter((a) => a.bot === "agent:s1").map((a) => a.item.kind === "approval" && a.item.command)).toEqual(["echo gamma > c.txt"]);
+    // after the answer the subagent runs on: its row ends done with its answer
+    const sub = fans(replay(r)).flatMap((x) => x.subs)[0];
+    expect([sub.state, sub.summary]).toEqual(["done", "WROTE"]);
+  });
+
+  it("Claude Code keeps waiting on a background subagent's ask its turn left open: it stays open after turn.end", () => {
+    const r = all.find((x) => x.name === "claude-13-late-ask-inside.jsonl")!;
+    const end = r.events.findIndex((e) => e.event === "turn.end");
+    expect(r.events.findIndex((e) => e.event === "approval.request")).toBeLessThan(end);
+    expect(selectAsks(replay({ ...r, events: r.events.slice(0, end + 1) })).filter((a) => a.bot === "agent:s1")).toHaveLength(1);
+  });
+
+  it("Stop with no turn running: Claude Code withdraws a late ask, which reads as not answered", () => {
+    const r = all.find((x) => x.name === "claude-13-late-ask-stop.jsonl")!;
+    const s = replay(r);
+    const it = s.chats["agent:s1"].items.find((i) => i.kind === "approval");
+    expect(it?.kind === "approval" && it.expired).toBe("cancelled");
+    expect(fans(s).flatMap((x) => x.subs).map((x) => [x.state, x.model])).toEqual([["cancelled", "claude-opus-5-5"]]);
+  });
+
+  it("Stop with no turn running: a background command Claude Code stopped leaves the chat idle", () => {
+    const s = replay(all.find((x) => x.name === "claude-14-background-stop.jsonl")!);
+    expect(s.chats["agent:s1"].turn).toBeNull();
+    expect(selectAsks(s).filter((a) => a.bot === "agent:s1")).toHaveLength(0);
   });
 
   it("OmO's two background subagents: one card, each with its own answer", () => {

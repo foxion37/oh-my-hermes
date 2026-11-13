@@ -15,8 +15,8 @@ DOC = ROOT / "docs" / "OMHER-BOUNDARY.md"
 BRIDGE = ROOT / "apps" / "omher" / "bridge" / "omher_bridge.py"
 SHELL = ROOT / "apps" / "omher" / "src-tauri" / "src"
 UI_AGENTS = ROOT / "apps" / "omher" / "src" / "sessions" / "agents.ts"
-SESSION_AGENTS = ("claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode")
-SESSION_MODES = ("Chat", "Chat", "Chat", "Chat", "Hermes", "Chat", "Chat", "Terminal", "Chat")
+SESSION_AGENTS = ("claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode", "kilo", "gemini", "qwen", "kimi", "copilot", "cline")
+SESSION_MODES = ("Chat", "Chat", "Chat", "Chat", "Hermes", "Chat", "Chat", "Terminal", "Chat", "Chat", "Chat", "Chat", "Chat", "Chat", "Chat")
 CLAUDE_CHAT_ARGS = ("-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                     "--include-partial-messages", "--permission-prompt-tool", "stdio", "--replay-user-messages")
 CONTEXT = ROOT / "CONTEXT.md"
@@ -24,6 +24,8 @@ DOCS_INDEX = ROOT / "docs" / "README.md"
 
 RULES = (
     "omher never patches Hermes.",
+    "Stop sends only the agent's own interrupt, and for Claude Code with no turn running also its own `stop_task`",
+    "omher never signals or kills an agent's process or the work it started.",
     "omher never writes to Slack, Discord or any other elsewhere session.",
     "omher may pass a thread reference to the bot; the bot posts with its own tools and approvals.",
     "omher sends, answers and interrupts only in the bot's main chat, the session titled `Bot Chat`,",
@@ -58,11 +60,18 @@ RULES = (
     " task id but not its answer, it reads that one record (`st_<task id>.json`, from the same folders and under the"
     " same rules, read-only, and only a record of that session)",
     "omher starts a terminal program only when the person asks for a session (SESSIONS `+`), and only one of a"
-    " fixed allow-list: `claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`, `opencode`, with no arguments,",
+    " fixed allow-list: `claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`, `opencode`, `kilo`, `gemini`, `qwen`, `kimi`, `copilot`, `cline`, with no arguments,",
     "A chat session starts the same program with its fixed structured-mode arguments from the allow-list",
     "(`claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages"
-    " --permission-prompt-tool stdio --replay-user-messages`, `codex app-server`, `omo --mode rpc`, `pi --mode rpc`, `omp --mode rpc`, `opencode acp`) on pipes;",
-    "An Agent Client Protocol agent (`opencode acp`) gets no such argument: omher sends the conversation id it reported",
+    " --permission-prompt-tool stdio --replay-user-messages`, `codex app-server`, `omo --mode rpc`, `pi --mode rpc`, `omp --mode rpc`, `opencode acp`, `kilo acp`, `gemini --acp`, `qwen --acp`, `kimi acp`, `copilot --acp`, `cline --acp`) on pipes;",
+    "An Agent Client Protocol agent (the seven `acp` rows) gets no such argument: omher sends the conversation id it reported",
+    "omher never sends the protocol's `authenticate` (Cline's opens a browser by itself) and never asks for, takes or shows a key.",
+    "Kilo Code gets the same in `KILO_CONFIG_CONTENT`, ask rules for its `bash`, `edit` and `write` tools under each tool's own key,",
+    "else Kilo is not started and the chat says so in one sentence naming Kilo Code.",
+    "These rules are read when the session starts; a deny added later applies from the next session.",
+    "an unknown mode refuses, but an unchanged custom agent is allowed.",
+    "refuses before the second listing, so the trusted config channel cannot cause the CLI to read a project-named file or variable.",
+    "Gemini CLI, Qwen Code, Kimi Code, Copilot CLI and Cline get no extra variable and no rule check:",
     "and tells the agent at `initialize` that omher offers no file reading or writing and no terminal,",
     "OpenCode also gets one environment variable, `OPENCODE_CONFIG_CONTENT`, holding ask rules for its `bash` and `edit` tools",
     "right before the chat, the shell runs `opencode agent list` (that one fixed argument, in the same folder, with the same environment, on pipes, nothing on stdin, at most 30 seconds)",
@@ -128,6 +137,11 @@ RULES = (
     " (no preview, title or oEmbed request).",
     "of the bot's own messenger sessions in its `state.db` (`links.places`), never a message.",
     "A link opens only when the person clicks it, through the system opener:",
+    "A link in a SESSIONS terminal's output follows the same rule, whether omher found the address in the printed text"
+    " or the program marked it as a hyperlink itself (OSC 8):",
+    "A plain click opens nothing, and the terminal library's own confirm-and-open path for marked hyperlinks is never used.",
+    "How terminals look and behave (themes, font, cursor, scrollback, renderer, those two clipboard switches) is one"
+    " record in this computer's storage for the app (`omher.term`); omher reads no other program's terminal settings or theme files.",
     "Settings › Providers \"Add key\" may open the person's own system terminal running exactly"
     " `hermes auth add <provider> --type api-key`, and nothing else, only when the person picks a provider.",
     "The provider id is checked against `^[a-z0-9][a-z0-9_-]{0,40}$` and passed as one argument;",
@@ -266,10 +280,12 @@ class DocPins(unittest.TestCase):
         # rule 27 (a session's mode, effort and branch read: only the agent's own switches, never a bypass) as well;
         # 28: rule 28 (a session shows the agent's own diff, todo list and thinking; edit and resend only through
         # the agent's own rewind); 29: rule 29 (Restart one bot through Hermes' own `gateway restart`, `--yes` only
-        # after a refusal; plugin loads through its `reload-plugins`).
+        # after a refusal; plugin loads through its `reload-plugins`); 30: rule 30 (continue a Claude Code or Codex
+        # conversation from its own files, read-only; a row's folder in the file manager or the system terminal; the
+        # asks count on the Dock).
         # The rules stay numbered 1..n with no gap or repeat.
         rules = re.findall(r"^(\d+)\. ", DOC.read_text(encoding="utf-8"), re.M)
-        self.assertTrue(6 <= len(rules) <= 29, len(rules))
+        self.assertTrue(6 <= len(rules) <= 30, len(rules))
         self.assertEqual([int(n) for n in rules], list(range(1, len(rules) + 1)))
 
     def test_glossary_and_docs_index_name_omher(self) -> None:
@@ -352,9 +368,10 @@ class TheOneInstaller(unittest.TestCase):
         # installer; agent_chat.rs starts a chat session's allow-listed agent (rule 11); accounts.rs runs the
         # CLIs' fixed status / sign-in argv (rule 18); hermes_auth.rs opens the system terminal with
         # `hermes auth add <id> --type api-key` (rule 23); dsh_chat.rs runs a DSH chat's message through DeepSeek
-        # Harness's headless profile (rule 11). Terminal sessions start theirs through the PTY's
+        # Harness's headless profile (rule 11); folder_open.rs opens the person's own system terminal in a session's
+        # folder with no command (rule 30). Terminal sessions start theirs through the PTY's
         # `spawn_command`, not `Command::new`.
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "hermes_auth.rs": 1, "setup.rs": 1})
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "setup.rs": 1})
 
     def test_the_install_command_takes_nothing_from_the_page(self) -> None:
         lib = (SHELL_SRC / "lib.rs").read_text(encoding="utf-8")
@@ -406,6 +423,48 @@ class LinkChipsFetchNothing(unittest.TestCase):
         self.assertIn("!host.contains('@')", body)
         allowed = lib[lib.index("pub(crate) fn allowed_external"):]
         self.assertIn("is_control()", allowed[: allowed.index("\n}\n")])
+
+    def test_a_terminal_link_opens_only_through_the_one_opener(self) -> None:
+        # links in a SESSIONS terminal's output (found in the text, or marked by the program with OSC 8): one
+        # click rule, one address rule, the app's one opener; nothing fetched, no window opened by the terminal code
+        term = UI_SRC / "sessions" / "term"
+        links = (term / "engine-links.ts").read_text(encoding="utf-8")
+        code = "\n".join(line for line in links.splitlines() if not line.lstrip().startswith(("//", "*", "/**")))
+        self.assertIn('import { openExternal } from "../../lib/openExternal";', code)
+        # both kinds go through activateLink, which holds the modifier and the address checks
+        self.assertEqual(code.count("activateLink(e, uri)"), 2)
+        self.assertIn("term.options.linkHandler = { activate: (e, uri) => void activateLink(e, uri)", code)
+        self.assertNotIn("allowNonHttpProtocols", code)
+        body = code[code.index("export function activateLink"):]
+        body = body[: body.index("\n}\n")]
+        self.assertLess(body.index("linkModifier(event, mac)"), body.index("open(url)"))
+        self.assertLess(body.index("webLinkTarget(text)"), body.index("open(url)"))
+        rule = code[code.index("export function webLinkTarget"):]
+        rule = rule[: rule.index("\n}\n")]
+        self.assertIn('u.protocol !== "https:" && u.protocol !== "http:"', rule)
+        self.assertIn("u.username || u.password", rule)
+        for path in sorted(term.glob("*.ts")) + sorted(term.glob("*.tsx")):
+            if path.name.endswith(".test.ts"):
+                continue
+            text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith(("//", "*", "/**")))
+            for bad in ("window.open", "fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "confirm("):
+                self.assertNotIn(bad, text, f"{path.name}: {bad}")
+
+    def test_terminal_settings_are_one_record_and_read_no_other_programs_files(self) -> None:
+        term = UI_SRC / "sessions" / "term"
+        settings = (term / "settings.ts").read_text(encoding="utf-8")
+        self.assertIn('export const TERM_KEY = "omher.term";', settings)
+        self.assertEqual(settings.count("localStorage.getItem("), 1)
+        self.assertEqual(settings.count("localStorage.setItem("), 1)
+        for path in sorted(term.glob("*.ts")) + sorted(term.glob("*.tsx")):
+            if path.name.endswith(".test.ts"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            # nothing here reaches the shell or the disk: the palettes are data in the bundle
+            for bad in ("invoke(", "@tauri-apps", "readTextFile", "plugin-fs"):
+                self.assertNotIn(bad, text, f"{path.name}: {bad}")
+            if path.name != "settings.ts":
+                self.assertNotIn("localStorage", text, path.name)
 
 
 class OmhNeverReachesOmher(unittest.TestCase):
@@ -770,8 +829,9 @@ class AccountsNeverCarryAToken(unittest.TestCase):
                 spawns[path.name] = n
         # bridge.rs starts the bridge with Hermes' Python; accounts.rs runs the CLIs' fixed status / sign-in argv;
         # agent_chat.rs starts an allow-listed agent in its structured mode (rule 11); hermes_auth.rs opens the
-        # system terminal for `hermes auth add` (rule 23); dsh_chat.rs runs DeepSeek Harness's headless profile (rule 11).
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "hermes_auth.rs": 1, "setup.rs": 1})
+        # system terminal for `hermes auth add` (rule 23); dsh_chat.rs runs DeepSeek Harness's headless profile (rule 11);
+        # folder_open.rs opens the system terminal in a session's folder with no command (rule 30).
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "setup.rs": 1})
 
 
 class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
@@ -809,7 +869,8 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         chat = self.prod.split("pub fn chat_args", 1)[1].split("\n}\n", 1)[0]
         arms = re.findall(r'^\s+(.+?) => (&.+?\[\.\.\]),?$', chat, re.M)
         self.assertEqual(arms, [('"claude"', "&CLAUDE_CHAT_ARGS[..]"), ('"codex"', '&["app-server"][..]'),
-                                ('"pi" | "omp" | "omo"', '&["--mode", "rpc"][..]'), ('"opencode"', '&["acp"][..]')])
+                                ('"pi" | "omp" | "omo"', '&["--mode", "rpc"][..]'), ('"opencode" | "kilo" | "kimi"', '&["acp"][..]'),
+                                ('"gemini" | "qwen" | "copilot" | "cline"', '&["--acp"][..]')])
         resume = self.prod.split("pub fn resume_args", 1)[1].split("\n}\n", 1)[0]
         # exactly two flags, each for named agents only; every other agent is refused
         self.assertEqual(re.findall(r'^\s+(.+?) => ("--[a-z-]+"|return Err)', resume, re.M),
@@ -863,10 +924,18 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         self.assertIn("(1..=128).contains(&id.len())", acp)
         rows = re.search(r"pub const ACP_AGENTS: \[AcpAgent; (\d+)\] = \[(.*?)\];", acp, re.S)
         self.assertIsNotNone(rows)
-        self.assertEqual(re.findall(r'id: "([^"]+)"', rows.group(2)), ["opencode"])
-        # OpenCode's one variable carries ask rules built from its own `agent list`: allow -> ask, deny stays deny
-        self.assertEqual(re.findall(r'rules: (.*?),\n', rows.group(2)),
-                         ['Some(RuleProbe { args: &["agent", "list"], var: "OPENCODE_CONFIG_CONTENT", build: opencode_ask, kept: opencode_kept })'])
+        self.assertEqual(re.findall(r'id: "([^"]+)"', rows.group(2)), ["opencode", "kilo", "gemini", "qwen", "kimi", "copilot", "cline"])
+        # OpenCode's and Kilo's one variable carries ask rules built from their own `agent list`: allow -> ask, deny
+        # stays deny; the other five rows add no variable
+        self.assertEqual(re.findall(r'rules: (Some\(RuleProbe \{.*?\}\)|None)', rows.group(2)),
+                         ['Some(RuleProbe { args: &["agent", "list"], var: "OPENCODE_CONFIG_CONTENT", build: opencode_ask, kept: opencode_kept })',
+                          'Some(RuleProbe { args: &["agent", "list"], var: "KILO_CONFIG_CONTENT", build: kilo_ask, kept: kilo_kept })',
+                          "None", "None", "None", "None", "None"])
+        # each row's sign-in line is the agent's own command, run by the person; omher never sends `authenticate`
+        self.assertEqual(re.findall(r'login: "([^"]+)"', rows.group(2)),
+                         ["opencode auth login", "kilo auth login", "gemini", "qwen", "kimi login", "copilot login", "cline auth"])
+        self.assertNotIn('"authenticate"', acp)
+        self.assertIn('const KILO_ASKED: [(&str, &str); 3] = [("bash", "bash"), ("edit", "edit"), ("write", "write")];', acp)
         self.assertNotIn("OPENCODE_PERMISSION", acp)
         self.assertIn('if a == "deny" { "deny" } else { "ask" }', acp)
         self.assertIn('const ASKED: [(&str, &str); 2] = [("bash", "bash *"), ("edit", "edit *")];', acp)
@@ -882,7 +951,7 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
             self.assertNotIn(needle, acp)
         # the shell adds the row's env and nothing else, and takes an ACP id only through the protocol
         start = self.chat.split("pub fn start_agent", 1)[1].split("\n    }\n", 1)[0]
-        self.assertIn("env.push(agent_rules(probe, &program, cwd, &path_env, account_env)?);", start)
+        self.assertIn("env.push(agent_rules(probe, label, &program, cwd, &path_env, account_env)?);", start)
         # the listing runs the same resolved program with the probe's fixed arguments only, and kills it on timeout
         rules = self.chat.split("fn agent_rules(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("argv.extend(probe.args.iter().map(OsString::from));", rules)
@@ -955,11 +1024,12 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
     def test_only_the_bridge_the_session_pty_and_the_chat_spawner_start_processes(self) -> None:
         """`Command::new` only in bridge.rs (Hermes' Python), setup.rs (the one fixed installer,
         rule 12), once in agent_chat.rs (the chat spawner), in accounts.rs (rule 18's fixed status /
-        sign-in argv) and in hermes_auth.rs (rule 23's terminal); `spawn_command` only in sessions.rs."""
+        sign-in argv), in hermes_auth.rs (rule 23's terminal) and in folder_open.rs (rule 30's terminal in a session's
+        folder); `spawn_command` only in sessions.rs."""
         for path in sorted(SHELL.glob("*.rs")):
             text = path.read_text(encoding="utf-8")
             prod = text.split("#[cfg(test)]", 1)[0]
-            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs"):
+            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs"):
                 self.assertNotIn("Command::new", prod, path.name)
             if path.name != "sessions.rs":
                 self.assertNotIn("spawn_command", text, path.name)
@@ -1013,7 +1083,7 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         # the account's variable, plus only the ACP row's ask rules (rule 11: OpenCode's, built from its own listing)
         self.assertIn("let mut env = account_env.to_vec();", start)
         self.assertEqual(start.count("env.push("), 1)
-        self.assertIn("env.push(agent_rules(probe, &program, cwd, &path_env, account_env)?);", start)
+        self.assertIn("env.push(agent_rules(probe, label, &program, cwd, &path_env, account_env)?);", start)
         self.assertIn("self.spawn(argv, cwd, Some(path_env), &env, adapter, sink)", start)
 
     def test_start_agent_resolves_argv_from_the_allow_list_only(self) -> None:
@@ -1383,3 +1453,71 @@ class RestartOneBotOnAPress(unittest.TestCase):
         owners = {n for n, f in self.fns.items() if any(isinstance(c, ast.Name) and c.id == "reload_plugins" for c in ast.walk(f))}
         self.assertEqual(owners, {"op_plugins_reload"})
         self.assertNotIn("restart", self._body("op_plugins_reload").replace("restart_bot", "").replace("'restart' if", ""))
+
+
+class PastConversationsAreOnlyRead(unittest.TestCase):
+    """Rule 30: the conversations Claude Code and Codex keep are listed and shown read-only, from their own files only,
+    with links and paths outside the CLI's home refused; a row's folder opens in the file manager or the person's own
+    terminal with no command; the asks count goes through Tauri's window calls."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.past = (SHELL / "past_chats.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        cls.open = (SHELL / "folder_open.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        cls.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+
+    def test_the_conversation_files_are_never_written_and_nothing_else_is_read(self) -> None:
+        code = "\n".join(l for l in self.past.splitlines() if not l.lstrip().startswith("//"))
+        for banned in ("fs::write", "File::create", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "fs::copy",
+                       "create_dir", "set_permissions", "Command::new", "TcpStream", "spawn"):
+            self.assertNotIn(banned, code, banned)
+        # no login, token or config file of either CLI
+        for banned in ("auth.json", ".credentials", "credentials.json", "config.toml", "settings.json", ".claude.json", "oauth", "token"):
+            self.assertNotIn(banned, code.lower(), banned)
+        # only these names under the CLI's home
+        self.assertEqual(sorted(set(re.findall(r'\.join\("([a-z_.]+)"\)', code))), ["projects", "session_index.jsonl", "sessions"])
+
+    def test_links_and_paths_outside_the_home_are_refused_and_reads_are_bounded(self) -> None:
+        inside = self.past.split("pub fn inside(", 1)[1].split("\n}\n", 1)[0]
+        for needle in ("symlink_metadata(p)", "is_symlink()", "let real = p.canonicalize().ok()?;",
+                       "let base = root.canonicalize().ok()?;", "real.starts_with(&base).then_some(real)"):
+            self.assertIn(needle, inside)
+        self.assertIn("std::fs::symlink_metadata(p).map(|m| m.is_dir())", self.past)
+        self.assertIn("const HEAD: u64 = 256 * 1024;", self.past)
+        self.assertIn("const TAIL: u64 = 1024 * 1024;", self.past)
+        self.assertIn("pub const MSG_MAX: usize = 40;", self.past)
+        # every file read goes through inside(): the listing and the messages
+        for fn in ("pub fn claude_list(", "pub fn claude_messages(", "pub fn codex_list(", "pub fn codex_messages(", "fn codex_names("):
+            body = self.past.split(fn, 1)[1].split("\n}\n", 1)[0]
+            self.assertIn("inside(root, ", body, fn)
+        # an id is a UUID before it names a file
+        for fn in ("pub fn claude_messages(", "pub fn codex_messages("):
+            body = self.past.split(fn, 1)[1].split("\n}\n", 1)[0]
+            self.assertIn("if !is_uuid(id) {", body, fn)
+        text = _flat(DOC.read_text(encoding="utf-8"))
+        self.assertIn("It refuses a symlink anywhere under those folders and any file that is not inside that home once its links are resolved", text)
+        self.assertIn("never opens a credential, token or config file of either CLI", text)
+
+    def test_the_commands_take_only_an_agent_folders_and_an_id(self) -> None:
+        for cmd, params in (("past_chats_list", "agent: String, cwds: Vec<String>"), ("past_chat_messages", "agent: String, id: String, cwd: String"),
+                            ("session_reveal", "cwd: String"), ("session_open_terminal", "cwd: String"),
+                            ("asks_badge", "window: tauri::WebviewWindow, count: u32")):
+            sig = re.search(rf"async fn {cmd}\((.*?)\) -> ", self.lib, re.S)
+            self.assertIsNotNone(sig, cmd)
+            self.assertEqual(sig.group(1).strip(), params, cmd)
+        self.assertIn('matches!(agent, "claude" | "codex")', self.past)
+
+    def test_the_system_terminal_runs_no_command_and_the_folder_is_no_shell_string(self) -> None:
+        self.assertEqual(self.open.count("Command::new("), 1)
+        launch = self.open.split("pub fn launchers(", 1)[1].split("\n}\n", 1)[0]
+        for banned in ('"-e"', '"-x"', '"--command"', '"/k"', '"-c"', '"sh"', '"bash"', "osascript", "format!("):
+            self.assertNotIn(banned, launch, banned)
+        self.assertIn('vec!["/c".into(), "start".into(), "".into(), "cmd".into()]', launch)
+        self.assertIn(".current_dir(&dir).stdin(Stdio::null())", self.open)
+        # the folder must exist and be absolute before anything runs
+        for fn in ("pub fn open_terminal(", "pub fn reveal("):
+            body = self.open.split(fn, 1)[1]
+            self.assertTrue(body.split("{\n", 1)[1].lstrip().startswith("let dir = folder(cwd)?;"), fn)
+        folder = self.open.split("pub fn folder(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("!p.is_absolute()", folder)
+        self.assertIn("real.is_dir()", folder)
