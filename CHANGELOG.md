@@ -4,19 +4,22 @@ All notable changes will be documented here.
 
 ## Unreleased
 
-- **omher's terminal find reads at a glance, follows a theme change and leaves nothing behind.** Five fixes to
-  the session terminal that shipped in omher 0.2.7. The text inside find's active match now reads at 7:1 on its
-  fill on all 38 themes (it was 4.5:1). Korean text, whose thin strokes draw lighter than their colour on a 1x
-  screen, measured 3.9 to 4.4 by its darkest pixel and now measures 6.4 to 6.7 (the lowest of three words on six
-  themes, Chromium, standard renderer).
-  The fill is the theme's own yellow in a shade dark text reads on, on dark and light themes alike, outlined in
-  that text's colour (on a 2x screen the old colours already measured what they were picked for). A terminal
-  theme that changes while find is open recolours the matches at once; they kept the old theme's colours until
-  the next Enter. Leaving a terminal with find open (another session, Settings, a bot) clears its highlights, so
-  none are left on a terminal that shows no bar to close them with. With the app theme on System, an open
-  terminal follows the OS when it turns light or dark; it kept the colours the app started with while the rest
-  of the page changed. And on Solarized Dark and Light, bold coloured text keeps its colour: those themes hold
-  greys in their bright slots, so a program's bold green, yellow, blue and cyan showed as grey. (#2860)
+- **omher connects a Hermes on another computer over SSH.** The sidebar + has "Connect over SSH": pick a host from
+  `~/.ssh/config` (or type `user@host`), press Check, and a card shows the exact `ssh` command omher will run, the
+  Hermes and Python found there and the bots that computer has; nothing is saved until Connect. Its bots join the
+  list marked "SSH · <name>" (the host in the tooltip) in the sidebar, the chat header and Settings, with the link's
+  state when it is reconnecting or failed. Asking a bot ("connect the Hermes on my Mac mini") makes it answer with a
+  draft that shows as a "Connect over SSH" chip under its reply, which opens the same card. omher uses your own `ssh`
+  with key login only and never asks for a password; on the other computer it writes only `~/.omher/peer/`. Settings
+  › Remote machines lists them, with Remove.
+
+- **The OMH TUI shows a compression as one gauge row, and a prompt typed meanwhile goes on by itself.** `/compact`
+  (or `/compress`) no longer prints the long "Compressing: Hermes summarizes the older turns…" notice above a second
+  spinner row. One row now reads `✻ Compacting conversation… ━━━━━━──── (30s)`, with a blank row between it and
+  the composer. Hermes sends no progress for a compression, so the gauge follows the time waited, never fills on its
+  own and shows no percent; Hermes' `✓ Compressed: …` report closes it. A prompt sent during the compression waits in
+  the `⧗` queue (Ctrl+Enter has no turn to steer, so it queues too) and is sent by itself, oldest first, once the
+  compression is answered, refused or given up on.
 - **omher.app shows the bot faces as a moving scene under the desktop app.** Between the omher block and the
   OMH hero there is now a band with nine soft 3D characters in the style of omher's built-in bot faces, bouncing
   and blinking on a 4-second loop, with one line of copy in English, Korean, Japanese and Chinese and one
@@ -93,24 +96,6 @@ All notable changes will be documented here.
   attached to a shared gateway, the gateway child sends them as the owner's
   revision-fenced `session.mutate rename` / `delete`, as Hermes' Ink TUI does.
   A refusal is said on the row.
-- **omher runs six more coding agents in SESSIONS.** Kilo Code, Gemini CLI,
-  Qwen Code, Kimi Code, Copilot CLI and Cline open as session chats through
-  the same Agent Client Protocol adapter as OpenCode: answers stream, tool
-  steps show, and each approval is a card with Deny and Allow once. Kilo Code
-  starts only with ask rules built from its own `kilo agent list`, so nothing
-  you allow runs unasked and nothing you deny becomes askable; its free
-  models need no account. Both Kilo Code and OpenCode check every permission
-  and each agent's mode, refuse file/env tokens before listing again, and
-  compare rules as Windows does there. Rules are read at session start;
-  a deny added later applies from the next session. An agent that is
-  installed but not signed in ends
-  in one line with its own sign-in command (Gemini CLI is not signed in. Run
-  `gemini` in a terminal and sign in.) and Open in Terminal; omher never
-  signs in for it, never sends the protocol's `authenticate` and never takes
-  a key. The + menu lists the agents installed on this computer and folds the
-  rest under one More agents row, each with its whole install line; a click
-  copies it. Continue a conversation stays under that row, there as the menu
-  first opens.
 - **A dag-ulw node can be read-only.** `omh_dag` define, repair and extend take
   `read_only: true` on a node; its child's `write_file` and `patch` inside the
   run's workspace are blocked, except its own handoff report, with a message
@@ -127,18 +112,6 @@ All notable changes will be documented here.
   reminder no longer applies. Image turns count too: there the reminder is
   read after the ask Hermes stamps on the turn, so a quoted reminder never
   does. The `omh_active_workflow` metadata still comes with every call.
-- **An omher session's header says "waiting" about background work that waits
-  for you, and keeps its name and model whole.** While a background subagent
-  only waited for your approval, the header read "1 still running in the
-  background" though its row, its card and the sidebar said "waiting". When
-  every background subagent omher knows of waits on an open approval or
-  question, the header now reads "1 waiting in the background" (four
-  languages); a count that holds a background command, or a subagent still
-  running, keeps the old words. With that label and its Stop showing, a narrow
-  chat (a 900 or 1100px window, the right panel open) cut the model name to
-  "Opu…" or the session's name to nothing: the label now takes a short form
-  ("1 waiting", the sentence in its tooltip) and goes under the name with Stop
-  when the line is tight, and the path gives way first.
 - **A toolcall rule can ask you instead of blocking.** With `"effect": "ask"`,
   a matching call goes to Hermes' approval prompt with the rule's message,
   keyed `omh-toolcall-rule:<name>` so `[a]lways` covers that one rule. Where
@@ -212,15 +185,6 @@ All notable changes will be documented here.
   `OMH_TUI_MOUSE=0` gives the wheel and native selection back to the
   terminal.
 
-- **An omher left open shows the Update button without a restart.** omher
-  looked for a new version once at launch and then every 6 hours, and a check
-  that failed waited for the next 6-hour turn. A failed check is now tried
-  again after 2 minutes, then less often, at most once an hour; and coming
-  back to the window (shown or focused again) checks when the last good check
-  is 30 minutes old or more, which does not depend on a timer and so also
-  covers a Mac that slept. Still one request at a time, to the same address,
-  and silent when a check fails.
-
 - **The Desktop pane stays on the focused chat and folds large DAGs by
   layer.** The yolo chip follows the focused chat instead of whichever
   session's hook ticked last (a subagent or a cron run); where OMH holds no
@@ -270,6 +234,30 @@ All notable changes will be documented here.
   means unknown, never empty, none or equal. The idea of mining re-fixed commits
   comes from `yetone/magpie` (MIT), concept only, reimplemented here.
 
+- **omher's SESSIONS menu lists its agents in two tiers, and Kilo Code is gone.**
+  Claude Code, Codex and OmO, the main agents with their own adapters, come
+  first in the + menu (installed agents still before the rest), then the
+  other built-ins, then the generic ACP agents. Gemini CLI, Qwen Code, Kimi
+  Code, Copilot CLI and Cline now come from one list in the shell (program,
+  `acp` or `--acp`, sign-in and install lines, mark) that the agent look-up
+  hands to the UI, and behave as in 0.2.8: the same install lines, signed-out
+  line, Open in Terminal and Restart. Kilo Code is no longer offered or
+  startable; OpenCode and its rule check stay. A Kilo Code session saved
+  before this comes back ended with its chat and one line, "Kilo Code is no
+  longer offered in omher", and no Restart.
+- **Add your own ACP agent in omher, after a confirm card.** Settings › Agents
+  lists the agents SESSIONS offers with their tier and whether each is
+  installed, then yours. Add agent asks for a name, the program and its ACP
+  arguments; Save shows the exact command omher will run, and nothing is
+  saved until you press Add. It then opens from the SESSIONS + menu as a
+  session chat on the same ACP adapter, with no shell and no rule rewriting.
+  Entries live in `~/.omher/custom-agents.json` and are checked on every read.
+- **A bot can draft an ACP agent for you in omher; you still confirm it.** An
+  ```` ```omher-agent ```` block in a bot's reply (name, program, args,
+  install) gets an "Add agent" chip that opens the same confirm card, with
+  "Proposed by <bot>"; nothing is saved until Add. A shell or interpreter as
+  the program is refused for bot drafts. "Ask the bot" on Settings › Agents
+  puts the request in the bot's message box without sending it.
 - **Claude Fable 5.2 now leads the `visual-engineering` chain.** Frontend and
   visual lanes routed through Hermes try Fable 5.2 first, then Claude Opus
   5.5, Gemini 4 Argon and Kimi K3.1 Pro, all at `high` (before, Opus 5.5 came
@@ -318,6 +306,71 @@ All notable changes will be documented here.
   refused; a plain-HTTP ask never goes through `HTTP_PROXY`, so the key is not
   sent in clear to a proxy; and `typesafe_model` never applies to TypeSafe's
   own host however it is spelled. Thanks @brentkearney. (#2716)
+- **omher 0.2.9.** A new bot without an AI account signs in from its own chat, the + in the message box has one
+  way to add files and the bot's plugins beside it, and an empty part of the Sessions list starts a new session.
+  - **A new bot that cannot answer yet says so and signs in from its chat.** When Hermes' readiness check says a
+    bot has no AI account, its chat shows one line with ChatGPT / Codex, Claude, Nous Portal and API key…. A
+    sign-in opens the system terminal running exactly `hermes auth add openai-codex`, `anthropic` or `nous`; the
+    line asks again every 3 seconds for up to 10 minutes and when omher comes back to the front, and goes away once
+    the bot can answer. API key… opens Settings › Providers. The first install of Hermes from the app lands in the
+    default bot's chat, and with no bots the empty window points at the + menu. (#2874)
+  - **One way to add files, and the bot's plugins under the same +.** The menu with "Photos & videos", "Files" and
+    "Paste from clipboard" is gone. In a bot's chat the + has two rows: "Add photos and files" (one system picker
+    for any kind of file, also ⌘O / Ctrl+O) and "Plugins ›", whose submenu lists the bot's enabled Hermes plugins
+    and Manage plugins; picking one puts "Use <plugin>: " at the start of the message without sending it. In a
+    session the + opens the file picker straight away. Paste and drop attach files as before. (#2870)
+  - **Right-click an empty part of the Sessions list to start a new session.** It opens the agent picker without
+    starting a process; the chat and terminal marks beside session rows are smaller. (#2869)
+
+- **omher 0.2.8.** Six more coding agents in SESSIONS, update checks that
+  recover after a failed request or sleep, and a session header that says
+  when background work is waiting for you, with clearer terminal find.
+  - **Six more agents in SESSIONS.** Kilo Code, Gemini CLI, Qwen Code,
+    Kimi Code, Copilot CLI and Cline open as session chats through the ACP
+    adapter: answers stream, tool steps show, and approvals offer Deny and
+    Allow once. Installed agents come first in the + menu; More agents
+    unfolds the rest with whole install commands that copy on click.
+    Continue a conversation stays reachable when the menu first opens; the
+    folded menu keeps its text clear and shows a scrollbar when it needs one.
+    An installed agent that is signed out ends with its own sign-in command,
+    Open in Terminal and Restart, not raw protocol output; omher never signs
+    in, sends `authenticate`, or takes a key. (#2858)
+  - **Kilo Code and OpenCode check the rules they will start with.** omher
+    builds ask rules from each CLI's own agent listing and starts only when
+    its conservative comparison accepts the listed permissions and agent
+    modes. Unsupported changes are refused; file/env substitution tokens
+    are refused before a second listing. Windows matching is handled with
+    its own case rules. Rules are a session-start snapshot: a deny added
+    later applies from the next session. Private prompt/model metadata not
+    exposed by the listing is not preserved by that comparison. Actual
+    Windows CLI behavior and the other five agents after sign-in were not
+    verified for this release. (#2858)
+  - **An omher left open finds updates without a restart.** A failed check
+    retries after 2 minutes, backs off to at most once an hour, and stays
+    silent on failure. Showing or focusing the window checks again when the
+    last good check is at least 30 minutes old, including after sleep.
+    There is still only one request at a time, to the same updater feed.
+    This retry behavior starts once 0.2.8 is installed; a 0.2.7 app keeps
+    its old launch/6-hour schedule until it updates. (#2857)
+  - **The session header says "waiting" about background work that waits
+    for you.** If every known background subagent waits on an approval or
+    question, the header uses waiting rather than running in all four
+    languages. A live command or running subagent still reads running.
+    In a narrow chat the label shortens and wraps with Stop under the name,
+    while the path gives way first so the session and model stay readable.
+    (#2862)
+  - **Terminal find stays readable and follows the theme.** The active
+    match's text and fill have stronger contrast on all 38 themes, including
+    thin Korean strokes on a 1x screen. Changing the terminal theme recolours
+    open matches at once; leaving a terminal clears highlights when its find
+    bar is no longer shown. An open terminal now follows an OS light/dark
+    change when Appearance is System. Solarized Dark and Light keep bold
+    green, yellow, blue and cyan in their colours instead of turning them
+    grey. (#2860)
+  - **omher.app's preview.** The live preview is pinned to omher 0.2.7;
+    Show in Finder and Open in Terminal explain their preview-only limits
+    rather than touching a real profile. (#2853)
+
 - **omher 0.2.7.** Find and continue sessions, choose how their terminals look,
   answer and stop background work, read a plan before allowing it, and open
   a Codex subagent's file change to its diff.
@@ -975,6 +1028,85 @@ All notable changes will be documented here.
   route's own `skills:` list now gets its first block. The uninstall report reads its `section.key`
   presence the same way, so a name inside another root key's flow mapping is
   no longer reported as OMH's own. Reported by @PabloJustDevelops in #2829.
+- **`omh coding model-routing status` and the setup profile pack now read
+  the model aliases Hermes itself writes.** `hermes config set
+  model_aliases.<name>.model <model>` stores each alias as a mapping with
+  `model`, `provider`, `base_url` and `key_env` children, under the root
+  `model_aliases` key or `model.aliases`. The shared alias parser read only
+  the flat `alias: target` form, so such a config showed `Hermes aliases
+  (corrupt)`, an empty alias map and a "Repair the Hermes config" action in
+  `omh doctor`. A nested entry's target is now its `model` child. The other
+  children are read past, and their values are never kept or returned. The flat
+  form is unchanged. A nested entry with no `model` child now names its
+  error as `model alias entry shape is unsupported` instead of a malformed
+  entry. A duplicate `model` child,
+  a deeper or misaligned child, a child key named `aliases`, and a
+  credential-shaped `model` value are still refused. Reported in #2863 by
+  @MarinWasAsleep; first fixed by @SHURIKA6 in #2867.
+
+- **The OMH TUI's `/sessions` picker no longer loses older conversations
+  behind newer ones, and orders sessions by when they were last active.**
+  Attached to Hermes' shared gateway, the gateway child asked both the live
+  and the stored listing for only the picker's limit, kept the live rows
+  first, and cut the joined list there, so a session held open and its own
+  stored history could take two rows while a conversation you resumed
+  yesterday fell off the page. It now asks each listing for up to 200 rows,
+  merges a live session and the stored row of the same conversation into one
+  row (by id, resolved id or lineage root), orders the result by the
+  conversation's latest activity (`last_active_at`, which current Hermes
+  answers when asked for its picker fields), and applies the limit last; a
+  title lookup is forwarded unchanged. The day headings and ages follow the
+  same last activity. A row Hermes marks `resumable: false` /
+  `owner_runtime: "other"` (a session another runtime holds open) opens
+  read-only: Enter shows its newest messages through `session.transcript`
+  in a pager instead of resuming it, and Ctrl+R and Ctrl+D are refused on
+  its row. Only a Hermes with the companion listing change
+  (DanRioDev/hermes-agent@01ba3239b, not yet in upstream Hermes) lists such
+  rows; against stock Hermes every row resumes as before, and a Hermes
+  without `session.transcript` answers that read with a notice, never a lost
+  session. Contributed by @DanRioDev (#2865).
+
+- **`/resume` in the OMH TUI looks like Claude Code's resume picker.** It takes most of the screen, headed
+  `Resume session (2 of 12)` with a rounded search box under it (the caret typed in it), and each session is a card:
+  its name on one row and `2 days ago · 14 messages · tui` muted under it, a blank row between two cards, under the
+  same Current / Today / Yesterday / Previous 7 days / Earlier headings. `↑` and `↓` in the pointer's column say
+  more cards sit above or below. A long name or its facts wrap onto a second row (cut there with `…`), and the keys
+  are listed under the cards, wrapped between two keys, as Claude Code lists its own. Ctrl+R turns the search box
+  into the title field and Ctrl+D asks on the card's facts row, as before. Closing it gives every row back to the
+  transcript, with no band of blank rows left above the composer. On a terminal too short for two cards and the keys, or under 30 columns, it stays the one-row list.
+- **omher starts with one bot; the other bots on this computer join from + in one click.** The sidebar no longer
+  lists every Hermes profile. A new install starts with the default bot alone; someone who already used omher starts
+  with the bot they last had open (plus any they had pinned). `+` is now "Add a bot": it lists the profiles that are
+  not in the sidebar yet, each with one Add that brings the bot in, connects it and opens its chat. Right-click
+  "Hide from sidebar" is now "Remove from list": the profile stays and shows under `+` again, and the last bot in the
+  list cannot be removed. Settings › All bots still shows every profile, each marked "In list" or with "Add to list".
+  An approval or question from a bot outside the list still shows in Needs you, and opening it adds that bot. The
+  connect block for a bot with no AI account no longer offers a Claude sign-in: Hermes' Claude sign-in works only on
+  Claude Max with purchased extra-usage credits, so most people who picked it hit "out of extra usage". ChatGPT /
+  Codex, Nous Portal and API key… stay; an Anthropic key goes in through API key….
+- **The OMH TUI's `✳ Waiting… (… · terminal)` row shows while a `notify=true` background process runs.** Hermes
+  writes its process record at the spawn, before it arms the completion notice, and does not rewrite it until the
+  process exits, so the record said nobody would be told for the whole run. The TUI read it that way: no waiting
+  row between turns, and the info line said `🔕 Hermes won't be pinged`. The TUI now takes who will be told from
+  the `terminal` result Hermes sent back as it started the process (`notify_on_complete`, or watch patterns), so
+  the waiting row stands and the line says `🔔 will ping you when done`. A result that says no one will be told
+  (a subagent, a session that cannot take a completion) changes nothing.
+- **An OMH TUI question never opens with nothing above it.** Some models write the explanation that should come
+  before a clarify question only into their reasoning and send no reply text, so with Hermes'
+  `display.show_reasoning` off the picker appeared alone and the person could not tell what to pick. The question
+  now reads that turn's row from the session's `state.db` (read-only, matched by the clarify's own call id) and
+  shows the reasoning dim above the asked sentence, at most three rows, Ctrl+O for the rest. A turn that wrote a
+  reply, an older turn's row, or a store that cannot be read draws the question exactly as before.
+- **A paired run now measures how long each cell took and says whether the variant was faster at equal quality.**
+  The Hermes-child dispatcher times every spawned child from spawn to exit on its own clock and signs those seconds
+  into the cell's receipt; a hand-edited figure no longer verifies. New `paired_run_decision/v2` decisions carry the
+  signed seconds on every result row and a `speed_at_equal_quality` block recomputed from the rows: the quality gate
+  regresses if any task went from a baseline pass to a variant fail, and then no speed is claimed at all; timing
+  covers only tasks both arms passed with seconds on both sides, and every other task is counted under a named
+  exclusion (one arm failed, both failed, missing seconds, infra error, not observed). A missing figure stays
+  unmeasured, never zero, and the share of timed tasks the variant won carries its denominator. `v1` decisions and
+  store history still parse (timing reads as unmeasured), and a `v1` decision can be superseded by `v2`. No speed
+  figure has been measured with it yet.
 
 ## 4.0.7 - 2026-11-09
 

@@ -38,6 +38,8 @@ const ALLOWED = new Set([
   "bots.list",
   "bots.avatar",
   "bots.info",
+  // Hermes' read-only readiness probe for the bot in view (setup.runtime_check)
+  "bots.ready",
   "chat.open",
   "chat.send",
   "elsewhere.list",
@@ -50,6 +52,9 @@ const ALLOWED = new Set([
   "links.places",
   // the bot's own plans, for the header's panel button (a read of its dag runs)
   "runs.list",
+  // a remote machine saved in ~/.omher/peers.json comes back on boot: its bots join the list (rule 31)
+  "peers.attach",
+  "peers.detach",
 ]);
 
 /** Screenshot after every running animation (chip / menu `pop`) has finished; under load they start late. */

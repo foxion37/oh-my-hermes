@@ -15,8 +15,12 @@ DOC = ROOT / "docs" / "OMHER-BOUNDARY.md"
 BRIDGE = ROOT / "apps" / "omher" / "bridge" / "omher_bridge.py"
 SHELL = ROOT / "apps" / "omher" / "src-tauri" / "src"
 UI_AGENTS = ROOT / "apps" / "omher" / "src" / "sessions" / "agents.ts"
-SESSION_AGENTS = ("claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode", "kilo", "gemini", "qwen", "kimi", "copilot", "cline")
-SESSION_MODES = ("Chat", "Chat", "Chat", "Chat", "Hermes", "Chat", "Chat", "Terminal", "Chat", "Chat", "Chat", "Chat", "Chat", "Chat", "Chat")
+# Rule 11's allow-list: the built-ins (sessions.rs AGENTS) and the generic ACP agents (acp_agents.rs ACP_LIST, one
+# structured-mode argument each). Kilo Code is no longer on it.
+BUILTIN_AGENTS = ("claude", "codex", "omo", "dsh", "omh", "pi", "omp", "grok", "opencode")
+BUILTIN_MODES = ("Chat", "Chat", "Chat", "Chat", "Hermes", "Chat", "Chat", "Terminal", "Chat")
+ACP_LIST_ARGS = (("gemini", "--acp"), ("qwen", "--acp"), ("kimi", "acp"), ("copilot", "--acp"), ("cline", "--acp"))
+SESSION_AGENTS = BUILTIN_AGENTS + tuple(a for a, _ in ACP_LIST_ARGS)
 CLAUDE_CHAT_ARGS = ("-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                     "--include-partial-messages", "--permission-prompt-tool", "stdio", "--replay-user-messages")
 CONTEXT = ROOT / "CONTEXT.md"
@@ -60,18 +64,25 @@ RULES = (
     " task id but not its answer, it reads that one record (`st_<task id>.json`, from the same folders and under the"
     " same rules, read-only, and only a record of that session)",
     "omher starts a terminal program only when the person asks for a session (SESSIONS `+`), and only one of a"
-    " fixed allow-list: `claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`, `opencode`, `kilo`, `gemini`, `qwen`, `kimi`, `copilot`, `cline`, with no arguments,",
+    " fixed allow-list: `claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`, `opencode`, `gemini`, `qwen`, `kimi`, `copilot`, `cline`, with no arguments,",
     "A chat session starts the same program with its fixed structured-mode arguments from the allow-list",
     "(`claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages"
-    " --permission-prompt-tool stdio --replay-user-messages`, `codex app-server`, `omo --mode rpc`, `pi --mode rpc`, `omp --mode rpc`, `opencode acp`, `kilo acp`, `gemini --acp`, `qwen --acp`, `kimi acp`, `copilot --acp`, `cline --acp`) on pipes;",
-    "An Agent Client Protocol agent (the seven `acp` rows) gets no such argument: omher sends the conversation id it reported",
+    " --permission-prompt-tool stdio --replay-user-messages`, `codex app-server`, `omo --mode rpc`, `pi --mode rpc`, `omp --mode rpc`, `opencode acp`, `gemini --acp`, `qwen --acp`, `kimi acp`, `copilot --acp`, `cline --acp`) on pipes;",
+    "The last five are the generic Agent Client Protocol agents: each is one fixed row of the shell's own list (`acp_agents.rs`:",
+    "An Agent Client Protocol agent (OpenCode and those five) gets no such argument: omher sends the conversation id it reported",
     "omher never sends the protocol's `authenticate` (Cline's opens a browser by itself) and never asks for, takes or shows a key.",
-    "Kilo Code gets the same in `KILO_CONFIG_CONTENT`, ask rules for its `bash`, `edit` and `write` tools under each tool's own key,",
-    "else Kilo is not started and the chat says so in one sentence naming Kilo Code.",
     "These rules are read when the session starts; a deny added later applies from the next session.",
     "an unknown mode refuses, but an unchanged custom agent is allowed.",
     "refuses before the second listing, so the trusted config channel cannot cause the CLI to read a project-named file or variable.",
     "Gemini CLI, Qwen Code, Kimi Code, Copilot CLI and Cline get no extra variable and no rule check:",
+    "Besides the fixed list, omher starts a program the person added on the Agents page (Settings › Agents) and confirmed,"
+    " exactly with the arguments shown on the card, through ACP on pipes: the confirm card that shows that exact command is the only way an entry is written,",
+    "into one file in omher's own folder, `~/.omher/custom-agents.json`, never a CLI's config;",
+    "skips and never runs an entry that fails, starts it with no shell (a Windows `.cmd` or `.bat` shim is refused),"
+    " adds no variable and no rule check, continues its conversation only inside the protocol, and refuses `opencode` and `kilo`;",
+    "a bot may propose such an agent only as an `omher-agent` block in its own reply in its main chat or a Hermes folder chat"
+    " (never tool output, a Slack or Discord session, or a SESSIONS agent's chat), which becomes a chip that opens the same card,"
+    " checked again by the shell and stricter (no shell, interpreter or built-in program), so a bot never writes the file or starts the program itself.",
     "and tells the agent at `initialize` that omher offers no file reading or writing and no terminal,",
     "OpenCode also gets one environment variable, `OPENCODE_CONFIG_CONTENT`, holding ask rules for its `bash` and `edit` tools",
     "right before the chat, the shell runs `opencode agent list` (that one fixed argument, in the same folder, with the same environment, on pipes, nothing on stdin, at most 30 seconds)",
@@ -143,7 +154,14 @@ RULES = (
     "How terminals look and behave (themes, font, cursor, scrollback, renderer, those two clipboard switches) is one"
     " record in this computer's storage for the app (`omher.term`); omher reads no other program's terminal settings or theme files.",
     "Settings › Providers \"Add key\" may open the person's own system terminal running exactly"
-    " `hermes auth add <provider> --type api-key`, and nothing else, only when the person picks a provider.",
+    " `hermes auth add <provider> --type api-key`, only when the person picks a provider.",
+    "The chat's connect block may open the same terminal running exactly `hermes auth add <id>` (no `--type`: Hermes"
+    " runs that provider's own sign-in) for two ids only, `openai-codex` and `nous`, a fixed list the desktop shell"
+    " checks, only when the person picks one; any other id is refused (`anthropic` too: Hermes' Claude sign-in answers"
+    " only on Claude Max with purchased extra-usage credits, so an Anthropic key goes through \"Add key\"), and the"
+    " terminal runs nothing else.",
+    "asks whether the bot can answer through Hermes' read-only `setup.runtime_check` on that bot's gateway (`bots.ready`).",
+    "sets it through the same `chat.set_model` the model menu uses; it writes no config itself.",
     "The provider id is checked against `^[a-z0-9][a-z0-9_-]{0,40}$` and passed as one argument;",
     "Hermes asks for the key in that terminal and stores it itself: omher never sees the key.",
     "never runs this in its own pseudo-terminal, so no keystroke passes through omher.",
@@ -282,10 +300,11 @@ class DocPins(unittest.TestCase):
         # the agent's own rewind); 29: rule 29 (Restart one bot through Hermes' own `gateway restart`, `--yes` only
         # after a refusal; plugin loads through its `reload-plugins`); 30: rule 30 (continue a Claude Code or Codex
         # conversation from its own files, read-only; a row's folder in the file manager or the system terminal; the
-        # asks count on the Dock).
+        # asks count on the Dock); 31: rule 31 (a Hermes on another computer over the person's own ssh, after a
+        # Connect on the confirm card: one fixed ssh argv, key login only, remote writes only under ~/.omher/peer).
         # The rules stay numbered 1..n with no gap or repeat.
         rules = re.findall(r"^(\d+)\. ", DOC.read_text(encoding="utf-8"), re.M)
-        self.assertTrue(6 <= len(rules) <= 30, len(rules))
+        self.assertTrue(6 <= len(rules) <= 31, len(rules))
         self.assertEqual([int(n) for n in rules], list(range(1, len(rules) + 1)))
 
     def test_glossary_and_docs_index_name_omher(self) -> None:
@@ -369,9 +388,9 @@ class TheOneInstaller(unittest.TestCase):
         # CLIs' fixed status / sign-in argv (rule 18); hermes_auth.rs opens the system terminal with
         # `hermes auth add <id> --type api-key` (rule 23); dsh_chat.rs runs a DSH chat's message through DeepSeek
         # Harness's headless profile (rule 11); folder_open.rs opens the person's own system terminal in a session's
-        # folder with no command (rule 30). Terminal sessions start theirs through the PTY's
-        # `spawn_command`, not `Command::new`.
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "setup.rs": 1})
+        # folder with no command (rule 30); peers.rs starts the person's own `ssh` with a fixed argv (rule 31).
+        # Terminal sessions start theirs through the PTY's `spawn_command`, not `Command::new`.
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1})
 
     def test_the_install_command_takes_nothing_from_the_page(self) -> None:
         lib = (SHELL_SRC / "lib.rs").read_text(encoding="utf-8")
@@ -830,9 +849,168 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         # bridge.rs starts the bridge with Hermes' Python; accounts.rs runs the CLIs' fixed status / sign-in argv;
         # agent_chat.rs starts an allow-listed agent in its structured mode (rule 11); hermes_auth.rs opens the
         # system terminal for `hermes auth add` (rule 23); dsh_chat.rs runs DeepSeek Harness's headless profile (rule 11);
-        # folder_open.rs opens the system terminal in a session's folder with no command (rule 30).
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "setup.rs": 1})
+        # folder_open.rs opens the system terminal in a session's folder with no command (rule 30); peers.rs starts the
+        # person's own `ssh` with a fixed argv (rule 31).
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1})
 
+
+
+class CustomAgentsOnlyAfterTheCard(unittest.TestCase):
+    """Rule 11's custom-agent sentence: the one file in omher's folder, the checks on every read, a start with no shell
+    and nothing but the stored arguments, and the confirm commands as the file's only writers."""
+
+    def setUp(self) -> None:
+        text = (SHELL / "custom_agents.rs").read_text(encoding="utf-8")
+        # the code only: doc comments name what is refused (`cmd.exe`) and are not code
+        self.prod = "\n".join(l for l in text.split("#[cfg(test)]\nmod tests", 1)[0].splitlines() if not l.lstrip().startswith("//"))
+        self.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+        self.chat = (SHELL / "agent_chat.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
+
+    def fn(self, name: str) -> str:
+        return self.prod.split(f"fn {name}", 1)[1].split("\n}\n", 1)[0]
+
+    def test_the_file_is_one_json_file_in_omhers_own_folder(self) -> None:
+        self.assertIn('home.join(".omher").join("custom-agents.json")', self.fn("store_path"))
+        # no other path is read or written: one file, its temporary sibling, the folder
+        self.assertEqual(re.findall(r'"([^"]*\.json[^"]*)"', self.prod), ["custom-agents.json", "custom-agents.json.tmp"])
+        for banned in (".claude", ".codex", ".gemini", ".cursor", "config.toml", "settings.json", "auth", "token", "env::set_var"):
+            self.assertNotIn(banned, self.prod)
+
+    def test_every_entry_is_checked_on_every_read(self) -> None:
+        load = self.fn("load<")
+        self.assertIn("check(&c, os, &is_program)", load)
+        self.assertIn("out.broken.push(", load)
+        self.assertIn("broken: vec![Broken { id: String::new(), why: Why::File }], unreadable: true", load)
+        # the start reads the file again, checks it again, and only then resolves
+        self.assertIn("load_here().agents.into_iter().find(|c| c.id == id)", self.fn("lookup"))
+        self.assertIn("check(c, os, &is_program)", self.fn("launch<"))
+
+    def test_the_validation_patterns(self) -> None:
+        # ^[a-z0-9][a-z0-9-]{0,31}$ and never a built-in's (or Kilo Code's)
+        self.assertIn("(1..=32).contains(&b.len()) && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit()) && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')", self.fn("id_ok"))
+        self.assertIn('id == "kilo" || crate::sessions::AGENTS.iter().any(|a| a.id == id) || crate::acp_agents::entry(id).is_some()', self.fn("reserved"))
+        # a bare ^[A-Za-z0-9._-]{1,64}$ program name
+        self.assertIn("(1..=64).contains(&p.len()) && p.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))", self.fn("bare_ok"))
+        # each argument ^[A-Za-z0-9._=/:-]{1,64}$, at most eight
+        self.assertIn("(1..=64).contains(&a.len()) && a.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'=' | b'/' | b':' | b'-'))", self.fn("arg_ok"))
+        self.assertIn("pub const MAX_ARGS: usize = 8;", self.prod)
+        self.assertIn("if c.args.len() > MAX_ARGS || !c.args.iter().all(|a| arg_ok(a)) {", self.fn("check<"))
+        # an absolute path must be an executable file now; OpenCode and Kilo Code are refused by name
+        check = self.fn("check<")
+        self.assertIn("if !is_program(Path::new(&c.program)) {", check)
+        self.assertIn('"opencode" => return Err(Why::Opencode),', check)
+        self.assertIn('"kilo" | "kilocode" => return Err(Why::Kilo),', check)
+        meta = re.search(r"pub const SHELL_META: &\[char\] = &\[(.*?)\];", self.prod).group(1)
+        for c in ("`", "$", ";", "|", "&", "<", ">", "(", ")", '"', "\\'", "*", "?", "~", "%", "\\n"):
+            self.assertIn(f"'{c}'", meta)
+
+    def test_the_start_runs_the_program_and_the_stored_arguments_with_no_shell(self) -> None:
+        launch = self.fn("launch<")
+        self.assertIn("let mut argv = vec![path.into_os_string()];", launch)
+        self.assertIn("argv.extend(c.args.iter().map(OsString::from));", launch)
+        self.assertNotIn("argv_for", launch)  # no cmd.exe /c for a shim
+        self.assertIn('return Err(format!("{} cannot start without a shell", c.label));', launch)
+        names = self.fn("names")
+        self.assertIn('vec![format!("{program}.exe")]', names)
+        self.assertNotIn("cmd", names.replace("Os::Unix", ""))
+        # the bot drafts' refusal list names shells only to refuse them (pinned word for word in BotDraftsOnlyOpenTheCard)
+        code = re.sub(r"pub const INTERPRETERS: &\[&str\] = &\[.*?\];", "", self.prod, flags=re.S)
+        for banned in ("Command::new", "/bin/sh", "cmd.exe", "powershell", '"-c"', '"/c"', "spawn_command"):
+            self.assertNotIn(banned, code)
+        # the chat entry: the generic ACP adapter, argv from launch_here, the generic agents' env, no rule variable
+        start = self.chat.split("fn start_custom<F>", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("Box::new(Acp::new(crate::custom_agents::adapter_row(c), &cwd.to_string_lossy(), thread))", start)
+        self.assertIn("let (argv, path_env) = crate::custom_agents::launch_here(c, dirs)?;", start)
+        self.assertIn("self.spawn(argv, cwd, Some(path_env), account_env, adapter, sink)", start)
+        for banned in ("agent_rules", "env.push", "resume_args", ".arg("):
+            self.assertNotIn(banned, start)
+        self.assertIn("Some(r) if is_acp_session_id(r) => Some(r),", start)
+        self.assertIn("rules: None", self.fn("adapter_row"))
+        # reached only for an id that is not on the fixed list
+        entry = self.chat.split("pub fn start_agent", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("if agent(agent_id).is_none() {\n            if let Some(c) = crate::custom_agents::lookup(agent_id) {", entry)
+
+    def test_only_the_confirm_commands_write_the_file(self) -> None:
+        # one writer, one write, through no link
+        self.assertEqual(self.prod.count("std::fs::write("), 1)
+        self.assertEqual(self.prod.count("std::fs::rename("), 1)
+        for banned in ("File::create", "OpenOptions", "remove_file", "fs::copy"):
+            self.assertNotIn(banned, self.prod)
+        save = self.fn("save(")
+        self.assertIn("std::fs::write(&tmp", save)
+        self.assertIn("if path.is_symlink() {", save)
+        self.assertEqual(re.findall(r"\bsave\(home, ", self.prod), ["save(home, ", "save(home, "])
+        self.assertIn("save(home, raw)", self.fn("confirm_add<"))
+        self.assertIn("save(home, kept)", self.fn("confirm_remove("))
+        self.assertNotIn("save(", self.fn("draft<"))
+        self.assertNotIn("save(", self.fn("preview_here("))
+        # in the app: confirm_add only in custom_agent_confirm, confirm_remove only in custom_agent_remove
+        self.assertEqual(self.lib.count("custom_agents::confirm_add("), 1)
+        self.assertEqual(self.lib.count("custom_agents::confirm_remove("), 1)
+        confirm = self.lib.split("async fn custom_agent_confirm(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("custom_agents::confirm_add(&home, &entry, Os::current(), sessions::is_program_file)", confirm)
+        remove = self.lib.split("async fn custom_agent_remove(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("custom_agents::confirm_remove(&home, &id)", remove)
+        preview = self.lib.split("async fn custom_agent_preview(", 1)[1].split("\n}\n", 1)[0]
+        self.assertNotIn("confirm", preview)
+        # in the UI: customConfirm is called from the one confirm card's Add only, in exactly two places: the Add agent
+        # form (AgentsPage.tsx) and a bot draft's chip (AgentChip.tsx), both through AgentConfirmCard
+        page = (UI_SRC / "settings" / "agents" / "AgentsPage.tsx").read_text(encoding="utf-8")
+        chip = (UI_SRC / "chat" / "parts" / "AgentChip.tsx").read_text(encoding="utf-8")
+        callers = {p.relative_to(UI_SRC).as_posix(): p.read_text(encoding="utf-8").count("customConfirm(") for p in UI_SRC.rglob("*.ts*") if not p.name.endswith((".test.ts", ".test.tsx"))}
+        self.assertEqual({k: v for k, v in callers.items() if v and k != "sessions/host.ts"}, {"settings/agents/AgentsPage.tsx": 1, "chat/parts/AgentChip.tsx": 1})
+        for src in (page, chip):
+            add = src.split("const add = async () => {", 1)[1].split("\n  };\n", 1)[0]
+            self.assertIn("await getHost().customConfirm(card.entry);", add)
+            self.assertIn("onAdd={() => void add()} />", src)
+        self.assertIn('onClick={onAdd} data-testid="agent-confirm-add"', page)
+        self.assertEqual(chip.count("<AgentConfirmCard "), 1)
+        host = (UI_SRC / "sessions" / "host.ts").read_text(encoding="utf-8")
+        self.assertIn('await invoke("custom_agent_confirm", { entry });', host)
+
+
+
+class BotDraftsOnlyOpenTheCard(unittest.TestCase):
+    """Rule 11's bot sentence: a bot's `omher-agent` draft is read only from its own replies in its main chat or a
+    folder chat, becomes a chip that opens the same card, and is checked again by the shell, stricter than the form."""
+
+    def setUp(self) -> None:
+        self.draft = (UI_SRC / "chat" / "parts" / "agentDraft.ts").read_text(encoding="utf-8")
+        self.chip = (UI_SRC / "chat" / "parts" / "AgentChip.tsx").read_text(encoding="utf-8")
+        self.bubble = (UI_SRC / "chat" / "parts" / "Bubble.tsx").read_text(encoding="utf-8")
+        text = (SHELL / "custom_agents.rs").read_text(encoding="utf-8")
+        self.prod = text.split("#[cfg(test)]\nmod tests", 1)[0]
+        self.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+
+    def test_drafts_come_only_from_bot_replies_in_main_and_folder_chats(self) -> None:
+        self.assertIn('export const draftsAllowed = (chatKey: string): boolean => chatKey.startsWith("fold:") || !chatKey.includes(":");', self.draft)
+        self.assertIn("draftsAllowed(chatKey) &&", self.chip)
+        # the only reader is the bot bubble of a finished reply; no tool, activity, elsewhere or session view reads them
+        self.assertIn("{bot && !streaming && <AgentChips chatKey={bot} text={text} />}", self.bubble)
+        users = sorted(p.relative_to(UI_SRC).as_posix() for p in UI_SRC.rglob("*.tsx") if "<AgentChips" in p.read_text(encoding="utf-8"))
+        self.assertEqual(users, ["chat/parts/Bubble.tsx"])
+        self.assertLess(self.bubble.index('if (item.kind === "user")'), self.bubble.index("<AgentChips"))
+        for f in ("parseDrafts(", "AgentChips"):
+            readers = sorted(p.relative_to(UI_SRC).as_posix() for p in UI_SRC.rglob("*.ts*") if f in p.read_text(encoding="utf-8") and not p.name.endswith((".test.ts", ".test.tsx")))
+            self.assertTrue(set(readers) <= {"chat/parts/agentDraft.ts", "chat/parts/AgentChip.tsx", "chat/parts/Bubble.tsx"}, readers)
+
+    def test_the_chip_only_previews_and_the_shell_checks_it_again_stricter(self) -> None:
+        preview = self.chip.split("const preview = async () => {", 1)[1].split("\n  };\n", 1)[0]
+        self.assertIn("await getHost().customBotPreview(d.name, d.program, d.args, d.install);", preview)
+        self.assertNotIn("customConfirm", preview)
+        cmd = self.lib.split("async fn custom_agent_bot_preview(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("custom_agents::bot_preview_here(&label, &program, &args, &install)", cmd)
+        self.assertNotIn("confirm", cmd)
+        bot = self.prod.split("pub fn bot_draft<", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("if INTERPRETERS.contains(&base.as_str()) {", bot)
+        self.assertIn("return Err(Why::Builtin);", bot)
+        self.assertIn("draft_of(home, label, program, args.to_vec(), install, os, is_program)", bot)
+        self.assertNotIn("save(", self.prod.split("pub fn bot_preview_here(", 1)[1].split("\n}\n", 1)[0])
+        names = re.search(r"pub const INTERPRETERS: &\[&str\] = &\[(.*?)\];", self.prod, re.S).group(1)
+        want = "sh bash zsh fish dash ksh csh tcsh cmd powershell pwsh python python3 node deno bun ruby perl php osascript env sudo doas open xargs".split()
+        self.assertEqual(re.findall(r'"([a-z0-9]+)"', names), want)
+        ui = re.search(r"export const INTERPRETERS: readonly string\[\] = \[(.*?)\];", (UI_SRC / "sessions" / "custom.ts").read_text(encoding="utf-8"), re.S).group(1)
+        self.assertEqual(re.findall(r'"([a-z0-9]+)"', ui), want)
 
 class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
     """Rule 11: the Rust shell's allow-list, the commands that start a program, and the UI's list."""
@@ -843,23 +1021,43 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         self.prod = self.sessions.split("#[cfg(test)]\nmod tests", 1)[0]
         self.chat = (SHELL / "agent_chat.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
 
-    def test_rust_allow_list_is_the_eight_agents_and_each_id_is_its_program(self) -> None:
+    def test_rust_allow_list_is_the_built_ins_and_the_acp_list_and_each_id_is_its_program(self) -> None:
         block = re.search(r"pub const AGENTS: \[Agent; (\d+)\] = \[(.*?)\];", self.prod, re.S)
         self.assertIsNotNone(block)
         rows = re.findall(r'Agent \{ id: "([^"]+)", program: "([^"]+)", label: "[^"]+", mode: Mode::(\w+) \}', block.group(2))
-        self.assertEqual(int(block.group(1)), len(SESSION_AGENTS))
-        self.assertEqual([r[0] for r in rows], list(SESSION_AGENTS))
-        self.assertEqual([r[1] for r in rows], list(SESSION_AGENTS))
-        self.assertEqual(tuple(r[2] for r in rows), SESSION_MODES)
+        self.assertEqual(int(block.group(1)), len(BUILTIN_AGENTS))
+        self.assertEqual([r[0] for r in rows], list(BUILTIN_AGENTS))
+        self.assertEqual([r[1] for r in rows], list(BUILTIN_AGENTS))
+        self.assertEqual(tuple(r[2] for r in rows), BUILTIN_MODES)
+        # the generic ACP agents: one `generic(id, …)` row each, id = program (the constructor sets both), always a chat
+        acp = (SHELL / "acp_agents.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
+        lst = re.search(r"pub const ACP_LIST: \[AcpEntry; (\d+)\] = \[(.*?)\];", acp, re.S)
+        self.assertIsNotNone(lst)
+        generic = re.findall(r'generic\("([^"]+)", "[^"]+", &\["([^"]+)"\], ', lst.group(2))
+        self.assertEqual(int(lst.group(1)), len(ACP_LIST_ARGS))
+        self.assertEqual(tuple(generic), ACP_LIST_ARGS)
+        self.assertIn("agent: Agent { id, program: id, label, mode: Mode::Chat },", acp)
+        self.assertIn("acp: AcpAgent { id, label, login, skill_tool: None, rules: None },", acp)
+        # the allow-list look-up is exactly those two lists; Kilo Code is on neither
+        self.assertIn("AGENTS.iter().find(|a| a.id == id).or_else(|| acp_agents::entry(id).map(|e| &e.agent))", self.prod)
+        for src in (self.prod, acp, (SHELL / "acp_chat.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]):
+            self.assertNotIn('"kilo"', src)
+            self.assertNotIn("KILO_CONFIG_CONTENT", src)
         # the Hermes-only row (no `omh`) opens the same Hermes chat: `hermes` is never a session program
         self.assertNotIn('"hermes"', block.group(2))
         self.assertNotIn('program: "hermes"', self.prod)
 
     def test_ui_list_matches_the_rust_allow_list(self) -> None:
         ui = UI_AGENTS.read_text(encoding="utf-8")
-        rows = re.findall(r'\{ id: "([^"]+)", program: "\1", label: "[^"]+", mode: "(\w+)" \}', ui)
-        self.assertEqual(tuple(r[0] for r in rows), SESSION_AGENTS)
-        self.assertEqual(tuple(r[1].capitalize() for r in rows), SESSION_MODES)
+        rows = re.findall(r'\{ id: "([^"]+)", program: "\1", label: "[^"]+", mode: "(\w+)"(?:, main: true)? \}', ui)
+        self.assertEqual(tuple(r[0] for r in rows), BUILTIN_AGENTS)
+        self.assertEqual(tuple(r[1].capitalize() for r in rows), BUILTIN_MODES)
+        # the main tier is named once, on the first three; the generic ACP agents have no row in the UI (the shell
+        # sends them), and nothing in it names Kilo Code but the line a saved session of it shows
+        self.assertEqual(re.findall(r'\{ id: "([^"]+)"[^}]*main: true \}', ui), ["claude", "codex", "omo"])
+        for gid, _ in ACP_LIST_ARGS:
+            self.assertNotIn(f'"{gid}"', ui)
+        self.assertEqual(re.findall(r"\bkilo\b", ui), ["kilo"])
 
     def test_chat_arguments_are_fixed_in_the_allow_list(self) -> None:
         """The structured-mode argv per agent is part of the allow-list (rule 11) and nothing else adds one."""
@@ -869,8 +1067,9 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         chat = self.prod.split("pub fn chat_args", 1)[1].split("\n}\n", 1)[0]
         arms = re.findall(r'^\s+(.+?) => (&.+?\[\.\.\]),?$', chat, re.M)
         self.assertEqual(arms, [('"claude"', "&CLAUDE_CHAT_ARGS[..]"), ('"codex"', '&["app-server"][..]'),
-                                ('"pi" | "omp" | "omo"', '&["--mode", "rpc"][..]'), ('"opencode" | "kilo" | "kimi"', '&["acp"][..]'),
-                                ('"gemini" | "qwen" | "copilot" | "cline"', '&["--acp"][..]')])
+                                ('"pi" | "omp" | "omo"', '&["--mode", "rpc"][..]'), ('"opencode"', '&["acp"][..]')])
+        # a generic ACP agent's argument is its list row's, one of the two (pinned row by row above)
+        self.assertIn("if let Some(e) = acp_agents::entry(id) {\n        return Some(e.args);\n    }", chat)
         resume = self.prod.split("pub fn resume_args", 1)[1].split("\n}\n", 1)[0]
         # exactly two flags, each for named agents only; every other agent is refused
         self.assertEqual(re.findall(r'^\s+(.+?) => ("--[a-z-]+"|return Err)', resume, re.M),
@@ -924,18 +1123,18 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         self.assertIn("(1..=128).contains(&id.len())", acp)
         rows = re.search(r"pub const ACP_AGENTS: \[AcpAgent; (\d+)\] = \[(.*?)\];", acp, re.S)
         self.assertIsNotNone(rows)
-        self.assertEqual(re.findall(r'id: "([^"]+)"', rows.group(2)), ["opencode", "kilo", "gemini", "qwen", "kimi", "copilot", "cline"])
-        # OpenCode's and Kilo's one variable carries ask rules built from their own `agent list`: allow -> ask, deny
-        # stays deny; the other five rows add no variable
+        self.assertEqual(re.findall(r'id: "([^"]+)"', rows.group(2)), ["opencode"])
+        # OpenCode's one variable carries ask rules built from its own `agent list`: allow -> ask, deny stays deny;
+        # the generic rows add no variable (their constructor fixes `rules: None`)
         self.assertEqual(re.findall(r'rules: (Some\(RuleProbe \{.*?\}\)|None)', rows.group(2)),
-                         ['Some(RuleProbe { args: &["agent", "list"], var: "OPENCODE_CONFIG_CONTENT", build: opencode_ask, kept: opencode_kept })',
-                          'Some(RuleProbe { args: &["agent", "list"], var: "KILO_CONFIG_CONTENT", build: kilo_ask, kept: kilo_kept })',
-                          "None", "None", "None", "None", "None"])
+                         ['Some(RuleProbe { args: &["agent", "list"], var: "OPENCODE_CONFIG_CONTENT", build: opencode_ask, kept: opencode_kept })'])
         # each row's sign-in line is the agent's own command, run by the person; omher never sends `authenticate`
-        self.assertEqual(re.findall(r'login: "([^"]+)"', rows.group(2)),
-                         ["opencode auth login", "kilo auth login", "gemini", "qwen", "kimi login", "copilot login", "cline auth"])
+        self.assertEqual(re.findall(r'login: "([^"]+)"', rows.group(2)), ["opencode auth login"])
+        lst = (SHELL / "acp_agents.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
+        self.assertEqual(re.findall(r'generic\("[^"]+", "[^"]+", &\["[^"]+"\], "([^"]+)", ', lst),
+                         ["gemini", "qwen", "kimi login", "copilot login", "cline auth"])
         self.assertNotIn('"authenticate"', acp)
-        self.assertIn('const KILO_ASKED: [(&str, &str); 3] = [("bash", "bash"), ("edit", "edit"), ("write", "write")];', acp)
+        self.assertNotIn("KILO_ASKED", acp)
         self.assertNotIn("OPENCODE_PERMISSION", acp)
         self.assertIn('if a == "deny" { "deny" } else { "ask" }', acp)
         self.assertIn('const ASKED: [(&str, &str); 2] = [("bash", "bash *"), ("edit", "edit *")];', acp)
@@ -1024,12 +1223,12 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
     def test_only_the_bridge_the_session_pty_and_the_chat_spawner_start_processes(self) -> None:
         """`Command::new` only in bridge.rs (Hermes' Python), setup.rs (the one fixed installer,
         rule 12), once in agent_chat.rs (the chat spawner), in accounts.rs (rule 18's fixed status /
-        sign-in argv), in hermes_auth.rs (rule 23's terminal) and in folder_open.rs (rule 30's terminal in a session's
-        folder); `spawn_command` only in sessions.rs."""
+        sign-in argv), in hermes_auth.rs (rule 23's terminal), in folder_open.rs (rule 30's terminal in a session's
+        folder) and in peers.rs (rule 31's `ssh`); `spawn_command` only in sessions.rs."""
         for path in sorted(SHELL.glob("*.rs")):
             text = path.read_text(encoding="utf-8")
             prod = text.split("#[cfg(test)]", 1)[0]
-            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs"):
+            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs", "peers.rs"):
                 self.assertNotIn("Command::new", prod, path.name)
             if path.name != "sessions.rs":
                 self.assertNotIn("spawn_command", text, path.name)
@@ -1105,8 +1304,9 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
 
 
 class AddKeyOpensOnlyHermesAuthAdd(unittest.TestCase):
-    """Rule 23: "Add key" opens the system terminal with `hermes auth add <id> --type api-key`; omher never
-    sees the key."""
+    """Rule 23: "Add key" opens the system terminal with `hermes auth add <id> --type api-key`, the connect block with
+    `hermes auth add <id>` for openai-codex or nous only (no Claude sign-in); omher never sees the key or the login. Readiness
+    is Hermes' read-only `setup.runtime_check`."""
 
     HERMES_AUTH = SHELL / "hermes_auth.rs"
     UI = UI_SRC / "settings" / "providers"
@@ -1130,9 +1330,59 @@ class AddKeyOpensOnlyHermesAuthAdd(unittest.TestCase):
         # `open` checks the id before anything else, and every launcher argv comes from `launchers`
         open_fn = self.prod[self.prod.index("pub fn open("):]
         open_fn = open_fn[: open_fn.index("\n}\n")]
-        self.assertTrue(open_fn.split("{\n", 1)[1].lstrip().startswith("auth_args(provider)?;"))
+        self.assertTrue(open_fn.split("{\n", 1)[1].lstrip().startswith("form_args(form, provider)?;"))
         self.assertEqual(self.prod.count("Command::new("), 1)
-        self.assertIn("for (program, argv) in launchers(desk, &hermes, provider, file.as_deref())?", open_fn)
+        self.assertIn("for (program, argv) in launchers(desk, &hermes, form, provider, file.as_deref())?", open_fn)
+        # both argv forms come from form_args, nowhere else
+        form = self.prod[self.prod.index("pub fn form_args"):]
+        form = form[: form.index("\n}\n")]
+        self.assertIn("Form::ApiKey => auth_args(provider)", form)
+        self.assertIn("Form::SignIn => sign_in_args(provider)", form)
+        self.assertEqual(self.prod.count("auth_args(provider)"), 1)
+        self.assertEqual(self.prod.count("sign_in_args(provider)"), 1)
+
+    def test_the_sign_in_argv_is_fixed_to_two_ids(self) -> None:
+        self.assertIn('pub const SIGN_IN: [&str; 2] = ["openai-codex", "nous"];', self.prod)
+        args = self.prod[self.prod.index("pub fn sign_in_args"):]
+        args = args[: args.index("\n}\n")]
+        self.assertIn("if !SIGN_IN.contains(&provider)", args)
+        self.assertEqual(re.findall(r'"([^"]*)"\.into\(\)', args), ["not a sign-in provider", "auth", "add"])
+        self.assertIn('["auth".into(), "add".into(), provider.into()]', args)
+        sig = re.search(r"async fn open_hermes_sign_in\((.*?)\) -> ", self.lib, re.S)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig.group(1).strip(), "provider: String")
+        self.assertIn("hermes_auth::open(hermes_auth::Form::SignIn, &provider)", self.lib)
+        # the page's list is the shell's list, and its stand-in in a browser is e2e's only
+        ready = (UI_SRC / "chat" / "connect" / "ready.ts").read_text(encoding="utf-8")
+        self.assertIn('export const SIGN_IN = ["openai-codex", "nous"] as const;', ready)
+        # no Claude sign-in anywhere in the block: not in the list, no label, no string for it
+        block = (UI_SRC / "chat" / "connect" / "ConnectBlock.tsx").read_text(encoding="utf-8")
+        self.assertNotIn("anthropic", block)
+        self.assertNotIn("cn.claude", block)
+        for lang in ("en", "ko", "ja", "zh"):
+            self.assertNotIn('"cn.claude"', (UI_SRC / "i18n" / f"{lang}.ts").read_text(encoding="utf-8"))
+        host = (self.UI / "authHost.ts").read_text(encoding="utf-8")
+        self.assertIn('invoke("open_hermes_sign_in", { provider })', host)
+        for path in sorted((UI_SRC / "chat" / "connect").glob("*.ts*")):
+            text = path.read_text(encoding="utf-8")
+            for bad in ('type="password"', "api_key", "apiKey", "clipboard.read", "session_write", "localStorage", "<input"):
+                self.assertNotIn(bad, text, f"{path.name}: {bad}")
+
+    def test_readiness_is_one_read_only_gateway_call(self) -> None:
+        tree = ast.parse(BRIDGE.read_text(encoding="utf-8"))
+        owners: dict[str, set[str]] = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for c in ast.walk(fn):
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str) and c.value.startswith("setup."):
+                        owners.setdefault(c.value, set()).add(fn.name)
+        # Hermes' readiness probe only, from one op; never setup.status writes, onboarding or free-tier provisioning
+        self.assertEqual(owners, {"setup.runtime_check": {"op_bots_ready"}})
+        body = ast.unparse(next(f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "op_bots_ready"))
+        self.assertEqual(re.findall(r"_call\(conn, '([a-z._]+)'", body), ["setup.runtime_check"])
+        # the probe's provider is a checked id; which ids may open a terminal is the shell's SIGN_IN list
+        self.assertIn("PROVIDER_ID.fullmatch(provider)", body)
+        self.assertIn('PROVIDER_ID = re.compile(\'^[a-z0-9][a-z0-9_-]{0,40}$\')', ast.unparse(tree))
         self.assertNotIn("osascript", self.prod.replace("// ", ""))
 
     def test_no_pty_no_stdin_and_the_command_takes_only_a_provider(self) -> None:
@@ -1142,7 +1392,7 @@ class AddKeyOpensOnlyHermesAuthAdd(unittest.TestCase):
         sig = re.search(r"async fn open_hermes_auth\((.*?)\) -> ", self.lib, re.S)
         self.assertIsNotNone(sig)
         self.assertEqual(sig.group(1).strip(), "provider: String")
-        self.assertIn("hermes_auth::open(&provider)", self.lib)
+        self.assertIn("hermes_auth::open(hermes_auth::Form::ApiKey, &provider)", self.lib)
 
     def test_the_page_never_takes_a_key(self) -> None:
         for path in sorted(self.UI.glob("*.ts*")):
@@ -1521,3 +1771,100 @@ class PastConversationsAreOnlyRead(unittest.TestCase):
         folder = self.open.split("pub fn folder(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("!p.is_absolute()", folder)
         self.assertIn("real.is_dir()", folder)
+
+
+class SshPeersOnlyOverTheOwnSsh(unittest.TestCase):
+    """Rule 31: a Hermes on another computer is reached only through the person's own `ssh`, from one spawn site with a
+    fixed argv and key login only, after Connect on the confirm card; the remote script writes only ~/.omher/peer."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.peers = (SHELL / "peers.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        cls.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+        cls.bridge = BRIDGE.read_text(encoding="utf-8")
+        cls.doc = DOC.read_text(encoding="utf-8")
+        cls.ui = ROOT / "apps" / "omher" / "src" / "peers"
+
+    def test_one_ssh_spawn_site_with_the_fixed_options(self) -> None:
+        self.assertEqual(self.peers.count("Command::new("), 1)
+        self.assertIn('let mut cmd = Command::new("ssh");', self.peers)
+        self.assertEqual(self.peers.count("spawn_ssh("), 2)  # the fn and its one call in connect_once
+        self.assertIn("no_console_window(&mut cmd);", self.peers)
+        opts = re.search(r"pub const SSH_OPTIONS: \[&str; 5\] = \[(.*?)\];", self.peers, re.S).group(1)
+        self.assertEqual(re.findall(r'"([^"]+)"', opts),
+                         ["BatchMode=yes", "ConnectTimeout=10", "ExitOnForwardFailure=yes", "ServerAliveInterval=15", "ServerAliveCountMax=3"])
+        args = self.peers.split("pub fn ssh_args(", 1)[1].split("\n}\n", 1)[0]
+        # only fixed words, numbers made here, the checked host and port, and the script as one quoted word
+        self.assertEqual(re.findall(r'a\.push\("([^"]*)"', args), ["-o", "-T", "-L", "-p", "--"])
+        self.assertIn('format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}")', args)
+        self.assertIn('format!("sh -c {}", sh_quote(remote))', args)
+        self.assertIn("a.push(host.into());", args)
+        # the doc names the same argv
+        self.assertIn("`-o BatchMode=yes -o ConnectTimeout=10 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 "
+                      "-o ServerAliveCountMax=3 -T -L 127.0.0.1:<local>:127.0.0.1:<remote> [-p <port>] -- <host>`", self.doc)
+
+    def test_the_host_is_checked_and_no_command_comes_from_the_page(self) -> None:
+        host = self.peers.split("pub fn valid_host(", 1)[1].split("\n}\n", 1)[0]
+        # a leading `-` (an ssh option), a space or a shell character never passes: the first byte must be alphanumeric
+        # (or `_` in the user part) and the rest only letters, digits, `.`, `_`, `-`
+        self.assertIn("n[0].is_ascii_alphanumeric()", host)
+        self.assertIn("b[0].is_ascii_alphanumeric() || b[0] == b'_'", host)
+        self.assertIn("n.iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'))", host)
+        self.assertIn("connect(host: &str, port: Option<u16>, script: &[u8])", self.peers)
+        self.assertIn("if !valid_host(host) || !valid_port(port)", self.peers.split("pub fn connect(", 1)[1].split("\n}\n", 1)[0])
+        # the Tauri commands take a host, label, port or id, never a command, argv or script
+        for fn in ("peers_check", "peers_add", "peers_remove", "peers_retry", "peers_check_close"):
+            sig = re.search(rf"async fn {fn}\((.*?)\) -> ", self.lib, re.S).group(1)
+            params = [x.split(":", 1)[0].strip() for x in sig.split(",") if ":" in x]
+            self.assertTrue(set(params) <= {"shell", "host", "port", "label", "check", "id"}, (fn, params))
+        # the remote script's only inputs are hex and numbers made here
+        script = self.peers.split("pub fn remote_script(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("sha12: &str, size: usize, remote_port: u16, token: &str", script)
+        self.assertIn("token.bytes().all(|c| c.is_ascii_hexdigit())", script)
+
+    def test_key_login_only_and_no_secret_is_kept(self) -> None:
+        code = "\n".join(l for l in self.peers.splitlines() if not l.lstrip().startswith("//"))
+        for banned in ("password", "passphrase", "SSH_ASKPASS", "sshpass", "IdentityFile", "-i ", "StrictHostKeyChecking=no"):
+            self.assertNotIn(banned, code, banned)
+        # the token reaches the remote bridge through its environment, never its argv
+        self.assertIn("OMHER_BRIDGE_TOKEN={token} exec", self.peers)
+        self.assertNotIn("--token", self.peers.split("pub fn remote_script(", 1)[1].split("\n}\n", 1)[0])
+        self.assertIn('os.environ.get("OMHER_BRIDGE_TOKEN", "")', self.bridge)
+
+    def test_the_remote_writes_only_under_omher_peer(self) -> None:
+        script = self.peers.split("pub fn remote_script(", 1)[1].split("\n}\n", 1)[0]
+        discover = self.peers.split("pub const DISCOVER_PYTHON: &str = ", 1)[1].split('"#;', 1)[0]
+        self.assertIn('d="$HOME/.omher/peer"', script)
+        self.assertIn('f="$d/omher_bridge-{sha12}.py"', script)
+        for text in (script, discover):
+            # every write targets $t, $f or $d (all under ~/.omher/peer); the discovery only reads
+            self.assertEqual(re.findall(r'(?<![<>2])>\s*"?(\$\w+)', text), ["$t"] if text is script else [])
+        # the discovery reads Hermes' home and writes nothing: no redirect, mkdir, mv, cp, rm or tee
+        for verb in ("mkdir", "mv ", "cp ", "rm ", "tee ", "touch "):
+            self.assertNotIn(verb, discover, verb)
+        self.assertIn('mkdir -p "$d"', script)
+        self.assertIn('mv -f "$t" "$f"', script)
+        self.assertIn("--exit-on-stdin-eof", script)
+
+    def test_only_connect_writes_the_peer_list(self) -> None:
+        self.assertEqual(self.peers.count("write_peers(&self.home"), 2)  # add (Connect) and remove (Remove)
+        add = self.peers.split("pub fn add(self: &Arc<Self>", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("write_peers(&self.home", add)
+        check = self.peers.split("pub fn check(", 1)[1].split("\n    }\n", 1)[0]
+        self.assertNotIn("write_peers", check)
+        card = (self.ui / "AttachCard.tsx").read_text(encoding="utf-8")
+        self.assertEqual(card.count("getPeersHost().add("), 1)
+        self.assertIn("const connect = async", card)
+        chip = (self.ui / "PeerChip.tsx").read_text(encoding="utf-8")
+        self.assertNotIn("getPeersHost", chip)  # the chip only opens the card
+
+    def test_the_bridge_refuses_this_computers_ops_and_probes_read_only(self) -> None:
+        refused = self.bridge.split("PEER_REFUSED = {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(re.findall(r'^    "([a-z.]+)":', refused, re.M), ["folder.open", "folder.close", "bots.restart"])
+        forward = self.bridge.split("PEER_FORWARD = frozenset({", 1)[1].split("})", 1)[0]
+        for op in ("folder.open", "folder.close", "bots.restart", "accounts.list", "sessions.start", "usage.read"):
+            self.assertNotIn(f'"{op}"', forward, op)
+        probe = self.bridge.split("async def op_peers_probe(", 1)[1].split("\n    async def ", 1)[0]
+        self.assertEqual(sorted(set(re.findall(r'call\("([a-z.]+)"', probe))), ["bots.list", "hello"])
+        # the peer URL is the forwarded loopback port only
+        self.assertIn(r'PEER_URL = re.compile(r"ws://127\.0\.0\.1:[0-9]{1,5}/\?token=[0-9a-f]{32}")', self.bridge)

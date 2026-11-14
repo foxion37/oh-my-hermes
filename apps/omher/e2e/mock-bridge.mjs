@@ -16,7 +16,13 @@
 // mock.pluginLoad {load: "live"|"reload"|"restart"|"failed"} (what the next plugin install / reload says),
 // mock.botStatus {bot, status} (a bot goes offline or online),
 // mock.manual {bot, on} (a message to that bot, or to its folder chats, starts a turn that runs no script: the test
-// drives it with mock.emit).
+// drives it with mock.emit),
+// mock.peerBots {bots} (the bots the mock "other computer" lists to peers.probe / peers.attach),
+// SSH peers: peers.probe / peers.attach / peers.detach as the bridge's multiplexer answers them; an attached peer's
+// bots join bots.list as `<peer>:<name>` with a `host` field, and folder.open / bots.restart refuse them.
+// mock.ready {bot, ok, signIn?} (what `bots.ready` answers for a bot: ok false = Hermes says it cannot answer; with
+// signIn: the strict check for that provider passes, as after `hermes auth add <id>`, and its models show in
+// models.options).
 import http from "node:http";
 import crypto from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -532,6 +538,14 @@ const PROVIDERS = [
   },
   { slug: "ollama", name: "Ollama", models: ["llama-4-maverick", "my-local-model"] },
 ];
+// bots.ready: Hermes' sentence for a bot with no AI account, and each sign-in's models as
+// models.options lists them once signed in (the first is an Opus tier, so the cost-safe pick is the second).
+const NOT_CONNECTED = "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, or add a key with `hermes auth add <provider>`.";
+const SIGN_IN_MODELS = {
+  anthropic: { slug: "anthropic", name: "Anthropic", models: ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"] },
+  "openai-codex": { slug: "openai-codex", name: "ChatGPT or Codex Subscription", models: ["gpt-6-sol", "gpt-6-luna"] },
+  nous: { slug: "nous", name: "Nous Portal", models: ["anthropic/claude-fable-5.2", "moonshotai/kimi-k3"] },
+};
 // mock.providers {fixture: "long"}: the long catalogs of a real profile (Nous Portal ~60, OpenRouter ~60).
 const PROVIDERS_LONG = JSON.parse(readFileSync(new URL("./fixtures/providers-long.json", import.meta.url), "utf-8"));
 let providerFixture = "default";
@@ -542,7 +556,7 @@ const REASONING_LEVELS = ["none", "low", "medium", "high", "xhigh"];
 let calls = [];
 // What the bridge would hand Hermes' prompt.submit (the text after the reply-target block is added).
 let submits = [];
-let bots, history, models, turns, pending, idSeq, queues, avatars, folders, runs, cliRuns, cliTitles;
+let bots, history, models, turns, pending, idSeq, queues, avatars, folders, runs, cliRuns, cliTitles, peers, peerBots;
 // Automations and plugins: what the pages read and change (reset with everything else).
 let automations, plugins, inspected, offlineWrites;
 /** bots.restart: what the next restart answers per bot, which bot refused last (for "Restart anyway"). */
@@ -553,12 +567,15 @@ const gatewayBots = (gw) => Object.values(bots).filter((x) => gatewayOf(x.name) 
 const restartTimers = new Set();
 // Every ask event sent, by request id: chat.open sends the ones still pending again, as the bridge does.
 let asked;
+// Bots that have no Bot Chat yet (mock.noBotChat): chat.open with existing_only answers not_found for them.
+let noBotChat = new Set();
 /** Timers of subagents still reporting after their turn ended (cleared by mock.reset). */
 const subTimers = new Set();
 // Bots whose turns the test drives by hand (mock.manual).
 let manual;
 // Bots whose skills.list is empty (mock.noSkills).
 let noSkills;
+let notReady = new Map();
 
 // What each bot has done (bots.info): sessions per place, skills, routines.
 const INFO_SEED = {
@@ -711,15 +728,45 @@ function reset() {
   pluginLoadNext = null;
   pending = new Map();
   asked = new Map();
+  noBotChat = new Set();
   manual = new Set();
   noSkills = new Set();
+  notReady = new Map(); // bot -> the sign-in provider that now passes its strict check ("" = none)
   idSeq = 0;
   calls = [];
   submits = [];
+  peers = new Map(); // SSH peer id -> { label, host }
+  peerBots = null; // the mock other computer's bots (null: PEER_BOTS_SEED)
 }
 reset();
 
 const nextId = (p) => `${p}-${++idSeq}`;
+
+// ---- SSH peers (the bridge's multiplexer, BOUNDARY rule 31) ------------------------------------
+const PEER_URL = /^ws:\/\/127\.0\.0\.1:[0-9]{1,5}\/\?token=[0-9a-f]{32}$/;
+const PEER_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PEER_HOST = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,31}@)?[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/;
+const PEER_BOTS_SEED = [
+  { name: "mini", display_name: "mini", is_default: false, model: "Sonnet 5.5", provider: "claude-proxy", description: "builds and nightly checks", status: "online", running: false, reasoning: "medium" },
+];
+const remoteKeys = () => Object.keys(bots).filter((n) => n.includes(":"));
+function dropPeer(id) {
+  for (const k of remoteKeys()) if (k.startsWith(`${id}:`)) {
+    delete bots[k];
+    delete history[k];
+    delete models[k];
+  }
+  peers.delete(id);
+}
+const remoteRefusal = (b, op) => {
+  const label = b.host?.label ?? "that computer";
+  if (op === "bots.restart") return new OpError("remote_bot", `omher does not restart Hermes on another computer. Restart it on ${label} itself.`);
+  return new OpError("remote_bot", `Folder chats run in a folder on this computer; ${label}'s bots run on another one.`);
+};
+const PEER_HINT =
+  '[omher] To connect a Hermes on another computer to this app over SSH, reply with one fenced block ```omher-peer {"host": "<ssh config alias or user@host>", "label": "<short name>"}``` (optional "port"). omher shows a Connect over SSH card and connects only when the user presses Connect; it uses key login only. If you do not know the host, ask.';
+const peerAsk = (text) =>
+  !text.includes("omher-peer") && /(?<![A-Za-z])ssh(?![A-Za-z])|맥\s*미니|mac\s*mini|다른\s*컴퓨터|another\s+(computer|machine)/i.test(text) && /hermes|헤르메스|bot|봇|붙|연결|connect|attach|add/i.test(text);
 const publicBot = ({ reasoning, ...b }) => ({
   ...b,
   model: models[b.name].model,
@@ -917,8 +964,44 @@ const awayFor = (bot) =>
 const OPS = {
   hello: () => ({ bridge: "mock", version: "0.1.0", hermes: { home: "/mock/.hermes", version: "mock" } }),
   "bots.list": () => ({ bots: Object.values(bots).map(publicBot) }),
+  "peers.probe": (p) => {
+    if (typeof p.url !== "string" || !PEER_URL.test(p.url)) throw new OpError("bad_request", "url must be the forwarded loopback address");
+    return {
+      version: "0.2.8",
+      hermes: { home: "/Users/sionic/.hermes", version: "0.23.1" },
+      bots: (peerBots ?? PEER_BOTS_SEED).map(({ name, display_name, model, provider, status }) => ({ name, display_name, model, provider, status })),
+    };
+  },
+  "peers.attach": (p) => {
+    if (typeof p.peer !== "string" || !PEER_ID.test(p.peer)) throw new OpError("bad_request", "peer must be a peer id");
+    if (typeof p.label !== "string" || !p.label.trim() || p.label.length > 40) throw new OpError("bad_request", "label must be 1 to 40 characters");
+    if (typeof p.host !== "string" || !PEER_HOST.test(p.host)) throw new OpError("bad_request", "host must be an ssh alias or user@host");
+    if (typeof p.url !== "string" || !PEER_URL.test(p.url)) throw new OpError("bad_request", "url must be the forwarded loopback address");
+    dropPeer(p.peer);
+    peers.set(p.peer, { label: p.label.trim(), host: p.host });
+    const host = { kind: "ssh", peer: p.peer, label: p.label.trim(), host: p.host };
+    for (const r of peerBots ?? PEER_BOTS_SEED) {
+      const key = `${p.peer}:${r.name}`;
+      bots[key] = { ...r, name: key, host };
+      history[key] = [
+        { id: `seed-${key}-0`, role: "user", text: "Did the nightly build pass?", ts: BOOT - 3600 },
+        { id: `seed-${key}-1`, role: "assistant", text: "Yes. All 412 tests passed on the build box; the artifacts are in `dist/`.", ts: BOOT - 3540 },
+      ];
+      models[key] = { model: r.model, provider: r.provider, reasoning: r.reasoning };
+    }
+    setTimeout(() => broadcast({ event: "bots.update", bot: "" }), 0);
+    return { peer: p.peer, bots: remoteKeys().filter((k) => k.startsWith(`${p.peer}:`)).map((k) => publicBot(bots[k])) };
+  },
+  "peers.detach": (p) => {
+    if (typeof p.peer !== "string" || !PEER_ID.test(p.peer)) throw new OpError("bad_request", "peer must be a peer id");
+    dropPeer(p.peer);
+    setTimeout(() => broadcast({ event: "bots.update", bot: "" }), 0);
+    return {};
+  },
   "chat.open": (p) => {
     const b = needBot(p);
+    // existing_only: a bot outside the sidebar list asked for its waiting prompts; one with no Bot Chat makes none
+    if (p.existing_only === true && noBotChat.has(b.name)) throw new OpError("not_found", "this bot has no Bot Chat yet");
     const m = models[b.name];
     // asks still waiting on the person go out again after the reply (the bridge's replay)
     const waiting = [...pending.keys()].map((id) => asked.get(id)).filter((e) => e && e.bot === b.name && !e.session);
@@ -934,6 +1017,7 @@ const OPS = {
   },
   "folder.open": (p) => {
     const b = needBot(p);
+    if (b.host) throw remoteRefusal(b, "folder.open");
     const cwd = needStr(p, "cwd");
     if (!cwd.startsWith("/") && !/^[A-Za-z]:\\/.test(cwd)) throw new OpError("bad_request", "cwd must be an existing folder");
     const session = nextId("f");
@@ -967,6 +1051,7 @@ const OPS = {
         `${text.trimEnd()}\n\n[omher] Reply target: ${seed.target} (${kind} "${label}"). Post there only if the user asked; ` +
         `use your own messaging tool or \`hermes send --to ${seed.target}\`.`;
     }
+    if (p.reply_to === undefined && peerAsk(text)) submitted = `${text.trimEnd()}\n\n${PEER_HINT}`;
     submits.push({ bot: b.name, session_id: `main-${b.name}`, text: submitted });
     const input_id = nextId("input");
     if (p.session !== undefined) {
@@ -1264,8 +1349,23 @@ const OPS = {
     plugins[p.bot] = plugins[p.bot].filter((x) => x !== row);
     return { name: row.name };
   },
+  "bots.ready": (p) => {
+    const b = needBot(p);
+    if (p.provider !== undefined && !(typeof p.provider === "string" && /^[a-z0-9][a-z0-9_-]{0,40}$/.test(p.provider))) throw new OpError("bad_request", "provider must be a Hermes provider id");
+    if (!notReady.has(b.name)) return { ok: true, provider: models[b.name].provider, model: models[b.name].model, error: "" };
+    const signed = notReady.get(b.name);
+    // the strict check for the provider the person signed in to passes; the bot's own check passes once its chat
+    // runs on that provider (chat.set_model), as with `hermes auth add anthropic` and no model in config
+    if (p.provider) return signed === p.provider ? { ok: true, provider: p.provider, model: "z-ai/glm-5.3", error: "" } : { ok: false, provider: "", model: "", error: `No usable credentials found for ${p.provider}.` };
+    if (signed && models[b.name].provider === signed) return { ok: true, provider: signed, model: models[b.name].model, error: "" };
+    return { ok: false, provider: "", model: "", error: NOT_CONNECTED };
+  },
   "models.options": (p) => {
     const b = needBot(p);
+    const signed = notReady.get(b.name);
+    if (signed && SIGN_IN_MODELS[signed]) {
+      return { providers: [...PROVIDERS, SIGN_IN_MODELS[signed]], current: { ...models[b.name] }, reasoning_levels: REASONING_LEVELS };
+    }
     if (providerFixture === "long") {
       return { providers: PROVIDERS_LONG.providers, current: { ...models[b.name], ...PROVIDERS_LONG.current }, reasoning_levels: REASONING_LEVELS };
     }
@@ -1279,7 +1379,7 @@ const OPS = {
       return { model: p.model, provider: p.provider ?? models[b.name].provider, reasoning: models[b.name].reasoning };
     }
     const cur = models[b.name];
-    if (p.provider !== undefined && !PROVIDERS.some((x) => x.slug === p.provider)) throw new OpError("bad_request", `unknown provider ${p.provider}`);
+    if (p.provider !== undefined && !PROVIDERS.some((x) => x.slug === p.provider) && !(notReady.get(b.name) === p.provider && SIGN_IN_MODELS[p.provider])) throw new OpError("bad_request", `unknown provider ${p.provider}`);
     if (p.reasoning !== undefined && !REASONING_LEVELS.includes(p.reasoning)) throw new OpError("bad_request", `unknown reasoning level ${p.reasoning}`);
     if (p.model !== undefined && typeof p.model !== "string") throw new OpError("bad_request", "model must be a string");
     models[b.name] = {
@@ -1412,6 +1512,7 @@ const OPS = {
     return { gateway: gw, bots: gatewayBots(gw).map((x) => ({ name: x.name, display_name: x.display_name })) };
   },
   "bots.restart": (p) => {
+    if (needBotAny(p).host) throw remoteRefusal(needBotAny(p), "bots.restart");
     const b = needBotAny(p);
     const interrupt = p.interrupt === true;
     const gw = gatewayOf(b.name);
@@ -1488,6 +1589,12 @@ const OPS = {
     else manual.add(p.bot);
     return {};
   },
+  "mock.ready": (p) => {
+    const b = needBotAny(p);
+    if (p.ok) notReady.delete(b.name);
+    else notReady.set(b.name, typeof p.signIn === "string" ? p.signIn : "");
+    return {};
+  },
   "mock.noSkills": (p) => {
     noSkills.add(needStr(p, "bot"));
     return {};
@@ -1529,8 +1636,17 @@ const OPS = {
     return { run: DEMO_RUN };
   },
   // a bot whose main chat has no messages yet (first run)
+  "mock.peerBots": (p) => {
+    if (!Array.isArray(p.bots)) throw new OpError("bad_request", "bots must be an array");
+    peerBots = p.bots.map((b) => ({ ...PEER_BOTS_SEED[0], ...b }));
+    return {};
+  },
   "mock.clearHistory": (p) => {
     history[needBot(p).name] = [];
+    return {};
+  },
+  "mock.noBotChat": (p) => {
+    noBotChat.add(needBot(p).name);
     return {};
   },
   "mock.ask": (p) => {
@@ -1641,7 +1757,23 @@ function startTurn(bot, text, folder) {
   if (text.startsWith("/clarify")) return scriptClarify(bot);
   if (text.startsWith("/interview")) return schedule(bot, [[150, () => raiseInterview(bot, 0)]]);
   if (text.startsWith("/delegate")) return scriptDelegate(bot);
+  if (peerAsk(text)) return scriptPeer(bot, text);
   scriptNormal(bot, text);
+}
+
+// A bot asked to connect a Hermes on another computer answers with one `omher-peer` block (the bridge's note asked it
+// to); omher turns it into the Connect over SSH chip. Nothing connects here.
+function scriptPeer(bot, text) {
+  const ko = hangul.test(text);
+  const block = '```omher-peer\n{"host": "sionic@10.1.145.204", "label": "Mac mini"}\n```';
+  const answer = ko
+    ? `맥미니를 SSH로 붙일게요. 아래 버튼을 누르면 omher가 먼저 확인하고, 연결은 직접 눌러야 돼요.\n\n${block}`
+    : `I'll connect the Mac mini over SSH. Press the button below: omher checks it first, and nothing connects until you press Connect.\n\n${block}`;
+  schedule(bot, [
+    [80, () => ev(bot, "status", { text: "Looking at ~/.ssh/config…" })],
+    [300, () => say(bot, answer)],
+    [400, () => endTurn(bot, "done")],
+  ]);
 }
 
 function scriptNormal(bot, text) {

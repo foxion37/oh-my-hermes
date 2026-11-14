@@ -20,7 +20,7 @@ import { useNow } from "../elsewhere/useNow";
 import { t } from "../i18n";
 import { composing } from "../lib/ime";
 import { AgentMark } from "./AgentMark";
-import { agentDef, agentLabel, draftOpen, folderChoices, folderName, hermesOnly, INSTALL, menuParts, missingNote, rowModel, tildePath, type AgentId, type ChatLive, type RowContext, type RowMark, type SessionRec, type Unseen } from "./agents";
+import { agentDef, agentLabel, draftOpen, folderChoices, folderName, hermesOnly, installLine, menuFocus, menuOrder, menuParts, missingNote, rowModel, tildePath, type AgentId, type AgentInfo, type ChatLive, type RowContext, type RowMark, type SessionRec, type Unseen } from "./agents";
 import { getHost, type PastChat } from "./host";
 import { getSessions, useSessions } from "./sessions";
 import { pickTitle } from "./titles";
@@ -183,7 +183,7 @@ function useMoreBelow(el: RefObject<HTMLDivElement | null>, on: boolean, shape: 
   return more;
 }
 
-/** The SESSIONS + menu: the installed agents with their mark and name (the last one used on top), then one "More
+/** The SESSIONS + menu: the installed agents with their mark and name (by tier; the last one used has the focus), then one "More
  *  agents" row that opens the agents that are not installed, dimmed, each with its install line as text (picking one
  *  copies that line; omher installs nothing), then "Continue a conversation", there as the menu first opens. Picking
  *  an installed agent opens its New session chat at once (the folder is the chip under that chat's composer). Arrow
@@ -209,8 +209,13 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
   const placed = fit !== null;
   const list = useRef<HTMLDivElement>(null);
   const more = useMoreBelow(list, placed, unfold);
+  const first = parts ? menuFocus(parts.shown, ss.recent) : null;
   useEffect(() => {
-    if (placed) box.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus({ preventScroll: true });
+    if (!placed) return;
+    const row = first ? box.current?.querySelector<HTMLButtonElement>(`[data-testid="session-agent-${first}"]`) : null;
+    (row ?? box.current?.querySelector<HTMLButtonElement>("[role=menuitem]"))?.focus({ preventScroll: true });
+    // focus once, when the menu is placed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [placed]);
   const close = (why: "escape" | "outside" | "pick") => {
     onClose();
@@ -222,7 +227,7 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
   };
   // an agent that is not installed: its install line goes to the clipboard, as text (omher runs nothing)
   const copyInstall = (id: AgentId) => {
-    void navigator.clipboard?.writeText(INSTALL[id]).then(
+    void navigator.clipboard?.writeText(installLine(id)).then(
       () => setCopied(id),
       () => undefined,
     );
@@ -263,7 +268,7 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
           {missing && (
             // whole, on as many lines as it needs; it breaks between its words before it breaks inside one
             <span className="ss-as ss-install" data-testid={`session-install-${a.id}`}>
-              {INSTALL[a.id].split(" ").map((word, i) => (
+              {installLine(a.id).split(" ").map((word, i) => (
                 <Fragment key={i}>
                   {i > 0 && " "}
                   <span className="ss-tok">{word}</span>
@@ -477,8 +482,9 @@ function AddOmhLine({ onPick }: { onPick: () => void }) {
   );
 }
 
-/** The coding agents the New session tooltip names: the CLIs a person launches to code with (omh stays in the + menu). */
-const CODING: AgentId[] = ["claude", "codex", "omo", "dsh", "pi", "omp", "grok", "opencode", "kilo", "gemini", "qwen", "kimi", "copilot", "cline"];
+/** The coding agents the New session tooltip names: every agent the shell offers (in menu order) but oh-my-hermes,
+ *  which stays in the + menu. */
+const coding = (a: AgentInfo) => a.id !== "omh";
 
 /** The empty section: one "New session" row built like the sidebar's nav rows, opening the same + menu under it.
  *  What it does and the installed coding agents sit in its tooltip; nothing else shows, nothing is centred or boxed. */
@@ -489,8 +495,8 @@ function SessionStart() {
   useEffect(() => {
     if (ss.agents === null) void getSessions().loadAgents();
   }, [ss.agents]);
-  const names = (ss.agents ?? [])
-    .filter((a) => a.path && CODING.includes(a.id))
+  const names = menuOrder(ss.agents ?? [], [])
+    .filter((a) => a.path && coding(a))
     .map((a) => agentDef(a.id).label)
     .join(", ");
   const tip = names ? `${t("onb.sessionsHint")} ${names}` : t("onb.sessionsHint");
@@ -766,16 +772,16 @@ function StateSign({ mark }: { mark: RowMark }) {
   );
 }
 
-/** The row's view mark. The two must differ at a glance at 16 by 13: the terminal is a solid window with the prompt
- *  cut out of it, the chat an outlined bubble. The header's line icons at this size both read as "a small box". */
+/** The row's compact view mark. The terminal is a solid window with the prompt cut out of it, the chat an outlined
+ *  bubble; the original 16 by 13 geometry scales together inside a 12 by 10 box. */
 function ViewMark({ view }: { view: "chat" | "terminal" }) {
   return view === "terminal" ? (
-    <svg width="16" height="13" viewBox="0 0 16 13" aria-hidden="true">
+    <svg width="12" height="10" viewBox="0 0 16 13" aria-hidden="true">
       <rect width="16" height="13" rx="3" fill="currentColor" />
       <path d="M4 4 6.5 6.5 4 9M8.3 9.2h3.9" fill="none" stroke="var(--ss-cut)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ) : (
-    <svg width="16" height="13" viewBox="0 0 16 13" aria-hidden="true">
+    <svg width="12" height="10" viewBox="0 0 16 13" aria-hidden="true">
       <path
         d="M3 .8h10a2.2 2.2 0 0 1 2.2 2.2v4.2A2.2 2.2 0 0 1 13 9.4H7.6l-3.1 2.8V9.4H3A2.2 2.2 0 0 1 .8 7.2V3A2.2 2.2 0 0 1 3 .8Z"
         fill="none"
@@ -900,8 +906,8 @@ function Row({ rec, ctx, view, unseen, active, onClose }: { rec: SessionRec; ctx
       data-needs-you={m.needsYou ? "true" : undefined}
       data-mark={m.needsYou ? "needs" : (m.mark ?? undefined)}
       onContextMenu={(e) => {
-        e.preventDefault();
         if (editing) return;
+        e.preventDefault();
         // a draft has nothing to rename yet: right-click closes it, as before
         if (rec.status === "draft") return onClose();
         const side = wrap.current?.closest(".side")?.getBoundingClientRect();

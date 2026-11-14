@@ -6,22 +6,27 @@ import { selectAsks, selectSidebarBots, useStore } from "../state/store";
 import { slots } from "../features";
 import { CalendarIcon, GearIcon, GridIcon, IconButton, PlusIcon, SearchIcon } from "../ui";
 import { BotRow } from "./BotRow";
+import { AttachCard } from "../peers/AttachCard";
 import { Usage } from "./Usage";
 import { AccountsWatcher } from "../settings/accounts/useAccounts";
 import "../sessions/sessions.css";
 import { SessionList, SessionsHeader } from "../sessions/SessionsSection";
-import { HiddenList, NeedsStrip } from "./Needs";
+import { SessionBackgroundMenu } from "../sessions/SessionBackgroundMenu";
+import { NeedsStrip } from "./Needs";
 import { UpdateButton } from "./UpdateButton";
 import { FirstRunHint } from "../onboarding/FirstRun";
 import { OmhNotice } from "./OmhNotice";
 import { t } from "../i18n";
 
+const sessionBackground = (target: EventTarget) => target instanceof Element && !target.closest(".ss-row, button, input, textarea, select, a, [contenteditable], [role=menu], [role=menuitem]");
+
 export function Sidebar() {
   const s = useStore();
   const [q, setQ] = useState("");
+  const [sessionMenu, setSessionMenu] = useState<{ x: number; y: number; focus: HTMLElement } | null>(null);
+  const closeSessionMenu = useCallback(() => setSessionMenu(null), []);
   const [adding, setAdding] = useState(false);
-  const [showHidden, setShowHidden] = useState(false);
-  const closeHidden = useCallback(() => setShowHidden(false), []);
+  const [ssh, setSsh] = useState(false);
   const AddBot = slots.addBot;
   const needle = q.trim().toLowerCase();
   const listed = selectSidebarBots(s);
@@ -29,7 +34,6 @@ export function Sidebar() {
     ? listed.filter((b) => b.display_name.toLowerCase().includes(needle) || b.name.toLowerCase().includes(needle))
     : listed;
   const asks = selectAsks(s);
-  const hiddenCount = s.ui.hidden.filter((n) => s.bots.some((b) => b.name === n)).length;
   const inSettings = s.ui.view === "settings";
   const automations = s.automations?.length ?? 0;
   const inChat = s.ui.view === "chat";
@@ -46,7 +50,8 @@ export function Sidebar() {
           <IconButton label={t("nav.addBot")} onClick={() => AddBot && setAdding((v) => !v)} aria-expanded={adding} disabled={!AddBot}>
             <PlusIcon />
           </IconButton>
-          {AddBot && adding && <AddBot onClose={() => setAdding(false)} />}
+          {AddBot && adding && <AddBot onClose={() => setAdding(false)} onSsh={() => setSsh(true)} />}
+          {ssh && <AttachCard seed={{}} onClose={() => setSsh(false)} />}
         </div>
       </div>
       <label className="search">
@@ -83,25 +88,35 @@ export function Sidebar() {
                 onEdit: () => s.openSettings(`bot:${b.name}`),
                 onRestart: () => void getRestarts().press(b.name),
                 offline: b.status === "offline",
-                onHide: () => s.hideBot(b.name, true),
-                onShowHidden: hiddenCount ? () => setShowHidden(true) : undefined,
+                onRemove: listed.length > 1 ? () => s.listBot(b.name, false) : undefined,
               }}
             />
             );
           })}
           {needle && bots.length === 0 && <div className="bot-empty">{t("side.noBot", { q: q.trim() })}</div>}
-          {!needle && bots.length === 0 && hiddenCount > 0 && (
-            <button type="button" className="bot-empty bot-unhide" onClick={() => setShowHidden(true)}>
-              {t("side.showHidden", { n: hiddenCount })}
-            </button>
-          )}
           {!needle && listed.length === 0 && <FirstRunHint text={t("onb.botsHint")} testId="onb-hint-bots" />}
-          {showHidden && hiddenCount > 0 && <HiddenList onClose={closeHidden} />}
         </nav>
       </section>
-      <section className="side-sec" data-testid="side-sessions">
+      <section
+        className="side-sec"
+        data-testid="side-sessions"
+        tabIndex={-1}
+        onPointerDown={(e) => {
+          // Keep the previous focus available for Escape, before the right press can blur it.
+          if (e.button === 2 && sessionBackground(e.target)) e.preventDefault();
+        }}
+        onContextMenu={(e) => {
+          // Rows own their menu; controls and text fields keep their native context menu.
+          if (!sessionBackground(e.target)) return;
+          e.preventDefault();
+          const focus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : e.currentTarget;
+          const box = e.currentTarget.getBoundingClientRect();
+          setSessionMenu({ x: e.clientX || box.left + 8, y: e.clientY || box.top + 8, focus });
+        }}
+      >
         <SessionsHeader />
         <SessionList needle={needle} query={q.trim()} />
+        {sessionMenu && <SessionBackgroundMenu at={sessionMenu} onClose={closeSessionMenu} />}
       </section>
       <div className="side-foot">
         <button
