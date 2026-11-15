@@ -4,14 +4,43 @@ All notable changes will be documented here.
 
 ## Unreleased
 
-- **omher connects a Hermes on another computer over SSH.** The sidebar + has "Connect over SSH": pick a host from
-  `~/.ssh/config` (or type `user@host`), press Check, and a card shows the exact `ssh` command omher will run, the
-  Hermes and Python found there and the bots that computer has; nothing is saved until Connect. Its bots join the
-  list marked "SSH · <name>" (the host in the tooltip) in the sidebar, the chat header and Settings, with the link's
-  state when it is reconnecting or failed. Asking a bot ("connect the Hermes on my Mac mini") makes it answer with a
-  draft that shows as a "Connect over SSH" chip under its reply, which opens the same card. omher uses your own `ssh`
-  with key login only and never asks for a password; on the other computer it writes only `~/.omher/peer/`. Settings
-  › Remote machines lists them, with Remove.
+- **omher: a message you send while the bot is answering waits behind a ↵ mark, and you choose what it does.** It
+  shows as a muted bubble with "Waiting" and goes out on its own after the turn, one per turn, in order, through
+  Hermes' own queue. Click the ↵ for Send now (stops the answer once, this message goes next), Steer (adds it to the
+  running answer through Hermes' `session.steer`, without stopping it), Edit (back into the box) or Delete. A steer
+  whose outcome Hermes could not confirm is never sent twice: the bubble says it might already be in the answer and
+  offers Send or Delete. Waiting messages survive a reload, returning to the box as a draft. SESSIONS chats get the
+  same menu; Steer works for Codex, Claude Code, pi, oh-my-pi and OmO and is off, with the reason, for the others.
+
+- **A bot can watch a Slack or Discord channel and tell you first.** Ask it in words ("watch #og and tell me first
+  when someone reports an outage"); it confirms where, what, how often (every 5 minutes by default) and where it
+  reports in one line, then sets up a Hermes cron job with a small collector that reads only new posts and wakes no
+  model when there are none. A match reaches you in omher even for a bot you never opened: one "Watch · <name>" line,
+  a notification, an unread and the Dock badge; alerts that piled up while omher was closed become one summary, and a
+  run that found nothing leaves no trace. The alert only reports what happened with a link, never an action taken from
+  the post. Automations lists each watch (where, what, interval, last check, last alert, and "Can't read this
+  channel" when the bot lost access) with Pause, Resume and Delete, and "+ New watch" writes the request for you.
+
+- **An OMH TUI reply no longer hangs on a rail.** The `⚚ Hermes · <model>` header starts at the left edge and the
+  reply's text sits two cells in, with no `┃` beside it, so a reply reads apart from your prompts and the tool calls,
+  which keep their rails. The two cells the bar took go to the reply's text, and a copy still leaves the margin out.
+- **An OMH TUI approval opens on allow once, not deny.** Enter alone now allows that one command; ↑ then Enter, `d`,
+  `n`, Esc or Ctrl+C still deny and stop the running turn. Keys typed for the composer as the approval appears still
+  land nowhere, since every question ignores keys for a moment after it opens, and a request that does not offer
+  allow once still opens on deny.
+- **A confirmed paired run now compares Hermes alone with Hermes plus OMH for real.** `omh coding paired-run dispatch
+  --confirm-dispatch` prepares one disposable Hermes home per arm: the variant gets the packaged OMH plugin and exactly
+  its frozen `exposed_skills`, the baseline neither, and both run the same `file,skills` flags. A gateway the harness
+  starts and stops serves each home, and an untimed warm-up keeps first-start work out of every cell's seconds. The
+  dispatcher signs the arm setup it reads from disk into each receipt, and fan-in refuses a cell whose setup
+  contradicts its arm. New `--provider-base-url`, `--provider-api-mode` and `--provider-key-env` declare a custom
+  provider whose key arrives only by environment. Every other Hermes child keeps safe mode.
+- **omher: Plans › Dependencies is one row per task, not one per edge.** Each row is the task with its status, and
+  under it what it waits for, each with that task's own status. An edge another path already implies folds into
+  "+N further up" (a repair edge never folds), so a plan of 8 tasks and 15 edges reads as 6 rows, not 15. Hovering
+  a row lights its box in the drawing above; clicking it opens the node. The heading counts the rows.
+
+## 4.0.8 - 2026-11-15
 
 - **The OMH TUI shows a compression as one gauge row, and a prompt typed meanwhile goes on by itself.** `/compact`
   (or `/compress`) no longer prints the long "Compressing: Hermes summarizes the older turns…" notice above a second
@@ -33,12 +62,6 @@ All notable changes will be documented here.
   and rxvt, raised a notification (OSC 9 or 777) even with the window focused, where the person already sees it.
   Once the terminal has reported focus and has it, only the bell rings; with focus gone, or from a terminal that
   never reports it, both go as before. `OMH_TUI_BELL=0` still keeps everything quiet.
-- **The mouse never opens the OMH TUI's history view.** A drag that started
-  on a row the OMH TUI did not print (the shell's output above the session,
-  the rows from before a Ctrl+Z) still opened the full-screen transcript
-  view, the last mouse path that did after the wheel stopped opening it. It
-  now selects nothing and opens nothing; only Ctrl+O opens the view.
-
 - **A resumed session no longer shows Hermes' own turns as your prompts.**
   When `omh --resume` or `/resume` redrew a session, every user-role row in
   Hermes' history was drawn as a `❯` prompt, including the ones Hermes wrote
@@ -65,14 +88,6 @@ All notable changes will be documented here.
   the names the OMH TUI launch sets for its own frontend, on both the
   `hermes --tui` and plain `hermes` paths; `OMH_HOME` and the chosen
   `HERMES_HOME` still reach Hermes.
-
-- **Scrolling up in the OMH TUI scrolls.** Since the main screen took the
-  mouse so a drag copies clean, the wheel up opened the full-screen
-  transcript view instead of scrolling, a pager that could hold as little as
-  one notice. The wheel up now hands the mouse to the terminal, which scrolls
-  its own scrollback as in any shell; the next key or paste takes it back, so
-  a drag copies without the rail again. Ctrl+O still opens the transcript
-  view.
 
 - **Bare `/model` in the OMH TUI lists the models you last switched to first.**
   Each switch Hermes confirmed puts the model and provider Hermes confirmed
@@ -181,7 +196,10 @@ All notable changes will be documented here.
   into the line they were written as, a space where the wrap dropped one,
   nothing inside a long word or path, code exactly as it is. A long command
   or path pastes as the one line it is; a line break the text had stays.
-  The wheel opens the transcript view as it did with `OMH_TUI_MOUSE=1`;
+  The wheel up scrolls the terminal's own scrollback, as in any shell: its
+  first notch hands the mouse to the terminal, and the next key or paste takes
+  it back. A drag that starts on a row the OMH TUI did not print selects
+  nothing, and the mouse never opens the transcript view; only Ctrl+O does.
   `OMH_TUI_MOUSE=0` gives the wheel and native selection back to the
   terminal.
 
@@ -234,30 +252,6 @@ All notable changes will be documented here.
   means unknown, never empty, none or equal. The idea of mining re-fixed commits
   comes from `yetone/magpie` (MIT), concept only, reimplemented here.
 
-- **omher's SESSIONS menu lists its agents in two tiers, and Kilo Code is gone.**
-  Claude Code, Codex and OmO, the main agents with their own adapters, come
-  first in the + menu (installed agents still before the rest), then the
-  other built-ins, then the generic ACP agents. Gemini CLI, Qwen Code, Kimi
-  Code, Copilot CLI and Cline now come from one list in the shell (program,
-  `acp` or `--acp`, sign-in and install lines, mark) that the agent look-up
-  hands to the UI, and behave as in 0.2.8: the same install lines, signed-out
-  line, Open in Terminal and Restart. Kilo Code is no longer offered or
-  startable; OpenCode and its rule check stay. A Kilo Code session saved
-  before this comes back ended with its chat and one line, "Kilo Code is no
-  longer offered in omher", and no Restart.
-- **Add your own ACP agent in omher, after a confirm card.** Settings › Agents
-  lists the agents SESSIONS offers with their tier and whether each is
-  installed, then yours. Add agent asks for a name, the program and its ACP
-  arguments; Save shows the exact command omher will run, and nothing is
-  saved until you press Add. It then opens from the SESSIONS + menu as a
-  session chat on the same ACP adapter, with no shell and no rule rewriting.
-  Entries live in `~/.omher/custom-agents.json` and are checked on every read.
-- **A bot can draft an ACP agent for you in omher; you still confirm it.** An
-  ```` ```omher-agent ```` block in a bot's reply (name, program, args,
-  install) gets an "Add agent" chip that opens the same confirm card, with
-  "Proposed by <bot>"; nothing is saved until Add. A shell or interpreter as
-  the program is refused for bot drafts. "Ask the bot" on Settings › Agents
-  puts the request in the bot's message box without sending it.
 - **Claude Fable 5.2 now leads the `visual-engineering` chain.** Frontend and
   visual lanes routed through Hermes try Fable 5.2 first, then Claude Opus
   5.5, Gemini 4 Argon and Kimi K3.1 Pro, all at `high` (before, Opus 5.5 came
@@ -306,6 +300,40 @@ All notable changes will be documented here.
   refused; a plain-HTTP ask never goes through `HTTP_PROXY`, so the key is not
   sent in clear to a proxy; and `typesafe_model` never applies to TypeSafe's
   own host however it is spelled. Thanks @brentkearney. (#2716)
+- **omher 0.2.10.** Bots on another computer join over SSH, the sidebar starts with one bot and adds the others from
+  +, and you can add your own ACP coding agent to SESSIONS, by hand or from a bot's draft.
+  - **Connect a Hermes on another computer over SSH.** The sidebar + has "Connect over SSH": pick a host from
+    `~/.ssh/config` (or type `user@host`), press Check, and a card shows the exact `ssh` command, the Hermes found
+    there and its bots; nothing is saved until Connect. Those bots join the list marked "SSH · <name>" (the host in
+    the tooltip), with the link's state when it reconnects or fails. Asking a bot to connect one makes it answer
+    with a "Connect over SSH" chip that opens the same card. omher uses your own `ssh` with key login only, writes
+    only `~/.omher/peer/` on the other computer, and Settings › Remote machines removes one. (#2881)
+  - **A bot's SSH or agent draft shows as its chip only, and the SSH marker is readable.** The raw JSON block (with
+    its `user@host`) no longer sits in the reply above the chip; the `SSH · <name>` marker is 11px, keeps the bot's
+    name whole and ends a long computer name in an ellipsis. (#2889)
+  - **omher starts with one bot; the others join from + in one click.** A new install starts with the default bot,
+    an existing one with the bot last open (plus pinned ones). `+` is "Add a bot", listing the profiles not in the
+    sidebar yet; right-click "Remove from list" keeps the profile. Settings › All bots still shows every profile. A
+    bot with no AI account is no longer offered a Claude sign-in (it needs Claude Max extra-usage credits); ChatGPT /
+    Codex, Nous Portal and API key… stay. (#2880)
+  - **Add your own ACP agent, after a confirm card.** Settings › Agents lists SESSIONS' agents and yours; Add agent
+    takes a name, a program and its ACP arguments, shows the exact command, and saves only on Add
+    (`~/.omher/custom-agents.json`). A bot can draft one with an `omher-agent` block that opens the same card with
+    "Proposed by <bot>"; a shell or interpreter is refused for bot drafts. The SESSIONS + menu lists Claude Code,
+    Codex and OmO first, then the other built-ins, then generic ACP agents. Kilo Code is no longer offered; a saved
+    Kilo Code session comes back ended with one line saying so. (#2876)
+  - **The model picker completes a switch Hermes asks to confirm** (large context, cost or data policy): the pick is
+    the confirmation, and the picker shows the chat's live model. Reported and first fixed by @Pluronymous-ODK in
+    #2883 and #2886. (#2887)
+  - **Plugin cards have a Details button** that opens the plugin sheet without installing and shows the whole
+    description. Reported and first fixed by @soares-daniel in #2833. (#2887)
+  - **omher on Windows finds Hermes' Python through the package-manager launcher** (`hermes.exe` or `hermes.cmd`, read
+    without running it), so a PM or source install no longer reads as "Hermes Agent isn't on this computer". Reported
+    by @MarinWasAsleep in #2885. (#2887)
+  - **⌘T opens the New session picker on macOS**, the same menu as ⌘N; Settings › Keyboard lists both. On Windows
+    and Linux only Ctrl+N opens it (Ctrl+T stays the program's). Both keys work with a non-Latin layout active.
+    (#2890)
+
 - **omher 0.2.9.** A new bot without an AI account signs in from its own chat, the + in the message box has one
   way to add files and the bot's plugins beside it, and an empty part of the Sessions list starts a new session.
   - **A new bot that cannot answer yet says so and signs in from its chat.** When Hermes' readiness check says a
@@ -677,16 +705,15 @@ All notable changes will be documented here.
 - **omher updates itself.** When a new omher release is out, an "Update to
   0.1.x" button appears at the bottom left of the sidebar; one click
   downloads it, checks its signature and restarts omher on the new version.
-  The app looks once at launch and every 6 hours. People on omher 0.1.1 or
+  The app checks at launch and again while it runs. People on omher 0.1.1 or
   earlier have no button yet: install the next version once from the
   Releases page (or the `omher@beta` one-liner), and every release after
   that arrives through the button.
 
-- **The OMH TUI queues what you send during a turn, commands too.** Enter
-  during a turn now always waits for the turn's end, whatever Hermes'
-  `display.busy_input_mode` says, so a config set to `interrupt` no longer
-  stops the turn and the `ctrl+enter to send now · ↑ to edit` row shows
-  under a queued prompt. A slash command typed during a turn waits in the same
+- **The OMH TUI queues commands sent during a turn, and Enter never interrupts
+  it.** What Enter does during a turn no longer depends on Hermes'
+  `display.busy_input_mode`, so a config set to `interrupt` no longer stops the
+  turn. A slash command typed during a turn waits in the prompt
   queue and runs in order when the turn ends (a prompt after a `/compress`
   goes once Hermes has answered it); only `/stop`, `/steer`, `/queue`, `/btw`,
   `/bg`, `/gateway`, `/quit` and the commands about this terminal run at once.
@@ -706,7 +733,12 @@ All notable changes will be documented here.
   #2709, #2710)
 - **Claude Fable 5.2 takes every Claude Fable 5.1 slot, and heads
   `ultrabrain`** (owner decision, 2026-11-10). The `ultrabrain` chain is now
-  Claude Fable 5.2, GPT-6 Astra, then Claude Opus 5.5, all at `xhigh`. Fable
+  Claude Fable 5.2, GPT-6 Astra, then Claude Opus 5.5, all at `xhigh`; it was
+  GPT-6 Astra alone, so a user without OpenAI access fell straight back to the
+  parent model. A child on Fable 5.2 at `xhigh` is labelled `ultrabrain`, and
+  one on GPT-6 Astra at `xhigh` is labelled `forensics` when no route record
+  names its lane, unless the machine's recorded providers put GPT-6 Astra
+  first in `ultrabrain`. Fable
   5.2 also replaces Fable 5.1 in `architect`, `visual-engineering`,
   `artistry`, `capable`, the Hermes `main` suggestion, and the Claude Code
   chain (`claude-opus-5-5` -> `claude-fable-5-2` -> `opus`), each at the effort
@@ -726,7 +758,7 @@ All notable changes will be documented here.
   (and the PowerShell script-block form with the same argument) installs Hermes with its official
   installer when it is missing, installs or upgrades OMH, runs `omh setup` when OMH or Hermes is new on
   the machine, then installs omher from the newest `omher-v*` release (dmg on macOS, silent per-user
-  installer on Windows; Linux skips the app with a note). The plain one-liner is unchanged. An omher
+  installer on Windows, the AppImage on Linux). The plain one-liner is unchanged. An omher
   installed first offers the same install, minus the app, on its first launch when Hermes is missing,
   and streams the installer's output on that screen. The README shows the one-liner and a screenshot.
   A failed download or install is reported as a failure, on the app's setup screen too (it used to
@@ -744,17 +776,6 @@ All notable changes will be documented here.
   dispatched reviewer still returns in full; release-cut says "every file
   that carries the version". No schema, tool contract or record field
   changes, and routing is unchanged.
-
-- **The `ultrabrain` chain is Claude Fable 5.1, GPT-6 Astra, then Claude
-  Opus 5.5, all at `xhigh`** (owner decision, 2026-11-09). It was GPT-6 Astra
-  alone, so a user without OpenAI access fell straight back to the parent
-  model. Fable 5.1 heading this one category does not change the Opus 5.5
-  before Fable 5.1 order anywhere else. A child on Fable 5.1 at `xhigh` is
-  now labelled `ultrabrain` (it was `architect`), and one on GPT-6 Astra at
-  `xhigh` is labelled `forensics` (it was `ultrabrain`) when no route record
-  names its lane, unless the machine's recorded providers put GPT-6 Astra
-  first in `ultrabrain`: the label follows the chains as shaped by those
-  providers. Pricing is unchanged: no model was added.
 
 - **Planning work runs on `ultrabrain`.** The `brain` role chain for Codex,
   Claude Code and a category-maestro table now heads on `ultrabrain` and
@@ -920,32 +941,11 @@ All notable changes will be documented here.
   a page in Playwright at 390x844 with touch and a mobile user agent and
   prints `omh_phone_check/v1` JSON: horizontal overflow, the first data and
   action y, touch targets under 44 px, inputs under 16 px and console
-  errors. OMH never runs it; when no browser is available the measurement
+  errors, measuring overflow from the page's start side, so a right-to-left
+  or vertical page is measured on the side it overflows (Chromium only).
+  OMH never runs it; when no browser is available the measurement
   is `not_observed`. `visual-qa` records in the capture manifest whether
   emulation was on.
-
-- **`phone_check.py` measures horizontal overflow from the page's start
-  side and survives named HTML tree links.** On a page whose `<body>` is
-  `direction: rtl`, or in a `-rl` vertical writing mode, the overflowing
-  side is the left. The script reads that start side from `<body>`, writing
-  mode before direction, takes overflow from the scrolling element (with
-  the root as the fallback when none exists), and lists elements left of
-  document x 0 under `elements_past_right_edge`, each with `left`.
-  `first_action_y` deliberately keeps the earlier geometric edge test on
-  both start sides: it neither adds a link in the left overflow nor predicts
-  whether a tap activates one. A hit-test addition was withdrawn after it
-  counted links whose iframe, object or embed took the event, and controls
-  changed by `:hover` / `:active` when touched. The existing misses remain,
-  including a control wholly in the left overflow or one a container clips.
-  The start side, root, body, scrolling element and every tree-walk step
-  use interface-prototype reads, so named forms or controls cannot replace
-  those values or loop a walk through `parentElement` or `offsetParent`.
-  A left-start page keeps its prior output except where these named tree
-  links formerly hung the script, misplaced a control under a fixed ancestor,
-  or corrupted a listed path. Measurement sends no tap, scroll or focus.
-  Page scripts can still corrupt other measurement APIs; the toolkit README
-  describes the omitted or misplaced controls this can produce. Measured in
-  Chromium only.
 
 - **frontend names the layout before it builds a new page, and reviews
   what the page says about itself.** A new `references/editorial-layout.md`
@@ -1074,16 +1074,6 @@ All notable changes will be documented here.
   are listed under the cards, wrapped between two keys, as Claude Code lists its own. Ctrl+R turns the search box
   into the title field and Ctrl+D asks on the card's facts row, as before. Closing it gives every row back to the
   transcript, with no band of blank rows left above the composer. On a terminal too short for two cards and the keys, or under 30 columns, it stays the one-row list.
-- **omher starts with one bot; the other bots on this computer join from + in one click.** The sidebar no longer
-  lists every Hermes profile. A new install starts with the default bot alone; someone who already used omher starts
-  with the bot they last had open (plus any they had pinned). `+` is now "Add a bot": it lists the profiles that are
-  not in the sidebar yet, each with one Add that brings the bot in, connects it and opens its chat. Right-click
-  "Hide from sidebar" is now "Remove from list": the profile stays and shows under `+` again, and the last bot in the
-  list cannot be removed. Settings › All bots still shows every profile, each marked "In list" or with "Add to list".
-  An approval or question from a bot outside the list still shows in Needs you, and opening it adds that bot. The
-  connect block for a bot with no AI account no longer offers a Claude sign-in: Hermes' Claude sign-in works only on
-  Claude Max with purchased extra-usage credits, so most people who picked it hit "out of extra usage". ChatGPT /
-  Codex, Nous Portal and API key… stay; an Anthropic key goes in through API key….
 - **The OMH TUI's `✳ Waiting… (… · terminal)` row shows while a `notify=true` background process runs.** Hermes
   writes its process record at the spawn, before it arms the completion notice, and does not rewrite it until the
   process exits, so the record said nobody would be told for the whole run. The TUI read it that way: no waiting
@@ -1107,6 +1097,28 @@ All notable changes will be documented here.
   unmeasured, never zero, and the share of timed tasks the variant won carries its denominator. `v1` decisions and
   store history still parse (timing reads as unmeasured), and a `v1` decision can be superseded by `v2`. No speed
   figure has been measured with it yet.
+- **Running OMH from your home directory no longer stalls every later tool call.** The consistency check's file
+  index never starts a walk at the home directory or above it (`/`, `/Users`): from a background gateway such a walk
+  reaches macOS privacy-protected folders, where one `open()` can wait forever on a prompt no one sees. That root is
+  treated as too large to index; project roots below home index as before. Reported and first fixed by @skihyeon in #2854.
+- **OMH tool results keep non-ASCII text as written** instead of `\uXXXX` escapes, which cuts their token cost for
+  Korean, Chinese, Japanese and other non-Latin text on every later model call. Reported and first fixed by @yqm-307 in #2884.
+- **`omh setup --model-setup` accepts a provider configured under Hermes `providers:`** when its key variable is set
+  or a credential pool exists. When neither can be seen, the refusal names the variable to set or
+  `hermes auth add <id>` instead of "lacks safe observed provider auth". A key kept only in Hermes' `.env` file is not
+  visible to OMH; export it in the shell that runs omh. Reported by @MarinWasAsleep in #2882.
+- **Vim NORMAL in the OMH TUI takes bracket text objects.** With `display.vim_mode` on, `d`, `c` and `y` take
+  `i(` / `a(`, `i[` / `a[` and `i{` / `a{` (the closing bracket works too, and counts reach outer pairs), so `di(`,
+  `ci[` and `ya{` act on the balanced region; an unmatched bracket changes nothing. Contributed by @DanRioDev
+  (#2714).
+- **Gemini 4 Carbon and Gemini 4 Hydrogen are priced and mapped to their providers.** Runs on `gemini-4-carbon`
+  and `gemini-4-hydrogen` now get a cost estimate from Google's own list prices, cached input included, and
+  provider filtering knows Google, Gemini and OpenRouter serve them. Neither is in a shipped chain. (#2762, #2848)
+- **`bench.py --extra-model` no longer needs `family=`.** Left out, the family is read from the model id.
+  Contributed by @Vedant-200 (#2798, carried in #2806).
+- **The README and omher.app open with the omher desktop app.** Its screenshot comes first, with per-OS download
+  links and the one-line install, and the site's hero window runs a live, clickable omher on staged data that
+  follows each omher release. (#2712, #2721, #2743, #2750, #2875 and follow-ups)
 
 ## 4.0.7 - 2026-11-09
 

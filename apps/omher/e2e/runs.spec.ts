@@ -177,7 +177,7 @@ test("the list: running first with a live dot, then newest; dots differ by state
   expect(upd).toEqual([...upd].sort((a: number, b: number) => b - a));
   await expect(rows.nth(0).locator(".rn-live")).toHaveCount(1);
   await expect(rows.nth(1).locator(".rn-live")).toHaveCount(0);
-  await expect(rows.nth(0).locator(".rn-n")).toHaveText(/^3\/6 · \d+(s|m)$/);
+  await expect(rows.nth(0).locator(".rn-n")).toHaveText(/^3\/6 · (\d+s|\d+m \d\ds|\d+h \d\dm \d\ds)$/);
   await expect(rows.nth(1).locator(".rn-n")).toHaveText(/^5\/6 · /);
   const dot = (i: number) => rows.nth(i).locator("i").first().evaluate((e) => getComputedStyle(e).backgroundColor);
   expect(await dot(1)).not.toBe(await dot(2));
@@ -320,7 +320,7 @@ test("the run's header is plain text in the app's font: the title leads, a statu
   const head = panel(page).getByTestId("run-plan");
   await expect(head.getByTestId("run-plan-title")).toHaveText("Codex coexistence (live)");
   // the status line: the state, how far it is and how long it has run; who runs it is the line under it
-  await expect(head.getByTestId("run-plan-counts")).toHaveText(/^Running · 3 of 6 done · 1 repaired · 1 waiting · \d+(s|m)$/);
+  await expect(head.getByTestId("run-plan-counts")).toHaveText(/^Running · 3 of 6 done · 1 repaired · 1 waiting · (\d+s|\d+m \d\ds|\d+h \d\dm \d\ds)$/);
   await expect(head.getByTestId("run-plan-where")).toHaveText("Opus 5.5 · high effort · main");
   await expect(head.getByTestId("run-plan-where").locator("[data-mark=claude], .model-ic")).toHaveCount(1);
   await expect(head.getByTestId("run-dot")).toHaveClass(/running/);
@@ -352,7 +352,8 @@ test("the run's header is plain text in the app's font: the title leads, a statu
       goal: [goal.fontSize, goal.webkitLineClamp],
       // title, status and who run close together; the goal stands 10px apart
       gaps: [box("[data-testid=run-plan-counts]").top - box(".ph-top").bottom, box("[data-testid=run-plan-goal]").top - box("[data-testid=run-plan-where]").bottom],
-      dot: [box("[data-testid=run-dot]").width, box("[data-testid=run-dot]").height],
+      // the layout size: a running dot spins, and a turned box's bounding rect is wider than the dot
+      dot: [(e.querySelector("[data-testid=run-dot]") as HTMLElement).offsetWidth, (e.querySelector("[data-testid=run-dot]") as HTMLElement).offsetHeight],
       boxed,
     };
   });
@@ -366,7 +367,9 @@ test("the run's header is plain text in the app's font: the title leads, a statu
   expect(look.gaps[0]).toBeGreaterThanOrEqual(0);
   expect(look.gaps[0]).toBeLessThanOrEqual(4);
   expect(look.gaps[1]).toBe(10);
-  expect(look.dot).toEqual([6, 6]);
+  // a running plan's dot is a small spinner (a still dot read as stalled)
+  expect(look.dot).toEqual([11, 11]);
+  expect(await head.locator(".ph-dot").evaluate((e) => getComputedStyle(e).animationName)).toBe("spin");
   expect(look.boxed).toBe(0);
   // what the card held is gone
   for (const gone of [".rn-badge", ".rn-bar", ".rn-head", ".rp", ".rp-chip", "[data-testid=run-plan-layer]", "[data-testid=run-legend]", "[data-testid=run-zoom]"])
@@ -534,7 +537,7 @@ test("a node is its title, one mark with what ran it, and a status icon with a w
   expect(by["t2-status-update"]).toMatchObject({ status: expect.stringMatching(/^Done \d+m$/), icon: "check" });
   // (a failure its repairs fixed says so before it says how long it took, where the box holds only one of the two)
   expect(by["t1-discovery"]).toMatchObject({ status: expect.stringMatching(/^Failed( \d+m)? · repaired$/), icon: "x" });
-  expect(by["t3-doctor"]).toMatchObject({ status: expect.stringMatching(/^Running \d+m$/), icon: "dot" });
+  expect(by["t3-doctor"]).toMatchObject({ status: expect.stringMatching(/^Running \d+m \d\ds$/), icon: "dot" });
   expect(by["t5-verify"]).toMatchObject({ status: "Waiting on 1", icon: "ring" });
   // no glyph of the terminal's box view anywhere in the drawing
   expect(await box.getByTestId("run-canvas").innerText()).not.toMatch(GLYPHS);
@@ -990,22 +993,44 @@ test("Dependencies and Node details are plain text under the boxes", async ({ pa
   await openRuns(page);
   const box = panel(page);
   const deps = box.getByTestId("run-deps");
-  await expect(deps.locator("h4")).toHaveText("Dependencies");
-  await expect(deps.getByTestId("run-dep")).toHaveCount(7);
-  // a row is the two titles with an arrow drawn between them (an icon, which says "→" to a screen reader)
-  const third = deps.getByTestId("run-dep").nth(2);
-  expect(await third.locator(".bv-dep-n").allTextContents()).toEqual(["Honest pack status + omh update refresh", "Doctor check for the Codex pack"]);
-  await expect(third).toHaveAttribute("title", "Honest pack status + omh update refresh → Doctor check for the Codex pack");
-  await expect(third.locator("svg.bv-arrow")).toHaveAttribute("aria-label", "→");
-  expect([await third.getAttribute("data-from"), await third.getAttribute("data-to")]).toEqual(["t2-status-update", "t3-doctor"]);
-  await expect(deps.getByTestId("run-dep").filter({ hasText: "(repair)" })).toHaveCount(2);
+  await expect(deps.locator("h4")).toHaveText("Dependencies · 4 tasks");
+  // one row per node that waits, not one per edge: seven edges are four rows
+  const rows = deps.getByTestId("run-dep");
+  await expect(rows).toHaveCount(4);
+  expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-node")))).toEqual(["t1-hermes", "t4-fence", "t3-doctor", "t5-verify"]);
+  // a row is the node's status and title, then what it waits for, quieter
+  const doctor = rows.nth(2);
+  await expect(doctor.locator(".bv-dep-n")).toHaveText("Doctor check for the Codex pack");
+  await expect(doctor.locator(".bv-dep-on")).toHaveText("waits forHonest pack status + omh update refresh");
+  // each name it waits for carries that node's own status icon
+  await expect(doctor.getByTestId("run-dep-on").locator("svg[data-icon]")).toHaveAttribute("data-icon", "check");
+  await expect(doctor.locator(".bv-dep-t svg[data-icon]")).toHaveAttribute("data-icon", "dot");
+  await expect(doctor).toHaveAttribute("title", "Doctor check for the Codex pack waits for: Honest pack status + omh update refresh");
+  // an edge another path implies folds into "+N further up": verify waits on doctor, which waits on status-update
+  const verify = rows.nth(3);
+  await expect(verify).toHaveAttribute("data-on", "t1-hermes t4-fence t3-doctor");
+  await expect(verify).toHaveAttribute("data-through", "t2-status-update");
+  await expect(verify).toContainText("+1 further up");
+  // a "·" stays with the name before it, so a wrapped line never starts with one
+  expect(await verify.getByTestId("run-dep-on").evaluateAll((els) => els.map((e) => (e as HTMLElement).innerText.trim().startsWith("·")))).toEqual([false, false, false]);
+  // a repair edge never folds
+  await expect(rows.filter({ hasText: "(repair)" })).toHaveCount(2);
+  // the names stand in one column: every row's title starts at the same x
+  const xs = await rows.locator(".bv-dep-n").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
+  expect(new Set(xs).size).toBe(1);
+  // hovering a row lights its box above and steps the others back; clicking it opens the node
+  await doctor.hover();
+  await expect(nodeOf(box, "t3-doctor")).not.toHaveClass(/\bdim\b/);
+  await expect(nodeOf(box, "t1-hermes")).toHaveClass(/\bdim\b/);
+  await page.mouse.move(0, 0);
+  await expect(nodeOf(box, "t1-hermes")).not.toHaveClass(/\bdim\b/);
   // a card of text for the running node: its whole title, what ran it (marks, model · effort · category), status, layer
   const details = box.getByTestId("run-details");
   await expect(details.locator("h4")).toHaveText("Node details");
   const card = details.getByTestId("run-detail");
   await expect(card).toHaveCount(1);
   await expect(card).toHaveAttribute("data-node", "t3-doctor");
-  expect((await card.innerText()).split("\n").map((s) => s.trim()).filter(Boolean)).toEqual(["Doctor check for the Codex pack", "Codex · low", expect.stringMatching(/^Running \d+m · layer 2 · /)]);
+  expect((await card.innerText()).split("\n").map((s) => s.trim()).filter(Boolean)).toEqual(["Doctor check for the Codex pack", "Codex · low", expect.stringMatching(/^Running \d+m \d\ds · layer 2 · /)]);
   // its status is the running dot, as on its box; one mark
   await expect(card.locator("svg[data-icon]")).toHaveAttribute("data-icon", "dot");
   expect(await card.getByTestId("node-mark").evaluateAll((els) => els.map((e) => e.getAttribute("data-mark")))).toEqual(["codex"]);
@@ -1253,7 +1278,7 @@ test("40 nodes: every edge is a line and no two boxes overlap, in the panel or t
   expect(await overlaps(panel(page))).toEqual([40, 0]);
   expect(await lines(panel(page))).toEqual([true, true, "0"]);
   expect(await page.locator(".details .pn-scroll").evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(0);
-  // its many edges are a capped list of text
+  // its many waiting nodes are a capped list of text
   await expect(panel(page).getByTestId("run-dep")).toHaveCount(12);
   await expect(panel(page).getByTestId("run-deps-more")).toHaveText(/^\+\d+ more · Show all \d+$/);
   await panel(page).getByTestId("graph-expand").click();
@@ -1428,7 +1453,7 @@ test("full view: zoom keys, Fit and the wheel; empty space pans", async ({ page 
 
 // ---- motion ----
 
-test("motion: the boxes appear one by one in frontier order, then nothing moves but the dash into a running node", async ({ page }) => {
+test("motion: the boxes appear one by one in frontier order, then nothing moves but the dash into a running node and its turning status ring", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openRuns(page);
   await page.getByTestId("graph-expand").click();
@@ -1446,10 +1471,10 @@ test("motion: the boxes appear one by one in frontier order, then nothing moves 
   await settled(page);
   const moving = await f.locator(".bv *").evaluateAll((els) => els.filter((e) => getComputedStyle(e).animationName !== "none").map((e) => [e.getAttribute("class"), getComputedStyle(e).animationName]));
   expect(moving.length).toBeGreaterThan(0);
-  for (const [cls, name] of moving) {
-    expect(cls).toMatch(/\bflow\b/);
-    expect(name).toBe("bv-flow");
-  }
+  // the dash into a running node, and the ring turning around a running node's status dot: nothing else
+  for (const [cls, name] of moving) expect([cls, name]).toEqual(expect.arrayContaining([/\bbx-spin\b/.test(cls ?? "") ? "spin" : "bv-flow"]));
+  for (const [cls] of moving) expect(cls).toMatch(/\b(flow|bx-spin)\b/);
+  expect(moving.filter(([cls]) => /\bbx-spin\b/.test(cls ?? "")).length).toBe(await f.locator('.bx-ic[data-icon="dot"]').count());
   // a box only answers the pointer (its outline, shadow and lift ease in 120ms): nothing shimmers, pulses or glows
   expect(
     await f.getByTestId("run-node").evaluateAll(

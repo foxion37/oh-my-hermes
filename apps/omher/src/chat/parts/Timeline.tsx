@@ -1,14 +1,25 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { RestartAction, RestartLine } from "../../sidebar/RestartLine";
 import type { Bot } from "../../lib/protocol";
-import { selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
+import { answerSlot, answerSoFar, selectTimeline, turnHasActivity, useStore, type TimelineItem } from "../../state/store";
 import { slots } from "../../features";
 import { dayLabel, hhmm, sameDay } from "../../app/time";
 import { Bubble } from "./Bubble";
+import type { QueueChoice, QueueOffReasons } from "./QueueMark";
+import type { MessageItem } from "../../state/store";
+
+/** steer queue sessions: a SESSIONS chat's own ↵ menu. `off` says which items are off and why for a user row, or
+ *  null for a row with no menu; `pick` runs the choice. */
+export interface SessionQueue {
+  off(it: MessageItem): QueueOffReasons | null;
+  pick(id: string, c: QueueChoice): void;
+}
+import { quoteFor } from "./answers";
 import { LiveFace, TypingRow, awaitingFirstToken } from "./Typing";
 import { liveFaceRow } from "./liveFace";
 import { ActivityFallback, CardFallback, ElsewhereFallback, RoutineFallback } from "./fallbacks";
 import { PluginAddedCard, RoutineAddedCard } from "../../pages/ChatCards";
+import { WatchLine } from "../../routines/WatchLine";
 import { t } from "../../i18n";
 import { useBotReady } from "../connect/ready";
 
@@ -26,12 +37,25 @@ const botSpoke = (it?: TimelineItem) => it?.kind === "assistant" || it?.kind ===
 
 /** `face` stands in for the bot's picture beside its bubbles and the typing bubble (a SESSIONS chat: its
  *  agent's mark). Pass a stable element (useMemo): the bubbles are memoized on it. */
-export function Timeline({ bot, face, onEditLast, connectionNotice = true }: { bot: Bot; face?: ReactNode; onEditLast?: () => void; connectionNotice?: boolean }) {
+export function Timeline({
+  bot,
+  face,
+  onEditLast,
+  connectionNotice = true,
+  queue,
+}: {
+  bot: Bot;
+  face?: ReactNode;
+  onEditLast?: () => void;
+  connectionNotice?: boolean;
+  queue?: SessionQueue;
+}) {
   const s = useStore();
   const items = selectTimeline(s, bot.name);
   const chat = s.chats[bot.name];
   const notReady = useBotReady(bot.name).status === "not";
-  const streaming = chat?.turn?.streaming ?? "";
+  // the answer being written, in whole lines: never word by word, never the commentary beside a tool call
+  const writing = chat?.turn ? answerSoFar(chat.turn) : "";
   const typing = awaitingFirstToken(chat);
   // the one row of the live run that carries the bot's ringed face
   const faceRow = liveFaceRow(items, chat?.turn, typing);
@@ -52,7 +76,7 @@ export function Timeline({ bot, face, onEditLast, connectionNotice = true }: { b
     if (!el) return;
     if (lastBot.current !== bot.name || pinned.current) el.scrollTop = el.scrollHeight;
     lastBot.current = bot.name;
-  }, [bot.name, items, streaming, typing]);
+  }, [bot.name, items, writing, typing]);
 
   // Files the bot sent load after the row is drawn and make it taller: stay at the bottom if pinned.
   useEffect(() => {
@@ -66,13 +90,52 @@ export function Timeline({ bot, face, onEditLast, connectionNotice = true }: { b
     return () => ro.disconnect();
   }, [bot.name, items]);
 
-  const render = (it: TimelineItem, prev?: TimelineItem): ReactNode => {
+  // steer queue: the ↵ menu of a held message (Edit puts it back in this chat's box)
+  const queuePick = (id: string) => (c: QueueChoice) => {
+    if (c === "now") void s.queueSendNow(id, bot.name);
+    else if (c === "steer") void s.queueSteer(id, bot.name);
+    else if (c === "edit") s.queueEdit(id, bot.name);
+    else if (c === "send") s.queueResend(id, bot.name);
+    else s.queueDelete(id, bot.name);
+  };
+
+  // a quote's click: the message it answers, brought into view and lit for a moment
+  const showMessage = (id: string) => {
+    const el = ref.current?.querySelector<HTMLElement>(`[data-item="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove("lit");
+    void el.offsetWidth;
+    el.classList.add("lit");
+  };
+
+  const render = (it: TimelineItem, prev?: TimelineItem, at = -1): ReactNode => {
     switch (it.kind) {
-      case "user":
-        return <Bubble item={it} onEdit={it === lastUser && !it.error && !it.wait ? onEditLast : undefined} editKeepsFiles={it === lastUser && keptFiles} />;
+      case "user": {
+        const off = queue ? queue.off(it) : it.held || it.steerUnknown ? {} : null;
+        return (
+          <Bubble
+            item={it}
+            onEdit={it === lastUser && !it.error && !it.wait && !it.held ? onEditLast : undefined}
+            editKeepsFiles={it === lastUser && keptFiles}
+            onQueue={off ? (queue ? (c: QueueChoice) => queue.pick(it.id, c) : queuePick(it.id)) : undefined}
+            queueBusy={it.held && chat?.steering === it.id}
+            queueOff={off ?? undefined}
+            steeredTo={bot.display_name}
+          />
+        );
+      }
       case "assistant":
-        // the face shows on the first bot bubble after something else (the user, a day line, a card)
-        return <Bubble item={it} bot={bot.name} face={!botSpoke(prev)} faceEl={face} />;
+        // the face shows on the first bot bubble after something else (the user, a day line, a card); an automation's
+        // answer has its "Watch · <name>" line above it
+        if (it.watch)
+          return (
+            <>
+              <WatchLine name={it.watch.name} ts={it.watch.ts} text={it.text} />
+              <Bubble item={it} bot={bot.name} face faceEl={face} />
+            </>
+          );
+        return <Bubble item={it} bot={bot.name} face={!botSpoke(prev)} faceEl={face} quote={quoteFor(items, at)} onQuote={showMessage} />;
       case "activity": {
         const C = slots.activity ?? ActivityFallback;
         return <C bot={bot.name} item={it} live={chat?.turn?.id === it.turn.id} />;
@@ -102,6 +165,31 @@ export function Timeline({ bot, face, onEditLast, connectionNotice = true }: { b
         );
     }
   };
+
+  // the answer as it is written, a whole line or paragraph at a time (answerSoFar), in the one bubble the whole answer
+  // then takes: never word by word, never the bot's commentary beside its tool calls. It sits where the answer will
+  // land (answerSlot): above a message the person sent while it was being written, which is answered next.
+  const slotId = chat?.turn ? chat.items[answerSlot(chat)]?.id : undefined;
+  const writingRow = writing ? (
+    <div className="row row-assistant" data-kind="streaming">
+      <Bubble
+        item={{ kind: "assistant", text: writing }}
+        streaming
+        bot={bot.name}
+        face={!botSpoke(slotId ? items[items.findIndex((i) => i.id === slotId) - 1] : items[items.length - 1])}
+        faceEl={face}
+        live={faceRow === "streaming"}
+        quote={quoteFor(items, slotId ? items.findIndex((i) => i.id === slotId) : items.length)}
+        onQuote={showMessage}
+      />
+    </div>
+  ) : null;
+  // the typing dots too: where the answer will land
+  const typingRow = typing ? (
+    <div className="row row-assistant row-typing" data-kind="typing">
+      <TypingRow bot={bot.name} name={bot.display_name} face={face} />
+    </div>
+  ) : null;
 
   return (
     <div
@@ -147,31 +235,18 @@ export function Timeline({ bot, face, onEditLast, connectionNotice = true }: { b
         const liveFace = liveLine && faceRow === "activity";
         return (
           <Fragment key={it.id}>
+            {it.id === slotId && writingRow}
+            {it.id === slotId && typingRow}
             {label && <div className="day">{label}</div>}
-            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind}>
+            <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind} {...(it.kind === "user" ? { "data-item": it.id } : {})}>
               {liveFace && <LiveFace bot={bot.name} face={face} />}
-              {render(it, label ? undefined : items[i - 1])}
+              {render(it, label ? undefined : items[i - 1], i)}
             </div>
           </Fragment>
         );
       })}
-      {typing && (
-        <div className="row row-assistant row-typing" data-kind="typing">
-          <TypingRow bot={bot.name} name={bot.display_name} face={face} />
-        </div>
-      )}
-      {streaming && (
-        <div className="row row-assistant" data-kind="streaming">
-          <Bubble
-            item={{ kind: "assistant", text: streaming }}
-            streaming
-            bot={bot.name}
-            face={!botSpoke(items[items.length - 1])}
-            faceEl={face}
-            live={faceRow === "streaming"}
-          />
-        </div>
-      )}
+      {!slotId && writingRow}
+      {!slotId && typingRow}
     </div>
   );
 }

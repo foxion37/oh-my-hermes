@@ -36,8 +36,12 @@ class GatewayClientError(ValueError):
 class FakeClient:
     """The slice of ``GatewayClient`` the bridge uses: ``rpc`` and ``events``."""
 
-    def __init__(self, name: str, *, bot_chat: bool = True, sessions=None, history=None, caps=None, lacks=(), ready=None):
+    def __init__(self, name: str, *, bot_chat: bool = True, sessions=None, history=None, caps=None, lacks=(), ready=None,
+                 model_replies=None, resume_bumps=False):
         self.name = name
+        # session.mutate "model" answers in order (Hermes' selection guard refusals); the echo once they run out
+        self.model_replies = list(model_replies or [])
+        self.resume_bumps = resume_bumps  # each session.resume moves the revision, as a real gateway's may
         # setup.runtime_check answers in order (a dict, or an exception to raise); the last one repeats
         self.ready = list(ready) if ready else [{"ok": True, "provider": "claude-proxy", "model": "claude-opus-5-5", "source": "pool"}]
         self.lacks = set(lacks)  # methods this gateway does not have: they fail as Hermes' do, `unknown_method`
@@ -67,6 +71,8 @@ class FakeClient:
         if method == "session.active_list":
             return {"sessions": self.active}
         if method == "session.resume":
+            if self.resume_bumps:
+                self.revision += 1
             return {"session_id": MAIN_RUNTIME, "stored_session_id": params["session_id"], "running": False,
                     "messages": [
                         {"role": "user", "text": "hi", "timestamp": 100.5, "row_id": 1},
@@ -108,6 +114,8 @@ class FakeClient:
             return {"providers": [{"slug": "claude-proxy", "name": "Claude", "models": ["claude-opus-5-5", "x"]}],
                     "model": "claude-opus-5-5", "provider": "claude-proxy"}
         if method == "session.mutate":
+            if params["operation"] == "model" and self.model_replies:
+                return self.model_replies.pop(0)
             return {"session_id": params["session_id"], "operation": params["operation"]}
         if method == "image.attach_bytes":
             if params["content_base64"] == "bad":
@@ -427,6 +435,52 @@ class BotsAndChat(BridgeCase):
                 self.assertEqual((m["expected_revision"], m["expected_generation"]), (7, 3))
             self.assertEqual((await s.req("chat.set_model", bot="kami", reasoning="turbo"))["error"]["code"], "bad_request")
             self.assertEqual((await s.req("chat.set_model", bot="kami"))["error"]["code"], "bad_request")
+
+    GUARD = {"status": "confirmation_required", "confirm": "tok-1", "confirm_message": "Switch to a 1M-context model?"}
+
+    def model_mutates(self, env: Env) -> list[dict]:
+        return [m for m in env.clients["kami"].find("session.mutate") if m["operation"] == "model"]
+
+    async def test_a_guarded_pick_is_resent_once_with_the_token_on_the_same_fence(self):
+        """The pick in the picker is the confirmation: Hermes' token rides a second mutate on the first one's fence."""
+        async with Env(model_replies=[self.GUARD], resume_bumps=True) as env:
+            s = await self.open(env)
+            r = await s.req("chat.set_model", bot="kami", model="claude-sonnet-5-5", provider="claude-proxy")
+            self.assertTrue(r["ok"], r)
+            muts = self.model_mutates(env)
+            self.assertEqual([m["payload"] for m in muts],
+                             [{"model": "claude-sonnet-5-5", "provider": "claude-proxy"},
+                              {"model": "claude-sonnet-5-5", "provider": "claude-proxy", "confirm": "tok-1"}])
+            fences = {(m["session_id"], m["expected_revision"], m["expected_generation"]) for m in muts}
+            self.assertEqual(len(fences), 1, fences)  # a fresh session.resume between them would stale the token
+            self.assertNotEqual(muts[0]["request_id"], muts[1]["request_id"])
+
+    async def test_a_guard_without_a_token_is_refused_after_one_mutate(self):
+        async with Env(model_replies=[{"status": "confirmation_required", "confirm_message": "needs a yes"}]) as env:
+            s = await self.open(env)
+            r = await s.req("chat.set_model", bot="kami", model="claude-sonnet-5-5")
+            self.assertEqual(r["error"]["code"], "confirmation_required", r)
+            self.assertEqual(len(self.model_mutates(env)), 1)
+
+    async def test_a_guard_that_refuses_the_token_too_is_refused_not_retried(self):
+        async with Env(model_replies=[self.GUARD, dict(self.GUARD, confirm="tok-2")]) as env:
+            s = await self.open(env)
+            r = await s.req("chat.set_model", bot="kami", model="claude-sonnet-5-5")
+            self.assertEqual(r["error"]["code"], "confirmation_required", r)
+            self.assertEqual([m["payload"].get("confirm") for m in self.model_mutates(env)], [None, "tok-1"])
+
+    async def test_models_options_current_is_the_main_sessions_live_model(self):
+        """`model.options` names the profile default; a session-level switch shows only in session.resume's info."""
+        async with Env() as env:
+            s = await self.open(env)
+            self.assertTrue((await s.req("chat.open", bot="kami"))["ok"])
+            c = env.clients["kami"]
+            c.model_info = {"model": "claude-sonnet-5-5", "provider": "other-proxy", "reasoning_effort": "low"}
+            current = (await s.req("models.options", bot="kami"))["result"]["current"]
+            self.assertEqual(current, {"model": "claude-sonnet-5-5", "provider": "other-proxy", "reasoning": "low"})
+            c.model_info = {"reasoning_effort": "low"}  # an info without the route falls back to the profile default
+            current = (await s.req("models.options", bot="kami"))["result"]["current"]
+            self.assertEqual(current, {"model": "claude-opus-5-5", "provider": "claude-proxy", "reasoning": "low"})
 
     async def test_models_options_shape(self):
         async with Env() as env:
@@ -1166,7 +1220,7 @@ class ReadOnlyRule(BridgeCase):
         src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
         self.assertEqual(len(re.findall(r"prompt\.submit", src)), 1)
         sites = re.findall(r"self\._submit\(([^)]*)\)", src)
-        self.assertEqual(sites, ["conn, main, text, input_id"])
+        self.assertEqual(sites, ["conn, main, text, input_id, queued"])
 
     def test_bridge_makes_no_model_or_http_call(self):
         src = (HERE.parent / "omher_bridge.py").read_text(encoding="utf-8")
@@ -2069,6 +2123,25 @@ class ReplyThere(BridgeCase):
         self.assertEqual(rows[0]["text"], "post it")
         self.assertEqual(rows[0]["reply_to"], {"target": "slack:C1:1794.5", "label": "#og-dev"})
         self.assertNotIn("reply_to", rows[1])  # only the person's own rows carry a reference
+
+    def test_a_reopened_chat_shows_one_bubble_per_turn_its_answer(self):
+        """kami's real Bot Chat: a turn stores the commentary Hermes writes beside each tool call as assistant rows of
+        their own (14 of the 20 with text in one evening). The live chat shows only the answer; a reopened one too."""
+        rows = [{"role": "user", "text": "fix the tile", "row_id": 1},
+                {"role": "assistant", "text": "Now I'll implement it.", "tool_calls": [{"id": "a"}], "row_id": 2},
+                {"role": "tool", "text": "ok", "row_id": 3},
+                {"role": "assistant", "text": "", "tool_calls": [{"id": "b"}], "row_id": 4},
+                {"role": "assistant", "text": "All 35 tests pass. Committing.", "tool_calls": [{"id": "c"}], "row_id": 5},
+                {"role": "assistant", "text": "PR #2898 is up.", "row_id": 6},
+                {"role": "user", "text": "thanks", "row_id": 7},
+                {"role": "assistant", "text": "Merged.", "row_id": 8},
+                {"role": "user", "text": "still running?", "row_id": 9},
+                {"role": "assistant", "text": "Checking the logs.", "tool_calls": [{"id": "d"}], "row_id": 10}]
+        got = [(m["role"], m["text"]) for m in ob.chat_messages(rows)]
+        self.assertEqual(got, [("user", "fix the tile"), ("assistant", "PR #2898 is up."), ("user", "thanks"),
+                               ("assistant", "Merged."), ("user", "still running?"), ("assistant", "Checking the logs.")])
+        # opened while that last turn still runs: what it said so far is commentary, its answer comes live
+        self.assertEqual(ob.chat_messages(rows, running=True)[-1], {"id": "9", "role": "user", "text": "still running?", "ts": 0.0})
 
     async def test_elsewhere_list_carries_the_target_only_for_threads(self):
         async with Env(sessions=[dict(r) for r in self.SESSIONS]) as env:

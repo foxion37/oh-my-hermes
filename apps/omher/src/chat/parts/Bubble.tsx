@@ -8,8 +8,12 @@ import { SentFiles } from "./Attach";
 import { SkillText } from "./Skills";
 import { CopyButton } from "./Copy";
 import { PeerChips } from "../../peers/PeerChip";
+import { peerDraftsAllowed, stripPeerDrafts } from "../../peers/draft";
 import { AgentChips } from "./AgentChip";
+import { draftsAllowed, stripDrafts } from "./agentDraft";
 import { t } from "../../i18n";
+import { QueueMark, type QueueChoice, type QueueOffReasons } from "./QueueMark";
+import type { Quote } from "./answers";
 
 /** Messenger bubble, filled on both sides. Bot text renders markdown; user text stays plain. Files the bot
  * sent (`MEDIA:` lines) leave the text and show under it in the same column as the bubble, in order; while
@@ -24,8 +28,14 @@ export const Bubble = memo(function Bubble({
   live,
   onEdit,
   editKeepsFiles,
+  onQueue,
+  queueBusy,
+  queueOff,
+  steeredTo,
+  quote,
+  onQuote,
 }: {
-  item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "skills" | "wait">;
+  item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "skills" | "wait" | "held" | "steered" | "steerUnknown" | "steerUnused">;
   streaming?: boolean;
   /** The bot whose face sits beside its bubble; `face` false keeps the indent without repeating it. */
   bot?: string;
@@ -38,24 +48,69 @@ export const Bubble = memo(function Bubble({
   onEdit?: () => void;
   /** The turn Edit takes back changed files: a quiet line beside it says they stay as they are. */
   editKeepsFiles?: boolean;
+  /** A held message (steer queue): its ↵ mark's menu. */
+  onQueue?: (c: QueueChoice) => void;
+  /** Its steer is on the way: the mark waits. */
+  queueBusy?: boolean;
+  /** The bot's name a steered message went to, for its line. */
+  steeredTo?: string;
+  /** Menu items that are off, with their reasons (a SESSIONS chat's agent). */
+  queueOff?: QueueOffReasons;
+  /** A bot answer: the message of the person's it replies to, when that is not plain from where it sits; a click
+   *  scrolls to that message. */
+  quote?: Quote | null;
+  onQuote?: (id: string) => void;
 }) {
   if (item.kind === "user") {
+    const held = !!item.held;
+    // a SESSIONS chat's waiting message carries the mark too (held by omher, or already with the agent)
+    const marked = (held || item.wait === "queued" || !!item.steerUnknown) && !!onQueue;
     return (
-      <div className={`msg u${item.wait ? ` ${item.wait}` : ""}`} data-testid="bubble-user" data-wait={item.wait}>
-        {(item.text || !item.files?.length) && (
-          <div className="b">
-            <SkillText text={item.text} skills={item.skills} />
-          </div>
-        )}
+      <div
+        className={`msg u${item.wait ? ` ${item.wait}` : ""}${held ? " held" : ""}`}
+        data-testid="bubble-user"
+        data-wait={item.wait}
+        data-held={held || undefined}
+        data-steered={item.steered || undefined}
+      >
+        {(item.text || !item.files?.length) &&
+          (marked && onQueue ? (
+            // a held message: its ↵ mark before the bubble, on the bubble's first line
+            <div className="msg-line">
+              <QueueMark onPick={onQueue} busy={queueBusy} off={queueOff} unknown={!!item.steerUnknown} />
+              <div className="b">
+                <SkillText text={item.text} skills={item.skills} />
+              </div>
+            </div>
+          ) : (
+            <div className="b">
+              <SkillText text={item.text} skills={item.skills} />
+            </div>
+          ))}
         {item.files?.length ? <SentFiles files={item.files} /> : null}
         {item.reply && (
           <div className="msg-reply" data-testid="bubble-reply">
             {t("bub.replyTarget")} <SourceIcon source={item.reply.source} size={11} /> {item.reply.label}
           </div>
         )}
-        {item.wait === "queued" && (
+        {item.wait === "queued" && !item.steered && (
           <div className="msg-wait" data-testid="bubble-queued">
             {t("ctl.queued")}
+          </div>
+        )}
+        {held && item.wait !== "queued" && (
+          <div className="msg-wait" data-testid="bubble-held">
+            {queueBusy ? t("sq.steering") : t("ctl.queued")}
+          </div>
+        )}
+        {item.steered && (
+          <div className="msg-wait msg-steered" data-testid="bubble-steered">
+            {t("sq.steered", { bot: steeredTo ?? "" })}
+          </div>
+        )}
+        {item.steerUnknown && (
+          <div className="msg-wait" data-testid="bubble-steer-unknown">
+            {item.steerUnused ? t("sq.unused") : t("sq.unknown")}
           </div>
         )}
         {item.wait === "dropped" && (
@@ -78,6 +133,8 @@ export const Bubble = memo(function Bubble({
     );
   }
   const { text, paths } = splitMedia(item.text);
+  // a draft block shows only as its chip under the reply (where the chip can show); the chips still read `text`
+  const shown = bot ? draftless(text, bot, !!streaming) : text;
   const faceNode =
     bot &&
     (faceEl ? (
@@ -85,7 +142,7 @@ export const Bubble = memo(function Bubble({
     ) : (
       <Avatar bot={bot} size={28} className={`msg-face${face === false ? " blank" : ""}`} />
     ));
-  return (
+  const body = (
     <div className={`msg a${streaming ? " streaming" : ""}${bot ? " face" : ""}`} data-testid={streaming ? "bubble-streaming" : "bubble-bot"}>
       {bot && live && face !== false ? (
         <LiveRing on size={28} gap={3} testId="face-ring" seed={bot}>
@@ -94,13 +151,14 @@ export const Bubble = memo(function Bubble({
       ) : (
         faceNode
       )}
-      {/* one column beside the face: the caption, then the files under it, both on the bubble's left edge */}
+      {/* one column beside the face: the caption, then the files under it, both on the bubble's left edge; a reply that
+          was only a draft block shows its chip alone */}
       <div className="msg-col">
-        {(text || streaming || paths.length === 0) && (
+        {(shown || streaming || (paths.length === 0 && shown === text)) && (
           <div className="b md">
-            <Markdown text={text} />
+            <Markdown text={shown} />
             {/* copy the answer: beside the bubble's last line, on hover; it takes no room */}
-            {!streaming && text.trim() && <CopyButton className="msg-copy" text={() => text} testId="copy-answer" />}
+            {!streaming && shown.trim() && <CopyButton className="msg-copy" text={() => shown} testId="copy-answer" />}
           </div>
         )}
         {bot && !streaming && paths.length > 0 && <MediaList bot={bot} paths={paths} />}
@@ -111,4 +169,35 @@ export const Bubble = memo(function Bubble({
       </div>
     </div>
   );
+  if (!quote) return body;
+  // what this answer replies to, above it in the bubbles' column (the face stays beside the bubble): each message's
+  // first line, a click brings that message into view
+  return (
+    <>
+      <div className={`msg-quotes${bot ? " face" : ""}`} data-testid="bubble-quote">
+        <span className="msg-quote-h" data-testid="bubble-quote-head">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9 14 4 9l5-5" />
+            <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+          </svg>
+          {quote.lines.length + quote.more === 1 ? t("bub.repliedTo1") : t("bub.repliedTo", { n: quote.lines.length + quote.more })}
+        </span>
+        {quote.more > 0 && <span className="msg-quote-n">{t("bub.quoteMore", { n: quote.more })}</span>}
+        {quote.lines.map((l) => (
+          <button key={l.id} type="button" className="msg-quote" onClick={() => onQuote?.(l.id)} title={t("bub.quoteTip")} data-testid="bubble-quote-line">
+            {l.text}
+          </button>
+        ))}
+      </div>
+      {body}
+    </>
+  );
 });
+
+/** The reply text the bubble shows: without the omher-peer / omher-agent blocks of a chat that turns them into chips. */
+function draftless(text: string, chatKey: string, streaming: boolean): string {
+  let out = text;
+  if (peerDraftsAllowed(chatKey)) out = stripPeerDrafts(out, streaming);
+  if (draftsAllowed(chatKey)) out = stripDrafts(out, streaming);
+  return out;
+}
