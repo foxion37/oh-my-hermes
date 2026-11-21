@@ -34,13 +34,17 @@ type Spy = { __opened: unknown[][]; __clipWrites: string[]; __clipText: string }
  *  Unset, the page reports the machine's own. */
 const PLATFORM = process.env.OMHER_E2E_PLATFORM || "";
 
+/** Make the page report OMHER_E2E_PLATFORM, when it is set (before the page loads). */
+export async function usePlatform(page: Page) {
+  if (!PLATFORM) return;
+  await page.addInitScript((p) => {
+    Object.defineProperty(navigator, "platform", { configurable: true, get: () => p });
+  }, PLATFORM);
+}
+
 /** The app on the mock host. `window.open` and the clipboard are stubs that record into window.__opened / __clipWrites. */
 export async function openApp(page: Page, o: OpenOpts = {}) {
-  if (PLATFORM) {
-    await page.addInitScript((p) => {
-      Object.defineProperty(navigator, "platform", { configurable: true, get: () => p });
-    }, PLATFORM);
-  }
+  await usePlatform(page);
   await page.addInitScript(
     ([theme, term, clip]) => {
       if (!sessionStorage.getItem("__kept")) {
@@ -51,7 +55,7 @@ export async function openApp(page: Page, o: OpenOpts = {}) {
       if (theme) localStorage.setItem("omher.theme", theme as string);
       localStorage.setItem("omher.term", JSON.stringify(term ?? {}));
       const w = window as unknown as Spy & { __omherPickFolder: string; __omherMockAgents: string[] };
-      w.__omherPickFolder = "/Users/you/code/web-app";
+      w.__omherPickFolder = "/home/you/code/web-app";
       w.__omherMockAgents = ["claude", "codex", "omh"];
       w.__opened = [];
       w.__clipWrites = [];
@@ -77,11 +81,9 @@ export async function openApp(page: Page, o: OpenOpts = {}) {
 /** A new Claude Code session opened as a terminal; returns its session id once the mock program has printed. */
 export async function newTerminal(page: Page): Promise<string> {
   await page.getByTestId("session-new").click();
-  await page.getByTestId("session-agent-claude").click();
   await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
-  await page.getByTestId("session-way-terminal").click();
-  await page.getByTestId("session-go").click();
+  await page.getByTestId("session-agent-claude").click();
   const term = page.getByTestId("terminal");
   await expect(term).toBeVisible();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");

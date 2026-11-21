@@ -31,6 +31,12 @@ from .jev_addressing import jev_addressed_skill
 from .localization import normalized_phrase, phrase_is_spoken, routing_terms, routing_tokens
 from .materials_cues import OFFICE_FILE_MATERIAL_PHRASES
 from .model_compression_cues import MODEL_COMPRESSION_ANCHORS, MODEL_COMPRESSION_SHARED_PHRASES
+from .skill_eval_cues import (
+    SKILL_EVAL_ANCHORS,
+    SKILL_EVAL_SHARED_PHRASES,
+    skill_eval_person_sense,
+    skill_eval_phrase_spoken,
+)
 from ..plugin_bundle.omh.dag_ulw_cues import DAG_ULW, asks_about_dag_ulw, dag_ulw_control, declines_dag_ulw, invokes_dag_ulw
 from ..plugin_bundle.omh.invocation_cues import invoked_instruction
 from ..coding.pi_family_interop import PI_DISTRIBUTION_HOST, RUNTIME_SHORT_NAME
@@ -2250,6 +2256,10 @@ EVERYDAY_SENSE_PHRASES: dict[str, tuple[tuple[str, ...], frozenset[str]]] = {
     # the model smaller in Blender" name a conceptual, statistical or 3D model;
     # each phrase keeps this route only beside a word of model weights.
     "model-compression": (MODEL_COMPRESSION_SHARED_PHRASES, MODEL_COMPRESSION_ANCHORS),
+    # "is my skill any good at chess" and "my tennis skill evaluation" name a
+    # person's ability; each phrase keeps this route only alone or beside a
+    # word of agent skills or their hosts.
+    "skill-eval": (SKILL_EVAL_SHARED_PHRASES, SKILL_EVAL_ANCHORS),
     # "we need to backfill the open position on the team", "my family lineage
     # goes back to scotland", "duplicate events in my calendar" and "the batch
     # job at the bakery" are not pipelines; each phrase keeps this route only
@@ -2391,6 +2401,12 @@ def everyday_sense_phrase_unanchored(skill: str, normalized_query: str) -> bool:
     # names; `spend_signals`' clause rule skips the check for it too.
     if skill == "spend-gate" and spend_gate_named_as_command(normalized_query):
         return False
+    # "evaluate my skill at using Codex for Python": a host word sits beside
+    # the phrase, but the skill is the person's (`skill_eval_person_sense`).
+    if skill == "skill-eval" and skill_eval_phrase_spoken(normalized_query) and skill_eval_person_sense(
+        normalized_query
+    ):
+        return True
     phrases, anchors = entry
     spoken = tuple(phrase for phrase in phrases if phrase_is_spoken(normalized_query, phrase))
     if not spoken:
@@ -4325,6 +4341,13 @@ _LIVE_INFO_OPERATOR_EVERYDAY_CONTEXT_TOKENS = _normalized_token_set(
 _LIVE_INFO_OPERATOR_LIVE_CUE_TOKENS = _normalized_token_set(
     {"now", "today", "current", "latest", "tonight", "yesterday", "live", "nearby"}
 )
+# A "current" that is not said of the workspace the work happens in: any "current" but one before a workspace noun
+# ("the current directory", "current branch", "current working directory"), which names where the work is.
+_CURRENT_NOT_OF_THE_WORKSPACE = re.compile(
+    r"\bcurrent\b(?!\s+(?:working\s+)?(?:directory|dir|folder|repo|repository|branch|checkout|worktree|workspace"
+    r"|project|file|module|package|code|codebase|implementation|behaviou?r|test\s+suite|tests?|commit|config"
+    r"|configuration|setup)\b)"
+)
 _LIVE_INFO_OPERATOR_BLOCKERS = (
     "web search",
     "web research",
@@ -5955,6 +5978,15 @@ CREDENTIAL_ROTATION_GUARD = RoutingGuardRule(
     why="Matched guard/trigger metadata; replacing a live credential needs an overlap window, a cutover order, and a check that the old credential stopped working.",
     activation_status="active",
 )
+CODE_REVIEW_REQUEST_GUARD = RoutingGuardRule(
+    id="code_review_request_before_generic_clarify",
+    rule="A sentence that is, as a whole, a request to review a diff, patch, PR, commit or code change, or to find bugs in one, reaches code-review before generic clarification or token matches.",
+    matched_label="guard:code_review_request",
+    preferred_skills=("code-review",),
+    score_boost=30,
+    why="A sentence matched a closed review or bug-finding shape over a code-change object; any other word in that sentence keeps the request's own route.",
+    activation_status="active",
+)
 FRONTEND_DESIGN_GUARD = RoutingGuardRule(
     id="frontend_design_before_generic_picker",
     rule="A request that is, as a whole, a redesign of a named UI surface or a visual fault on a phone viewport reaches frontend before generic matches.",
@@ -6115,6 +6147,7 @@ ROUTING_GUARD_RULES = (
     CODING_HANDOFF_STATUS_GUARD,
     GAME_BUILD_GUARD,
     FRONTEND_DESIGN_GUARD,
+    CODE_REVIEW_REQUEST_GUARD,
 )
 
 
@@ -6173,6 +6206,7 @@ GUARD_DISPATCH_TRUST: dict[str, tuple[str, str]] = {
     "gateway_intent_before_feedback_triage": (GUARD_TRUSTED, "messenger thread or delivery policy named as the task; measured 2 right / 0 wrong"),
     "generated_artifact_provenance_before_deliverable_package": (GUARD_TRUSTED, "asks whether a change touches a generated file; no measured record as a winner, keeps its shape label"),
     "github_event_ops_before_generic_planning": (GUARD_TRUSTED, "an explicit PR, CI, or issue-to-PR event; measured 0 right / 1 wrong; kept trusted: demoting it removes no measured wrong dispatch and moves canonical pins"),
+    "code_review_request_before_generic_clarify": (GUARD_TRUSTED, "one sentence is a closed review or find-bugs shape over a diff, patch, PR, commit or code change; no measured record as a winner"),
     "frontend_design_before_generic_picker": (GUARD_TRUSTED, "the whole request is a closed redesign or phone-viewport fault shape; no measured record as a winner, keeps its shape label"),
     "game_build_before_greenfield_interview": (GUARD_TRUSTED, "a build or look-and-feel cue on a browser game, native engines and topic uses excluded; no measured record as a winner, keeps its shape label"),
     "github_issue_intake_before_event_ops_or_feedback": (GUARD_TRUSTED, "an imperative to file a new issue; no measured record as a winner, keeps its shape label"),
@@ -6502,6 +6536,10 @@ def _bare_first_word_names_a_longer_skill(
         for name in names
         if name.startswith(f"{candidate}-")
     )
+    # "skill harness check" and "skill compatibility" name `skill-eval` by its
+    # job rather than its name.
+    if candidate == "skill" and "skill-eval" in names and skill_eval_phrase_spoken(normalized):
+        return True
     return _contains_phrase(normalized, longer_names)
 
 
@@ -6783,6 +6821,8 @@ def _active_routing_guard_rules_cached(
         rules.append(CREDENTIAL_ROTATION_GUARD)
     if frontend_design_guard_applies(normalized_query):
         rules.append(FRONTEND_DESIGN_GUARD)
+    if not direct_coding_task_applies and code_review_request_guard_applies(normalized_query):
+        rules.append(CODE_REVIEW_REQUEST_GUARD)
     if not direct_coding_task_applies and game_build_guard_applies(normalized_query):
         rules.append(GAME_BUILD_GUARD)
     if dependency_upgrade_guard_applies(normalized_query):
@@ -6818,7 +6858,12 @@ def _active_routing_guard_rules_cached(
     memory_new_applies = _memory_new_guard_applies(normalized_query)
     if memory_new_applies:
         rules.append(MEMORY_NEW_GUARD)
-    if not workflow_learning_applies and not memory_new_applies and _memory_curation_guard_applies(normalized_query, query_tokens):
+    if (
+        not workflow_learning_applies
+        and not memory_new_applies
+        and not code_review_request_guard_applies(normalized_query)
+        and _memory_curation_guard_applies(normalized_query, query_tokens)
+    ):
         rules.append(MEMORY_CURATION_GUARD)
     if _agent_board_guard_applies(normalized_query, query_tokens):
         rules.append(AGENT_BOARD_GUARD)
@@ -9291,6 +9336,12 @@ def _memory_new_guard_applies(normalized_query: str) -> bool:
     return _contains_phrase(normalized_query, MEMORY_NEW_SCOPE_PHRASES)
 
 
+# A word inside a file path (`context/`, `src/memory/store.py`) names a directory
+# or a module, not the agent's memory store. A review task that says its files
+# are "under context/" dispatched memory-sync on that path segment alone. A path
+# here ends in a slash or a file with an extension, so "memory/context" and
+# "and/or" stay words.
+_PATH_LIKE_RE = re.compile(r"(?<![\w/])(?:[~.]?/)?(?:[\w.-]+/)+(?:[\w-]+\.\w+)?(?![\w/])")
 _SYSTEM_MEMORY_WORDS = frozenset(
     {"usage", "leak", "leaks", "leaking", "heap", "ram", "oom", "rss", "allocation", "allocations", "gc", "footprint"}
 )
@@ -9312,7 +9363,7 @@ def _memory_curation_guard_applies(normalized_query: str, query_tokens: set[str]
     context = bool(_MEMORY_CURATION_CONTEXT_TOKENS & query_tokens)
     hermes_context = _contains_phrase(normalized_query, ("hermes", "헤르메스"))
     omh_context = _contains_phrase(normalized_query, ("omh", "oh-my-hermes", "oh my hermes"))
-    memory_context = bool(_MEMORY_STORE_TOKENS & query_tokens)
+    memory_context = bool(_MEMORY_STORE_TOKENS & routing_tokens(_PATH_LIKE_RE.sub(" ", normalized_query)))
     if _scheduled_ops_blueprint_guard_applies(normalized_query, query_tokens) and not (
         hermes_context or omh_context or memory_context
     ):
@@ -10364,6 +10415,10 @@ def _live_info_operator_guard_applies(normalized_query: str, query_tokens: set[s
         return True
     if any(phrase_is_spoken(normalized_query, phrase) for phrase in _LIVE_INFO_OPERATOR_SPOKEN_PHRASES):
         return True
+    # "current" said of the workspace ("the current directory", "the current branch") is where the work is, not a
+    # live lookup: with every "current" of that kind it neither asks for nor times a lookup.
+    if "current" in query_tokens and not _CURRENT_NOT_OF_THE_WORKSPACE.search(normalized_query):
+        query_tokens = query_tokens - {"current"}
     live_context = _LIVE_INFO_OPERATOR_CONTEXT_TOKENS & query_tokens
     lookup_intent = bool(_LIVE_INFO_OPERATOR_LOOKUP_TOKENS & query_tokens)
     if not (live_context and lookup_intent):
@@ -10647,6 +10702,122 @@ def frontend_design_guard_tier(normalized_query: str) -> str:
 def frontend_design_guard_applies(normalized_query: str) -> bool:
     """The whole request is a redesign of a named UI surface or a phone-viewport visual fault with a repair ask."""
     return bool(frontend_design_guard_tier(normalized_query))
+
+
+# A request to review a code change, like the frontend guard, is read as whole
+# sentences, not as words anywhere: "review" alone also takes an essay, a
+# contract or a budget, and "PR", "change" and "commit" are objects of writing,
+# merging and pushing. The guard fires when one sentence of the request (split
+# at full stops, question marks and line breaks) is entirely one of the shapes
+# below. A sentence with any other word ("review PR 12 and merge it", "review my
+# change for the export feature", "who should review my PR?") keeps its route.
+# Other sentences may follow, so a review task that goes on to describe where
+# the diff lives and what to answer still counts. The price is reach: another
+# word order or a qualified object ("the auth PR") stays at its base verdict.
+_CODE_REVIEW_EN_LEADS = ("please", "can you", "could you", "would you", "pls")
+_CODE_REVIEW_EN_VERBS = ("review", "code review", "do a code review of", "look over", "go over")
+_CODE_REVIEW_EN_CHECK_VERBS = ("check", "scan", "inspect", "look at", "audit")
+_CODE_REVIEW_EN_DETERMINERS = ("a", "the", "this", "my", "our", "these", "that")
+_CODE_REVIEW_EN_OBJECTS = (
+    "code change",
+    "code changes",
+    "change",
+    "changes",
+    "diff",
+    "patch",
+    "pull request",
+    "pr",
+    "commit",
+    "commits",
+)
+# A bare "change" is also a policy, contract or schedule change: it counts only
+# when the sentence asks about bugs in it, or as "code change".
+_CODE_REVIEW_EN_BARE_OBJECTS = ("change", "changes")
+_CODE_REVIEW_EN_PURPOSES = ("bugs", "a bug", "any bugs", "regressions", "bugs and regressions", "correctness")
+_CODE_REVIEW_EN_INTRODUCE = ("introduce", "introduces", "add", "adds", "cause", "causes")
+_CODE_REVIEW_EN_BUG_OBJECTS = ("a bug", "any bugs", "bugs", "a regression", "any regressions", "regressions")
+_CODE_REVIEW_EN_WHETHER = ("decide whether", "check whether", "check if", "tell me whether", "tell me if", "find out whether", "see if")
+_CODE_REVIEW_KO_DETERMINERS = ("이", "이번", "내", "제", "우리")
+_CODE_REVIEW_KO_OBJECTS = (
+    "diff",
+    "pr",
+    "패치",
+    "변경",
+    "변경사항",
+    "변경 사항",
+    "커밋",
+    "코드",
+    "코드 변경",
+    "풀 리퀘스트",
+    "풀리퀘스트",
+)
+_CODE_REVIEW_KO_BARE_OBJECTS = ("변경", "변경사항", "변경 사항")
+_CODE_REVIEW_KO_VERBS = ("리뷰", "코드 리뷰", "검토", "코드 검토")
+_CODE_REVIEW_KO_COMPOUND_VERBS = ("코드 리뷰", "코드리뷰", "코드 검토")
+_CODE_REVIEW_KO_ENDINGS = ("해줘", "해 줘", "해주세요", "해 주세요", "부탁해")
+_CODE_REVIEW_KO_LOOK_VERBS = ("봐줘", "봐 줘", "봐주세요", "확인해줘", "확인해 줘", "확인해주세요", "찾아줘", "찾아 줘", "체크해줘", "검토해줘")
+
+
+def _code_review_shapes() -> tuple[re.Pattern[str], ...]:
+    slot = _frontend_guard_slot
+    lead = f"(?:{slot(*_CODE_REVIEW_EN_LEADS)} )?"
+    det = slot(*_CODE_REVIEW_EN_DETERMINERS)
+    code_objects = tuple(o for o in _CODE_REVIEW_EN_OBJECTS if o not in _CODE_REVIEW_EN_BARE_OBJECTS)
+    obj = f"{slot(*code_objects)}(?: #?\\d+)?"
+    any_obj = f"{slot(*_CODE_REVIEW_EN_OBJECTS)}(?: #?\\d+)?"
+    purpose = f"(?: for {slot(*_CODE_REVIEW_EN_PURPOSES)})?"
+    polite = f"(?: {slot('please')})?"
+    numbered = f"(?:{slot('pr', 'pull request')} #?\\d+)"
+    ko_det = f"(?:{slot(*_CODE_REVIEW_KO_DETERMINERS)} )?"
+    ko_code_objects = tuple(o for o in _CODE_REVIEW_KO_OBJECTS if o not in _CODE_REVIEW_KO_BARE_OBJECTS)
+    ko_obj = f"{ko_det}{slot(*ko_code_objects)}"
+    ko_any_obj = f"{ko_det}{slot(*_CODE_REVIEW_KO_OBJECTS)}"
+    statement = (
+        f"{slot('the', 'this', 'my')} {slot(*_CODE_REVIEW_EN_OBJECTS)} "
+        f"{slot(*_CODE_REVIEW_EN_INTRODUCE)} {slot(*_CODE_REVIEW_EN_BUG_OBJECTS)}"
+    )
+    shapes = (
+        # review this diff / can you review my PR / review PR 1234 for bugs
+        f"{lead}{slot(*_CODE_REVIEW_EN_VERBS)} (?:{det} {obj}|{numbered}){purpose}{polite}",
+        # review this change for bugs: a bare change needs the bug purpose.
+        f"{lead}{slot(*_CODE_REVIEW_EN_VERBS)} {det} {any_obj} for {slot(*_CODE_REVIEW_EN_PURPOSES)}{polite}",
+        # check this patch for regressions: a check verb needs the bug purpose.
+        f"{lead}{slot(*_CODE_REVIEW_EN_CHECK_VERBS)} (?:{det} {any_obj}|{numbered}) for {slot(*_CODE_REVIEW_EN_PURPOSES)}{polite}",
+        # find bugs in this diff
+        f"{lead}{slot('find', 'look for')} {slot(*_CODE_REVIEW_EN_BUG_OBJECTS)} in (?:{det} {any_obj}|{numbered}){polite}",
+        # does this change introduce a bug
+        f"{slot('does', 'did', 'will', 'would')} {slot('the', 'this', 'my')} {slot(*_CODE_REVIEW_EN_OBJECTS)} "
+        f"{slot('introduce', 'add', 'cause')} {slot(*_CODE_REVIEW_EN_BUG_OBJECTS)}",
+        # decide whether the change introduces a bug
+        f"{slot(*_CODE_REVIEW_EN_WHETHER)} {statement}",
+        # 이 diff 리뷰해줘: the object is required, a bare "검토해줘" is not this lane.
+        f"{ko_obj}{slot('를', '을')}?(?: {slot('좀')})? {slot(*_CODE_REVIEW_KO_VERBS)} ?{slot(*_CODE_REVIEW_KO_ENDINGS)}",
+        # 코드 리뷰 해줘: the verb carries its own object.
+        f"{slot(*_CODE_REVIEW_KO_COMPOUND_VERBS)} ?{slot(*_CODE_REVIEW_KO_ENDINGS)}",
+        # 이 PR 버그 있는지 봐줘
+        f"{ko_any_obj}{slot('에', '에서', '에는')}? {slot('버그')}{slot('가')}? {slot('있는지', '없는지')}(?: {slot('좀')})? {slot(*_CODE_REVIEW_KO_LOOK_VERBS)}",
+        # 이 diff에서 버그 찾아줘
+        f"{ko_any_obj}{slot('에서')}? {slot('버그')}{slot('를')}? {slot('찾아줘', '찾아 줘', '찾아주세요')}",
+    )
+    return tuple(re.compile(pattern) for pattern in shapes)
+
+
+_CODE_REVIEW_SHAPES = _code_review_shapes()
+_CODE_REVIEW_SENTENCE_SPLIT = re.compile(r"(?:[.!]\s+|[.!]$|\?|\n)")
+
+
+def code_review_request_sentence(normalized_query: str) -> str:
+    """The first sentence that is wholly a closed review or find-bugs shape, or "" when none is."""
+    for raw in _CODE_REVIEW_SENTENCE_SPLIT.split(normalized_query):
+        sentence = " ".join(raw.replace(",", " ").split()).rstrip(" .!~")
+        if sentence and any(shape.fullmatch(sentence) for shape in _CODE_REVIEW_SHAPES):
+            return sentence
+    return ""
+
+
+def code_review_request_guard_applies(normalized_query: str) -> bool:
+    """One sentence of the request is a closed review or find-bugs shape over a code-change object."""
+    return bool(code_review_request_sentence(normalized_query))
 
 
 def game_build_guard_applies(normalized_query: str) -> bool:

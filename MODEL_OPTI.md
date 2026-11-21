@@ -61,7 +61,7 @@ identical prompt. Nothing else about the pipeline changes per model.
 | `kimi` | `kimi-` | `kimi-k3`, `kimi-k3-ultrafast`, `kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`, `moonshotai/kimi-k3.1-pro` |
 | `glm` | `glm-` | `glm-5.3`, `glm-5.3-flash`, `glm-5.2-ultrafast` |
 | `grok` | `grok-` | `grok-build-0.1` |
-| `qwen` | `qwen-`, aliases `qwen3-` and `qwen3.` | `qwen3-coder`, `qwen/qwen3.8-flash` |
+| `qwen` | `qwen-`, aliases `qwen3-`, `qwen3.`, `qwen4-`, and `qwen4.` | `qwen3-coder`, `qwen/qwen3.8-flash`, `qwen4-max`, `qwen/qwen4-max`, `qwen4-max-preview` |
 | `deepseek` | `deepseek-` | `deepseek-v4.1-flash`, `deepseek-flash` (the first-party pointer), `deepseek/deepseek-v4.1-flash` |
 | `mistral` | `mistral-` | Mistral Large / Medium ids |
 | `llama` | `llama-` | open-weights Llama ids, any serving host |
@@ -248,6 +248,16 @@ discipline for how those prompts are assembled:
   a batching rule is the first thing a weak lane may drop, so it must never
   displace a stop rule there. The `claude` family block used to carry the
   batching half itself; that sentence moved here.
+- **Shared-machine etiquette** — run only the builds and tests you need at
+  once; before returning, stop background jobs you started and delete temp
+  files you created (`SHARED_MACHINE_PROTOCOL`). *Why:* sibling units share
+  one host, and a unit that starts every suite at once, or leaves a watcher
+  or scratch tree behind, slows or breaks a sibling it cannot see. It rides
+  the unit section right after tool batching, outside the frozen head, so on
+  a weak lane it is the first unit rule dropped and never displaces a stop
+  rule. Source: OpenAI's "Prompting GPT-6.2 in Codex" guide (official, read
+  2026-11-20), generalized to every family because a shared host is not
+  model-specific. Editorial, unmeasured.
 
 The first three originate from the stop-condition techniques the
 upstream agent-harness research surfaced for high-effort models (terminal-condition
@@ -373,6 +383,122 @@ versus final, heartbeats, async user messages, `notes`/`history` tools,
 `fork_turns`) are Hermes' surfaces, not OMH's; the confirmation-policy tiers
 for computer use are a candidate for the browser skills' boundaries, not
 this round.
+
+### Techniques compared (vendor harness snapshots, 2026-11-20)
+
+Seven vendor harnesses were snapshotted on 2026-11-20 from the vendors' own
+clients and compared with OMH the same way as the two reviews above. Every
+source here is **official-client**:
+
+- Codex CLI 0.169.1: openai/codex tag `rust-v0.169.1`, commit `c376cf73`,
+  Apache-2.0. 0.169.0 (`d32063f9`) was snapshotted as the diff base.
+- Claude Code 2.1.329: the installed binary, sha256 `8c172956…8725550`,
+  proprietary. It is paraphrased here and never quoted. 2.1.327 (sha256
+  `76d48205…bea91c5b`) is the diff base.
+- Gemini CLI 0.70.0: `v0.70.0` at `8468962e`, Apache-2.0.
+- Qwen Code 0.28.0: `v0.28.0` at `895dfca8`, Apache-2.0.
+- Kimi CLI 1.52.0: tag `1.52.0` at `9ab1286b`, Apache-2.0. The repository is
+  archived. Its successor, MoonshotAI/kimi-code (MIT), was not snapshotted.
+- ZCode 3.18.2: zai-org/ZCode `v3.18.2` at `fec97590`, Apache-2.0.
+- DeepSeek Harness: `master` at `2e39e704` (2026-11-18), MIT. That is 15,965
+  commits after the `3a46bd6` reviewed above, so only policy and prompt deltas
+  were re-read.
+
+No public xAI harness exists, so Grok has none. The per-vendor tables (item,
+location in the vendor text, OMH equivalent or gap, decision) and the
+follow-ups are in `docs/VENDOR-HARNESS-REVIEW.md`. This section is the summary.
+
+**Supersedes the community dump for the overlapping text.** The Codex Desktop
+sentences quoted in the section above are now covered by the official client
+at `rust-v0.169.1`:
+
+- the skills-precedence sentence and the persistence push, in every GPT-6.x
+  base prompt;
+- the test-sizing sentence, verbatim in the GPT-6 Astra, GPT-6 Sol, GPT-6.1
+  Sol and GPT-6.1 Terra prompts;
+- the assumptions sentence, in the default collaboration-mode template;
+- the safer-alternative rejection rule, in the auto-review rejection
+  instructions.
+
+For those sentences the official-client label replaces the community one. The
+old section stays as the record of what was adopted on 2026-09-11 and why.
+
+**Corroborated, already in OMH.** Several rules appear in two or more vendor
+clients, and OMH already carries each of them:
+
+- *Confirm risky actions, and approval does not carry over.* Claude Code and
+  ZCode both say to confirm hard-to-reverse or outward-facing actions unless
+  durably authorised, and that approval in one context does not extend to the
+  next. OMH has this as `ENGINE_FOLLOW_UP_AUTHORITY_RULE` and
+  `ENGINE_ENTRY_CONFIRMATION_RULE`.
+- *A denial is not routed around.* Qwen Code says so. Codex's auto-review
+  rejection asks for a safer alternative or shown authorisation. OMH has
+  `FAILURE_KIND_PROTOCOL` and the refused-escalation clause.
+- *Faithful outcome reports.* Qwen Code and Claude Code both say a failed check
+  comes with its output and a skipped step is named. OMH has this in the
+  delegated-child calibration.
+- *Verify with the project's own commands.* Qwen Code, Kimi CLI and DeepSeek
+  Harness all ask for it. OMH has `VERIFICATION_STOP_PROTOCOL`.
+- *Batch independent calls, serialize the rest.* Codex 6.2 says it at L145, and
+  DeepSeek Harness sends independent subagents together. OMH has
+  `TOOL_BATCHING_PROTOCOL`.
+- *A delegated agent reports only to its parent.* Kimi CLI's coder agent and
+  Gemini CLI's non-interactive mode both keep the child away from the user. OMH
+  has `PARENT_CLARIFICATION_PROTOCOL` and the sidecar `UNIT_RESULT_RETURN_PROTOCOL`.
+- *End the turn while waiting.* DeepSeek Harness ends the turn instead of
+  polling, which is the armed-wait clause of `ENGINE_INTERJECTION_RESUME_RULE`.
+- *Per-model prompt variants.* Claude Code gates per-model prompt bundles on
+  catalog capability flags, which is the structure of
+  `MODEL_HIGH_EFFORT_CALIBRATIONS`.
+- *No contrastive "X, not Y" framing.* Codex 6.2 says so at L17. It is the
+  house reply-style rule.
+
+**Adopted.** Two adoptions land in this change, both docs only:
+
+- The per-model surfaces lines below now record each client's catalog facts:
+  `gpt-6.2-astra`, `claude`, `gemini-4-argon`, `kimi-k3.1-pro`, `glm`,
+  `qwen4-max` and `deepseek`.
+- `docs/MODEL-ONBOARDING.md` §2 now carries the rule to copy a ladder and its
+  limits from the vendor client at a pinned tag and record the tag and sha.
+
+Five composer and harness gaps are adopted as numbered follow-ups in
+`docs/VENDOR-HARNESS-REVIEW.md`. Each touches a byte-budgeted or pinned prompt
+surface, so none of them ships in this change:
+
+1. When stopping for approval, name where the requirement came from (Codex 6.2,
+   L63).
+2. No check-bypass or destructive shortcut around an obstacle (Claude Code, Qwen
+   Code).
+3. A passing test is evidence about the code, not about the feature (Claude
+   Code).
+4. A delegated child does not hand its whole assignment to another agent
+   (Claude Code).
+5. The browser confirmation-policy tiers (Codex 0.169.1).
+
+**Deliberately not adopted.** These stay out:
+
+- *The persistence push, in every client that has one.* That is Codex 6.2's
+  end-to-end-ownership and do-not-stop-after-describing sentences (L45, L77),
+  Qwen Code's keep-going-until-resolved, Kimi CLI's do-not-give-up-too-early,
+  and Gemini CLI's persist-through-errors. The reason is the 2026-09-05 Astra
+  measurement: +5,419 tokens per instance at an unchanged pass rate.
+- *Gemini CLI's "always update related tests" rule.* It contradicts the
+  test-sizing rule that Codex itself narrowed in 6.2 (L98: new tests only when
+  requested, required by the repo, or catching a specific regression).
+- *Kimi CLI's blanket ban on git mutations.* In OMH a unit's brief owns local
+  commits, and external state is already gated.
+- *Host and executor surfaces.* Compaction prompts, between-tool text
+  visibility, tool-output truncation, re-read-after-edit advice and security
+  refusal scopes belong to Hermes, the executor or the provider, not OMH.
+- *Codex's `ultra` rung and its automatic delegation.* They stay Codex-only.
+
+**Candidate, unmeasured (no prompt change).** Claude Code 2.1.329 gives
+`claude-haiku-5-5` a capability flag for early-stopping guidance and a gated
+prompt section for it. That is the vendor's counter to the trait the Haiku 5.5
+guide documents: at `low` it stops early and hands the task back (see
+`claude-haiku-5-5`). The section's text was not reconstructed. If it is a
+keep-working push, it stays out for the reason above. Any other counter for
+that trait is the `family` vs `optimized` pair already named there.
 
 ## Per-family calibrations: what, why, and where each came from
 
@@ -587,6 +713,10 @@ pairing so a benchmark claim can never mix in other prompt changes.
   gated to `*-sol` (GPT-6 Sol and GPT-6.1 Sol included, by decision) and the Hermes
   `ultrawork` overlay stays family-wide;
   neither has an Astra measurement, so Astra on codex gets the base rules.
+- **Retired 2026-11-18:** GPT-6.2 Astra took every slot below, each at its
+  effort (see `gpt-6.2-astra` and `gpt-6.2-sol`). GPT-6 Astra keeps its
+  contract, override, declared aliases, price, and Codex option row for a
+  machine-level override.
 - **Routing:** heads `ultrabrain` and the GPT slot of `architect` in both
   lanes. GPT-5.6 Sol trailed it as fall-through until 2026-09-11, when the
   superseded generations left every shipped chain (owner decision). Since
@@ -691,6 +821,10 @@ pairing so a benchmark claim can never mix in other prompt changes.
     and 14% fewer tool calls (351 vs 409) for the same pass set. That
     supports the slot swap.
   - Full tables are in the benchmark README.
+- **Retired 2026-11-18:** GPT-6.2 Sol took every slot below, each at its
+  effort (see `gpt-6.2-astra` and `gpt-6.2-sol` below). 6.1 Sol keeps its
+  contract, override, price, and Codex option row for a machine-level
+  override.
 - **Version rule:** the override is keyed to `gpt-6.1-sol` only (and the
   forms that project onto it). GPT-6 Sol keeps the `gpt` family block
   unchanged; a later Sol generation gets this block only through its own
@@ -725,6 +859,144 @@ pairing so a benchmark claim can never mix in other prompt changes.
   `high` (the `deep` rung), and `gpt-6-sol` vs `gpt-6.1-sol` at `medium`
   (the last-resort rung).
 
+
+### `gpt-6.2-astra` (GPT-6.2 Astra, exact-model override on the `gpt` family; shared with GPT-6.2 Sol)
+
+One record covers both GPT-6.2 ids, because the vendor documents them together
+(one migration and prompting guide, one changelog entry, one Codex base prompt)
+and OMH treats them alike; the next section names what differs for Sol.
+
+
+- **Documented contract (official, developers.openai.com, read
+  2026-11-18):** both released 2026-11-17 (API changelog), one id each
+  (`gpt-6.2-astra`, `gpt-6.2-sol`; no dated snapshot listed, and a dated
+  `-YYYY-MM-DD` form still projects onto the base). Text and image in, text
+  out; 1,050,000-token context, 922,000 max input, 128,000 max output;
+  knowledge cutoff 2026-05-18 (Astra) and 2026-06-01 (Sol). Both pages say
+  "The API rejects requests that set reasoning effort to `none`", and the
+  migration guide sends `none` and `minimal` callers to `low`, so the ladder
+  is `low` through `max` and `off` / `minimal` are raised to the `low` floor
+  on record (`floor_raised`), Astra's and 6.1 Sol's shape. No API default
+  effort is stated for either id, so `effort_default` is empty, as for GPT-6
+  Astra. Tool calling requires the Responses API; Chat Completions serves
+  requests without tools. `temperature`, `top_p`, `logprobs` /
+  `top_logprobs` are unsupported. No `-pro` / `-fast` / `-flex` row is
+  declared; the reasoning guide's pro-mode example names `gpt-6.2-sol` and
+  the contract records it as a documented, unobserved mechanism.
+- **Surfaces (official-client and observed):** Codex CLI 0.169.0's served
+  catalog lists `low` through `max` plus the Codex-only `ultra` (kept out of
+  every OMH ladder), a `low` default, and a 500K (Sol) / 272K (Astra)
+  context window with an 872K maximum; both ids share one new base prompt,
+  not GPT-6 Astra's. The installed Hermes build (v0.23.1) and its
+  origin/main (`da9c2bd62f`, 2026-11-17) carry no `gpt-6.2` id, so the
+  Codex route takes the legacy `none`..`xhigh` ladder and clamps `max` to
+  `xhigh` until Hermes adds the ids to its no-disable tier list. The bundled
+  catalog at openai/codex `rust-v0.169.1` (`c376cf73`, the first tag that
+  ships the ids) agrees: `low` default, `low`..`max` plus `ultra`
+  ("automatic task delegation"), 272K (Astra) / 500K (Sol) with an 872K
+  maximum. The two ids' base prompts are byte-identical (25,959 B), so Sol
+  and Astra share one prompt and differ only in catalog rows. Both run
+  multi-agent v2 with sub-agents at `xhigh`, parallel tool calls, `low`
+  default verbosity, and tool output truncated at 10,000 tokens.
+- **Model trait (official, latest-model guide):** writing is more concise
+  and direct by default; when intent is unclear the model may propose a
+  next step and wait for confirmation; it writes more efficient code; in
+  long tasks it can carry reasoning shorthand into its final answer. New
+  wire behaviour: the API drops reasoning items on a mid-conversation prefix
+  edit, a `safety_identifier` change, or a model downgrade, and recommends
+  keeping the prefix unchanged.
+- **What OMH injects:** GPT-6 Astra's two blocks, byte for byte, keyed to
+  both ids (`MODEL_HIGH_EFFORT_CALIBRATIONS` and
+  `MODEL_COMPOSITION_CALIBRATIONS`; a test pins the equality), so each id
+  receives exactly what its predecessor received in the slots it took. No
+  new sentence (owner decision, 2026-11-18). Trait by trait:
+  - "may propose a next step and wait for confirmation" is the trait
+    Astra's "Ask one focused question only when a missing input would
+    materially change the result; otherwise state the assumption and
+    proceed" already counters, without pushing.
+  - "more concise and direct" and "more efficient code" need no counter.
+    The guide's advice is to revisit existing "be concise" instructions;
+    OMH's blocks carry none.
+  - "reasoning shorthand in the final answer" meets the structured return
+    every unit already ends on (`fanout_unit_result/v1`), which is read by
+    a machine, not a human who missed the progress updates.
+  - Dropped reasoning items on a prefix edit is a rule of the host's
+    conversation handling, which a prompt cannot counter; it is recorded in
+    the contract's `runtime_mechanisms` as documented, not observed.
+- **Explicitly not imported:** the guide's "Bias towards action, and
+  persist until you've completed the task", "Avoid stopping to end the turn
+  while the task is incomplete", "Ask the model to verify that it has
+  completed the requested work", and the Codex prompt's "collaborate with
+  them until their intended goal is completely achieved". Each pushes the
+  model to keep working, the reading the 2026-09-05 Astra measurement cut
+  (+5,419 tokens per instance for the same pass set).
+- **Composer rules from the Codex guide (official, "Prompting GPT-6.2 in
+  Codex", read 2026-11-20):** two lines in the coding handoff, plus one
+  field. None is a calibration change: the two calibration blocks above stay
+  byte for byte, and the 2026-11-18 "no new sentence" decision stands.
+  - Subagent permission: when a `handoff_contract/v1` declares two or more
+    `parts[]` with no `depends_on`, the Codex template lists them and adds
+    "Use subagents as needed: the parts listed above can move ahead
+    independently", the guide's documented trigger phrase. Acceptance
+    criteria are never counted as parts. The Claude Code and other templates
+    are unchanged, and `ultra` stays out of every ladder.
+  - Scoping: every handoff with acceptance criteria closes Expected result
+    with "Finished means every acceptance criterion above holds; be
+    exhaustive on those, not beyond them". This is the guide's "say what
+    counts as finished and where to be exhaustive". It is not the
+    persistence wording cut above.
+  - Review focus: a fanout unit may declare `review_focus` (one sentence,
+    at most 150 UTF-8 bytes: the worst-case unit with the longest ASCII
+    reproduction command renders 7,800 B without one, and 7,996 B with a
+    150-byte focus). The assembler also fits it to the bytes left, so it
+    never takes a prompt that is under the 8,000-byte ceiling over it; the
+    g62 re-verify found an input (7,805 B) where the fixed bound alone did.
+    The unit section states it right after
+    the numbered criteria ("tell Codex what you'll look for when you
+    review"). When it is absent, no focus block is added; the
+    shared-machine line is the only byte every unit prompt gains.
+- **Throughput overlay:** `gpt_sol_codex_handoff` matches `*-sol`, so 6.2
+  Sol as a Codex main agent inherits it, as 6.1 Sol did;
+  `tests/test_executor_prompting.py` names `gpt-6.2-sol` so the
+  inheritance is reviewed. 6.2 Astra gets the base rules, as GPT-6 Astra
+  does.
+- **Routing (owner decision, 2026-11-18):** GPT-6.2 Astra takes every slot
+  GPT-6 Astra held and GPT-6.2 Sol every slot GPT-6.1 Sol held, each at the
+  same effort, in both lanes, the shared final order included (Claude Opus
+  5.5, then GPT-6.2 Sol). Chain order is otherwise unchanged. Each
+  `mixture_category_for` label moves with its pair: Astra at `xhigh` labels
+  `forensics`, Sol at `xhigh` `review`, Sol at `medium` `unspecified-high`.
+  GPT-6 Astra and GPT-6.1 Sol leave every shipped chain under the
+  superseded-generation rule and stay recognized, contracted, priced,
+  provider-mapped, and adjudicated by their Codex option rows.
+- **Pricing (official):** Astra 8 / 40 per MTok, cached input 0.40, cache
+  writes 10 (30 minutes) and 20 (12 hours). Sol keeps 6.1 Sol's card: 2 / 10,
+  cached 0.10, writes 2.5 / 5. Both cache at 5% of input (an
+  `APPROX_CACHE_READ_RATIO` row). Above 272K input: 2x input and cache, 1.5x
+  output. Batch 0.5x, Fast 2x, Ultrafast 3x through 2027-02-28 and 6x from
+  2027-03-01; these multipliers stay in the contract.
+- **Editorial, unmeasured.** Named follow-up, optional and unrun (no paid
+  measurement): the old-vs-new pairs on `benchmarks/live-model-tools/v1`,
+  `gpt-6.1-sol` vs `gpt-6.2-sol` at `high` (the `deep` rung) and
+  `gpt-6-astra` vs `gpt-6.2-astra` at `xhigh` (the `ultrabrain` rung), plus
+  `family` vs `optimized` on each new id. A calibration that measures worse
+  than the family block is revised or removed in the change that reports it.
+- **Source:** official (both model pages, the latest-model and reasoning
+  guides, pricing page, and API changelog, read 2026-11-18); official-client
+  (Codex CLI 0.169.0 served catalog; openai/codex `rust-v0.169.1` bundled
+  catalog and base prompts, 2026-11-20 snapshot); observed (Hermes v0.23.1
+  and origin/main source).
+
+### `gpt-6.2-sol` (GPT-6.2 Sol, exact-model override on the `gpt` family)
+
+Everything in the `gpt-6.2-astra` section above applies; the differences are
+the record's own values. Knowledge cutoff 2026-06-01. List price 2 / 10 per
+MTok with cached input 0.10 and cache writes 2.5 / 5, GPT-6.1 Sol's card. The
+Codex catalog lists a 500K context window, the Ultrafast speed tier, and audio
+input, which the API page lists as unsupported. The reasoning guide's pro-mode
+example names this id, recorded as a documented, unobserved mechanism with no
+declared `-pro` row. It took every GPT-6.1 Sol slot on 2026-11-18, each at its
+effort, in both lanes, the shared final order included.
 
 ### `gpt-6-cyber` (GPT-6 Cyber, access-gated, exact-model override on the `gpt` family)
 
@@ -1054,6 +1326,21 @@ pairing so a benchmark claim can never mix in other prompt changes.
   calibration block fires at `medium`, and the vendor order is unchanged.
   Named follow-up: bench arm O4 (Opus 5.5 at `medium` on
   `benchmarks/live-model-tools/v1`), the arm skipped above.
+- **Surfaces (official-client, Claude Code 2.1.329, binary sha256
+  `8c172956…8725550`, catalog facts only):** the bundled catalog lists 24
+  ids. Its aliases resolve `opus` to Opus 5.5, `sonnet` to Sonnet 5.5,
+  `haiku` to Haiku 5.5 and `fable` to Fable 5.2 on the first-party API. Most
+  third-party providers resolve them to older ids instead (for example
+  `sonnet` and `haiku` to their 4.5 ids on Bedrock and Vertex). Fable 5.2,
+  Mythos 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5 have a 1M native window and
+  128K output, a `medium` client default, `low`..`max` with `xhigh`, and
+  per-turn effort. Fable 5.2, Mythos 5.2, Opus 5.5 and Haiku 5.5 reject
+  disabled thinking. Per-model prompt variants are gated on capability flags:
+  a prompt bundle each for Opus 5, Opus 5.5, Fable 5.1 (shared with Mythos
+  5.1) and Fable 5.2 (shared with Mythos 5.2), a Fable 5 mitigation flag, a
+  lean-prompt flag on every 5.x id, and an early-stopping-guidance flag on
+  Haiku 5.5 only. The 2.1.327 → 2.1.329 catalog diff only adds capability
+  flags.
 - **Source:** the original checklist/fan-out counters are adapted research
   (same origin as `gpt`), the composer block was added after observing
   over-fan-out in live composition; the 5.1 additions follow the official
@@ -1250,6 +1537,10 @@ pairing so a benchmark claim can never mix in other prompt changes.
   `thinking_budget`: AI Studio maps it to a level with a warning and Vertex
   AI returns HTTP 400, so only `thinkingLevel` is safe. OpenRouter's
   floating `~google/gemini-pro-latest` now points at Argon (community).
+  Gemini CLI `v0.70.0` (`8468962e`, 2026-11-20) still has no Argon or
+  Gemini 4 id: its model table stops at Gemini 3.1 Pro preview and 3.8
+  Flash, every Gemini id has a 1,048,576-token limit, and thinking is set per
+  alias rather than per model (official-client).
 - **Named follow-up:** Gemini 3.1 Pro vs Gemini 4 Argon at `high` on
   `benchmarks/live-model-tools/v1`. No served route existed on the
   onboarding machine (no Gemini, Google, or OpenRouter key), so neither the
@@ -1356,7 +1647,11 @@ pairing so a benchmark claim can never mix in other prompt changes.
   `kimi-k3` context row and has no price row for them (observed). The Kimi
   Code plan serves bare `k3.1-pro` / `k3.1-pro-highspeed` slugs
   (models.dev, community). Those slugs classify `unknown` here, like bare
-  `k3`.
+  `k3`. The legacy Kimi CLI 1.52.0 (`9ab1286b`, archived) has no static model
+  table: it lists models at runtime and filters on the `kimi-k` prefix
+  (official-client). Its successor kimi-code is not yet snapshotted. Qwen
+  Code 0.28.0's Qwen Cloud preset serves `kimi-k3` with a 1M window, `low` /
+  `high` / `max` and a `max` default (official-client, a third-party host).
 - **Measurement (named follow-up):** the paired runs are `kimi-k3` vs
   `kimi-k3.1-pro` on `benchmarks/live-model-tools/v1` at the same effort,
   plus `baseline` vs `optimized` for the family block on K3.1 Pro. On
@@ -1399,6 +1694,12 @@ pairing so a benchmark claim can never mix in other prompt changes.
   GLM-4.6 system-prompt rework; OpenCode long-context tool-call-format
   reports). The GLM guidance shipped with the baseline-vs-calibrated
   benchmark harness so its effect is measurable.
+- **Surfaces (official-client):** Z.ai's own harness, ZCode 3.18.2
+  (zai-org/ZCode `v3.18.2`, `fec97590`), carries only an id → display map
+  for 22 GLM ids, from `glm-5.3`, `glm-5.3-flash` and `glm-5v-turbo` back to
+  `glm-4-flash-250414`. There is no static context or effort table in its
+  core or provider sources. Qwen Code 0.28.0's Qwen Cloud preset lists
+  `glm-5.3` with a 1M window and no effort ladder (a third-party host).
 
 ### `qwen` (Qwen3-Coder)
 
@@ -1416,6 +1717,94 @@ pairing so a benchmark claim can never mix in other prompt changes.
   commands instead of requesting reasoning output.
 - **Source:** provider-published model characteristics (Qwen3-Coder's
   non-thinking architecture); shipped with the benchmark harness.
+- **Version rule:** this block is Qwen3-Coder's, and every Qwen id without
+  an exact override still receives it (`qwen3.8-*`, `qwen4-max-preview`).
+  Qwen4-Max has its own override below because the block's non-thinking
+  rule is wrong for a hybrid model with thinking on by default; the block
+  itself stays byte-stable so Qwen3-Coder's prompts do not move.
+
+### `qwen4-max` (Qwen4-Max, exact-model override on the `qwen` family)
+
+- **Documented contract (official, docs.qwencloud.com, read 2026-11-19):**
+  GA 2026-11-16 on pay-as-you-go and Token Plan, the first Qwen4 model and
+  the successor to Qwen3.8-Max; OpenRouter lists it as `qwen/qwen4-max`.
+  1,000,000-token context; max input 983,616 with thinking and 991,808
+  without; max output 131,072 without thinking, while thinking and the
+  final answer share 262,144 (default thinking budget 131,072). Input text,
+  image, and video; output text. Chat Completions, Responses, Anthropic
+  Messages, and DashScope; function calling, parallel tool calls,
+  structured output, web search, prefix completion, explicit and implicit
+  cache, and CoT summary with encrypted reasoning; no batch inference.
+  Hybrid thinking, on by default. The effort ladder is `low` / `high` /
+  `xhigh` with `high` the default, and the vendor's table maps `minimal` →
+  `low`, `medium` → `high`, `max` → `xhigh` (and `none` turns thinking off)
+  without an error. That is DeepSeek V4.1 Flash's shape, so
+  `unsupported_efforts` is empty, the table sits in `effort_mapping`, and
+  the route passes `medium` or `max` through on record. `preserve_thinking`
+  is on by default: earlier thinking goes back in `reasoning_content`,
+  never concatenated into `content`. Full record in
+  `src/coding/model_contracts.py`; `omh coding model-contract --model
+  qwen4-max` prints it.
+- **Preview:** `qwen4-max-preview` (2026-11-11, Token Plan only, no
+  per-token price) has a different ladder (`low` / `medium` / `xhigh`,
+  default `xhigh`) and rejects `reasoning_effort` and `thinking_budget`
+  together. It is recognized (`qwen`) and keeps the family block, with no
+  contract, price row, or chain entry.
+- **Price (official):** Singapore (International) 1.50 / 4.50 per MTok for
+  both thinking modes, one tier up to 1M input; cache hit 0.075 (a 0.05
+  `APPROX_CACHE_READ_RATIO` row, since Qwen4-Max publishes its own cache
+  rate where Qwen3.8 did not), cache writes 1.875 (5m) / 3.00 (1h).
+  Beijing and Global bill 1.413 / 4.24 with cache 1.767 / 2.827 / 0.071;
+  that card stays a caveat in the contract.
+- **Surfaces (official-client and observed):** the vendor's Codex page lists
+  the same three rungs with a `high` default and
+  `supports_parallel_tool_calls: false`; its Claude Code page maps
+  `qwen4-max` onto the Opus slot with a 983,616-token context. Hermes Agent
+  at 3b42157858 and origin/main fe8b920cae (observed) sends no
+  `reasoning_effort` on its DashScope profiles, so the model runs at `high`
+  whatever effort is routed; its `preserve_thinking` list stops at qwen3.8,
+  and its context table reads the id through the 131,072-token `qwen`
+  catch-all. The vendor's own harness, Qwen Code 0.28.0 (QwenLM/qwen-code
+  `v0.28.0`, `895dfca8`), lists `qwen4-max` in its Qwen Cloud preset with a
+  1M window, efforts `low` / `high` / `xhigh` and a `high` default, which is
+  the same three rungs and default as the Codex page. The same preset gives
+  `qwen3.8-max` `low` / `medium` / `xhigh` with an `xhigh` default
+  (official-client).
+- **Model trait:** hybrid thinking on by default, so a counter that forbids
+  reasoning (the family block's) contradicts the served contract; earlier
+  thinking is kept in the reasoning channel, so restating it in the visible
+  reply is duplicate output.
+- **What OMH injects (subagent):** reasoning depth is the routed effort
+  rung, never a request to turn thinking off or to write reasoning into the
+  reply; earlier thinking stays in the reasoning channel and the visible
+  reply carries the change and the stop; then the family block's working
+  rules (exact goal, boundaries, tool schemas, criteria, one explicit plan,
+  observed-output recovery, stop after one passing verification run).
+- **What OMH injects (composer):** the visible composition is the ordered
+  split, not a replay of planning already in context, with no synthetic
+  thinking instructions; a unit takes `low`, `high`, or `xhigh`, because the
+  vendor's table turns `medium` into `high` and `max` into `xhigh`.
+- **Why an override, and why these sentences:** editorial, unmeasured. Each
+  new sentence counters a documented trait the family block does not cover
+  (hybrid thinking on by default; `preserve_thinking`), and none asks the
+  model to keep working or finish more: the launch page's "long-running
+  agents" framing is not imported, on the Astra rule (§8 of the onboarding
+  procedure). The ladder sentence reuses DeepSeek V4.1 Flash's composer
+  wording because the vendor publishes the same kind of mapping table.
+- **Community counter-signals (unconfirmed):** DataCamp's launch coverage
+  and Artificial Analysis / Vals as reported (2026-11-16) describe the model
+  as verbose (127M output tokens on the AA index against a 78.6M median)
+  and slow on Vals, and weak on Terminal-Bench 4.0 (48.5); Alibaba claims
+  about 35% fewer tokens than Qwen3.8-Max at `high`. None is turned into a
+  calibration claim. If a measurement confirms the verbosity signal, the
+  "change and the stop" sentence is the one it bears on.
+- **Placement:** none. Qwen3.8-Max holds no shipped chain slot, so there is
+  nothing for Qwen4-Max to inherit and no retirement row; placing it in a
+  category is an open owner decision. An operator places it with
+  `omh model-chains set <category> "qwen4-max:high, ..."`.
+- **Measurement (named, unrun):** `qwen3.8-max` vs `qwen4-max` at `high` on
+  `benchmarks/live-model-tools/v1`, plus the `family` vs `optimized` pair for
+  this override. Optional and paid; no arm is added in this change.
 
 ### `deepseek` (DeepSeek versioned line)
 
@@ -1435,7 +1824,9 @@ pairing so a benchmark claim can never mix in other prompt changes.
   context across tool results only on a reasoning-capable route; otherwise
   use the same explicit goal/boundaries/criteria without thinking tags; edit
   by exact literal strings (a unique match with exact whitespace); make
-  the smallest correct change, verify once, stop.
+  the smallest correct change, verify once, stop; write the answer file in
+  the exact shape the task names (one JSON object keyed by the task's own
+  field names, not a bare list and not a wrapper key of the model's own).
 - **What OMH injects (composer):** keep the DeepSeek version and thinking
   mode explicit in the prepared route; no synthetic thinking instructions on
   non-reasoning routes; validate once and stop. The family residue of the
@@ -1453,6 +1844,15 @@ pairing so a benchmark claim can never mix in other prompt changes.
   on every tool turn) and the vendor documents a three-rung effort ladder.
   Every other DeepSeek id — V3.2, V4 Flash, V4 Pro, `deepseek-chat`,
   `deepseek-reasoner` — keeps this family block.
+- **Surfaces (official-client):** DeepSeek Harness `master` at `2e39e704`
+  (2026-11-18, MIT) declares two models. `deepseek-flash` is displayed as
+  DeepSeek-V4.1-Flash, text input only. `deepseek-v4-pro` is DeepSeek-V4-Pro.
+  Both have a 1,048,576-token window and no effort table. The flash entry
+  carries a system-prompt update policy of in-history and a tool update
+  policy of addition-only, which matches the cache-preserving rule above.
+  Qwen Code 0.28.0's Qwen Cloud preset lists `deepseek-v4.1-flash` and
+  `deepseek-v4-pro-0813` with `low` / `high` / `max` and a `high` default (a
+  third-party host).
 
 ### `deepseek-v4.1-flash` (DeepSeek V4.1 Flash, exact-model override on the `deepseek` family)
 
@@ -1529,7 +1929,12 @@ pairing so a benchmark claim can never mix in other prompt changes.
   criterion, report the blocker from that evidence rather than widening the
   search, and leave a passed criterion closed; and the family block's
   closing rule, verbatim — make the smallest correct change, verify once,
-  and stop. Four sentences; under the per-block ceiling. Nothing in it asks
+  and stop; then the family block's answer-shape sentence, verbatim — the
+  answer file is one JSON object keyed by the task's own field names, not a
+  bare list and not a wrapper key of the model's own (measured on
+  `deepseek/deepseek-flash` 2026-11-18: 85/90 against 76/90 on the six
+  fixable live-model-tools templates). Five sentences, two of them
+  directive; under the per-block ceiling. Nothing in it asks
   the model for more output: the first wording asked the reply to carry
   "the verification output" and the blocker report to carry "the observed
   output", and the measurement below found that those two phrases cost 25%
@@ -2031,6 +2436,7 @@ choose models by, not a guarantee for another persona or skill.
 | `deepseek-v4.1-flash` (exact-model override) | yes → `deepseek` | yes, both override tables, resolved before the family block | exact documented contract (three-rung ladder, no floor) plus stop-shaped counters for the documented traits; the family-vs-optimized pair is the named follow-up, blocked on a served route |
 | `deepseek-flash` (declared pointer alias) | yes → `deepseek` | yes, inherited from canonical `deepseek-v4.1-flash` | the vendor's moving "current Flash" id, declared with a read date; `deepseek-v4-flash`, `deepseek-v4-pro`, and every other DeepSeek id keep the family block |
 | `gpt-6.1-sol` (exact-model override) | yes → `gpt` | yes, both override tables (Astra's wording, byte for byte), resolved before the family block | exact documented contract (Astra's `low`-floor ladder, no `none`; the Codex client's ladder recorded beside it without the Codex-only `ultra`); `gpt-6.1-sol-pro` inherits through a declared projection; editorial for 6.1 Sol, the `family` vs `optimized` pair is the named follow-up |
+| `gpt-6.2-astra`, `gpt-6.2-sol` (exact-model overrides) | yes → `gpt` | yes, both override tables (Astra's wording, byte for byte), resolved before the family block | exact documented contracts (`low`-floor ladder, no `none`; the Codex client's ladder recorded beside each without `ultra`); hold every former GPT-6 Astra / GPT-6.1 Sol slot since 2026-11-18; editorial, the old-vs-new and `family` vs `optimized` pairs are the named follow-up |
 | `gpt-6-sol` (exact contract, no exact calibration; retired from the shipped chains 2026-10-01) | yes → `gpt` | yes, through the family block | exact documented contract (the API `none`-to-`max` ladder; the Codex client's ladder recorded beside it without `none` and without the Codex-only `ultra`); no exact counter: while it held `deep@high` and `main` (until 2026-10-01) those slots reached the calibrated tiers, and none was added because the Codex Sol prompt's keep-working sentence is not importable and no `family` vs `optimized` pair has run; the three generation pairs are the named follow-up |
 | `claude-fable-5-2` (exact contract, no exact calibration) | yes → `claude` | yes, through the family block | exact documented contract (Fable 5.1's request shape: always-on thinking, `low` floor, `high` default, no prefill, sampling parameters, or forced tool choice; $8 / $40 and 0.025x cache reads); heads `ultrabrain` and holds every former Fable 5.1 slot since 2026-11-10; `claude-fable-5.2` is a declared projection; Claude Code needs v2.1.290 or newer for it (observed); `claude-mythos-5-2` is recognized and priced without a contract and in no shipped chain; the 5.1-vs-5.2 pair is the named, unrun follow-up |
 | `gpt-6-luna`, `claude-opus-5-5` (exact contracts, no exact calibration) | yes → `gpt` / `claude` | yes, through the family block | exact documented contracts (Luna's `none`-to-`max` ladder; Opus 5.5's always-on thinking, forced-`tool_choice` 400, and 0.05x cache reads); no exact counter because neither shipped placement reaches the high-effort tier on the subagent side and the Opus composer block is kept byte-stable per the vendor's Opus 5.5 prompting guide; the old-vs-new generation pairs are the named follow-up |
@@ -2042,6 +2448,7 @@ choose models by, not a guarantee for another persona or skill.
 | other `openai-`, `anthropic-` vendor-qualified ids | recognized as model targets, family `unknown` | no → `generic` | vendor qualification alone does not establish a design; O-series, image, and emerging ids remain uncalibrated |
 | `kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed` (exact contracts, no exact calibration) | yes → `kimi` | yes, through the family block | exact documented contracts (three-rung `low`/`high`/`max` ladder with `max` as default, every other rung raised on record; Highspeed has its own rate card); K3.1 Pro holds every former Kimi K3 slot since 2026-10-24, Highspeed is recognition-only; the K3-vs-K3.1 pair is the named follow-up, blocked on a served route |
 | `gemini-4-argon` (exact contract, no exact calibration) | yes → `gemini` | yes, through the family block | exact documented contract (`low`/`medium`/`high` ladder with `medium` as default and no off switch; `off` and `minimal` raised on record, rungs above `high` passed through); holds every former Gemini 3.1 Pro slot since 2026-10-28; the 3.1-Pro-vs-Argon pair is the named follow-up, blocked on a served route |
+| `qwen4-max` (exact-model override) | yes → `qwen` | yes, both override tables, resolved before the family block | exact documented contract (`low`/`high`/`xhigh` ladder, `high` default, the vendor's mapping table for every other rung, so nothing is raised); hybrid thinking on by default, so the override replaces the Qwen3-Coder non-thinking rule for this id only; priced (Singapore list, own 5% cache rate), no provider row, in no shipped chain (placement is an open owner decision); editorial and unmeasured, the 3.8-Max-vs-4-Max and `family` vs `optimized` pairs are the named follow-up. `qwen4-max-preview` is recognized only and keeps the family block |
 | `jev` (non-generative) | yes | no, and none applies → no calibration pair | recognized, contracted (`jev-1.13.0`, with `jev-latest` and `jev-preview` as declared aliases), priced with a free output side, and in no chain by decision; the route answers `model_refused` and both chain editors refuse it. The coverage audit reports `effort`, `category_projection`, and `provider_eligibility` as `missing`, which is the honest reading for a model with no effort parameter and no chain membership — greening any of them would need an invented rung or an invented chain entry |
 | `minimax` | yes | no → `generic` | prefix landed in #1304 (`MiniMax-M3`, released 2026-05-31, and `MiniMax-M2.7`, 2026-03-18, per minimax.io release notes and the platform.minimax.io model list); the calibration pair waits on an observed failure mode or a provider-stated characteristic worth countering |
 | emerging families | no → `unknown` | no → `generic` | add a prefix and a calibration pair when one lands (the #1051/#1052 pattern) |
@@ -2071,6 +2478,8 @@ will resolve, not whether that generation has been optimized: `qwen3.8-*`
 now resolves to Qwen guidance, but remains unmeasured for placement. The
 existing Qwen guidance describes Qwen3-Coder; recognizing another minor
 version does not establish that it shares Coder's non-thinking contract.
+Qwen4-Max, whose documented contract is hybrid thinking, therefore gets its
+own exact override rather than the family block.
 
 The independent decision registry in
 `src/coding/model_portfolio_qualification.py` records existing owner-approved
@@ -2105,7 +2514,9 @@ not an observed model failure. Retirements carry successor, scope, and owner
 decision date. GPT-5.6 Sol's 2026-09-11 frontier-slot retirement was widened
 on 2026-09-23 to every shipped chain (successor `gpt-6-sol`), and GPT-5.6
 Terra was retired the same day to the same successor. GPT-6 Sol was retired
-from every shipped chain on 2026-10-01 (successor `gpt-6.1-sol`). Older ids stay
+from every shipped chain on 2026-10-01 (successor `gpt-6.1-sol`), and GPT-6
+Astra and GPT-6.1 Sol on 2026-11-18 (successors `gpt-6.2-astra` and
+`gpt-6.2-sol`). Older ids stay
 routable, priced, and provider-mapped.
 
 The report imports the contract audit's inventory parser, unions `models`,
@@ -2164,6 +2575,7 @@ not a stronger design-brief expectation, governs these boundaries:
   that inventory, with the owner-decision evidence in onboarding section 4.
   GPT-5.6 Sol's frontier-slot retirement was widened to every shipped chain
   on 2026-09-23, when GPT-6 Sol took its last-resort slot; GPT-6.1 Sol took
-  that slot from GPT-6 Sol on 2026-10-01.
+  that slot from GPT-6 Sol on 2026-10-01, and GPT-6.2 Sol from GPT-6.1 Sol on
+  2026-11-18.
   Tests pin zero unsupported dominance findings separately from those honest,
   evidence-linked retirement decisions.

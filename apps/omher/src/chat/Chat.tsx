@@ -3,10 +3,11 @@ import { selectAsks, useStore } from "../state/store";
 import { Header } from "./parts/Header";
 import { Timeline } from "./parts/Timeline";
 import { Composer } from "./parts/Composer";
-import { RunsFull } from "../runs/RunsTab";
+import { promptsOf } from "./parts/promptHistory";
 import { OmhPromptLine } from "../onboarding/OmhPromptLine";
 import { ConnectBlock } from "./connect/ConnectBlock";
 import { t } from "../i18n";
+import { ThreadChat } from "../threads/ThreadChat";
 
 /** The selected bot's one main chat: header, timeline, composer. */
 export function Chat() {
@@ -27,6 +28,8 @@ export function Chat() {
       </div>
     );
   }
+  // a thread of this bot (sidebar tree): the same parts, fed by the thread's chat
+  if (s.ui.thread) return <ThreadChat bot={bot} thread={s.ui.thread} />;
   const chat = s.chats[bot.name];
   const asking = selectAsks(s).some((a) => a.bot === bot.name);
   // the bridge is away (it reconnects by itself): the composer says so and waits, like a bot that is offline
@@ -34,9 +37,8 @@ export function Chat() {
   return (
     <>
       <Header bot={bot} chat={chat} />
-      <div className={`pane${s.ui.runsFull ? " has-full" : ""}`} data-pane={bot.name}>
+      <div className="pane" data-pane={bot.name}>
         <Timeline bot={bot} />
-        {s.ui.runsFull && <RunsFull bot={bot} />}
         {/* Hermes says the bot cannot answer (no AI account): one quiet block above the composer, so a long chat
             that loses its account still shows it without scrolling */}
         <ConnectBlock bot={bot} />
@@ -50,11 +52,13 @@ export function Chat() {
           offlineText={away ? t("chat.connecting") : undefined}
           skills
           plugins
+          history={promptsOf(chat?.items)}
           onSend={(text) => void s.send(text)}
           onSendFiles={(text, files) => s.sendWithFiles(text, files)}
           onStop={() => void s.interrupt()}
           reply={s.replyTo[bot.name] ?? null}
           onClearReply={() => s.setReplyTo(null, bot.name)}
+          onNewThread={bot.host || bot.status === "offline" ? undefined : (first) => void s.newThreadWith(bot.name, first)}
         />
       </div>
     </>

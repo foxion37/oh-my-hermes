@@ -60,7 +60,9 @@ dag-ulw aura sweeps as the call completes, while its group is live and only
 where the aura moves (`_glint_band`). A run of consecutive plumbing calls
 (`PLUMBING_TOOLS`: loading a skill, reading tool details) folds into one row,
 `● Loaded 4 skills + tool details · a, b, c, d  3.5s` (a failed one keeps its own
-row, and the details view unfolds the run), and a shell call that
+row, and the details view unfolds the run); a run of consecutive calls of one other tool folds into one row
+over each call's command, `● terminal · 3 calls  0.9s` (`_runs_with`, `_run_rows`; a call with an answer, a diff, a
+recall or a failure keeps its own row), and a shell call that
 feeds a script through a heredoc reads `terminal(python3 script · 23 lines)`
 (`_heredoc_summary`). A
 `tool.generating` row (`◌`) is a draft: a `tool.start` takes over the first
@@ -198,7 +200,6 @@ DROPPED_NOTICE = "⋯ {earlier} no longer held"
 BLOCK_CAP = 2000
 
 USER_MARK = "❯ "  # the composer's mark (`composer.PROMPT`), dim, before your prompt's dim text, on its band
-FROM_QUEUE_TAG = "⧗ from queue"  # on a prompt the queue sent once the turn before it ended
 # A steer the person sent: SENT until Hermes answers, then QUEUED (Hermes took it: it reads it after its next
 # tool call, or sends it as the next prompt while compressing, and says the same for both) or REFUSED. A steer into
 # the main turn then stays QUEUED, under the live blocks, until the turn is past it (TAKEN: at the first tool that
@@ -287,6 +288,8 @@ class SteerBlock:
     outcome: str = ""
     agent: str = ""
     done: bool = True
+    images: tuple[str, ...] = ()  # a cut-in's image captions, drawn under it as under any prompt
+    previews: tuple[Preview | None, ...] = ()
 
 
 @dataclass
@@ -1008,7 +1011,7 @@ def _user_rows(
 ) -> list[Line]:
     """Your prompt on a dim rail, behind a dim `❯`, in the muted colour (dim while it is a steer the turn has not
     taken in, `pending`); a `/name` that resolved to a command or skill bold in its colour (`slash_spans`);
-    `⧗ from queue` when the queue sent it; under it `  ⎿  [Image #1]` for each image it went with, and under that
+    under it `  ⎿  [Image #1]` for each image it went with, and under that
     label the image's preview rows when it has one (a kitty one only with `kitty_previews`: its placeholders show
     the image only on the screen it was sent to, the main one). Every row, a wrapped or blank one too, runs on
     `theme.prompt_band` to the right edge, its words measured against the band (`on_band`); a preview cell keeps
@@ -1024,10 +1027,6 @@ def _user_rows(
             continue
         spans = slash_spans(clean_text(source), block.known, theme.dim if pending else theme.muted, theme.slash)
         rows.extend(wrap_prefixed(spans, first if index == 0 else rest, rest, inner))
-    if block.from_queue and rows:
-        tag: Line = (Span(COLUMN_GAP + FROM_QUEUE_TAG, theme.muted),)
-        if line_width(rows[0]) + line_width(tag) <= inner:
-            rows[0] = (*rows[0], *tag)
     previewed: set[int] = set()
     for index, label in enumerate(block.images):
         rows.append((*_output_leads(theme)[0], Span(label, theme.muted)))
@@ -1040,6 +1039,14 @@ def _user_rows(
     if band.bg is None:
         return rows
     return [_preview_banded(row, band) if index in previewed else _banded([row], band)[0] for index, row in enumerate(rows)]
+
+
+def queued_prompt_rows(
+    text: str, width: int, theme: Theme, images: tuple[str, ...] = (), previews: tuple[Preview | None, ...] = (),
+) -> list[Line]:
+    """A prompt waiting for the running turn, drawn where a sent prompt is, in the chat: on the prompt band, dim, with
+    its images' labels and previews under it, as Claude Code draws a queued message."""
+    return _user_rows(UserBlock(text, images=images, previews=previews), width, theme, pending=True)
 
 
 def _awaits_answer(block: Block) -> bool:
@@ -1061,7 +1068,7 @@ def _steer_rows(block: SteerBlock, width: int, theme: Theme) -> list[Line]:
     if block.state == STEER_REFUSED:
         return [truncate_line((Span(f"{STEER_REFUSED_MARK}{block.outcome} · {_first_line(text)}", theme.warn),), width)]
     pending = block.state == STEER_SENT or (block.state == STEER_QUEUED and not block.agent)
-    return _user_rows(UserBlock(text), width, theme, pending)
+    return _user_rows(UserBlock(text, images=block.images, previews=block.previews), width, theme, pending)
 
 
 def _notice_style(level: str, theme: Theme) -> tuple[str, Style]:
@@ -1497,12 +1504,22 @@ def _folds(tool: ToolRow) -> bool:
     return tool.name in PLUMBING_TOOLS and tool.status in FOLDED_STATUSES
 
 
+def _runs_with(tool: ToolRow, before: ToolRow) -> bool:
+    """Whether a call joins the run of same-tool calls `before` ends (the owner, 2026-11-20: six `terminal` calls in
+    a row took twenty rows): the same tool, not a plumbing one, both in `FOLDED_STATUSES`, and neither with an
+    answer under it, a diff, or recalled records (`_recall_lines`), which keep their own rows. A failed or refused
+    call keeps its row and says why."""
+    return (tool.name == before.name and not _folds(tool)
+            and all(call.status in FOLDED_STATUSES and not call.answers and not call.inline_diff
+                    and call.recalled_at is None for call in (tool, before)))
+
+
 def _units(tools: list[ToolRow], fold: bool = True) -> list[list[ToolRow]]:
-    """The calls as rows: each run of consecutive plumbing calls one unit (`fold`), every other call a unit of its
-    own."""
+    """The calls as rows: each run of consecutive plumbing calls one unit, and each run of consecutive calls of one
+    tool one unit (`_runs_with`), with `fold`; every other call a unit of its own."""
     units: list[list[ToolRow]] = []
     for tool in tools:
-        if fold and _folds(tool) and units and _folds(units[-1][-1]):
+        if fold and units and ((_folds(tool) and _folds(units[-1][-1])) or _runs_with(tool, units[-1][-1])):
             units[-1].append(tool)
         else:
             units.append([tool])
@@ -1542,6 +1559,30 @@ def _folded_row(unit: list[ToolRow], width: int, theme: Theme, now: float | None
     return truncate_line((*head, *args, *tail), width)
 
 
+def _run_rows(unit: list[ToolRow], width: int, theme: Theme, now: float | None) -> list[Line]:
+    """A run of same-tool calls: `● terminal · 6 calls  3.1s`, then each call's command on its own row under `⎿`,
+    its time after it. What each printed is left out; the details view (ctrl+o) unfolds the run with it."""
+    status = _unit_status(unit)
+    running = next((tool for tool in unit if tool.status == TOOL_RUNNING), None)
+    mark = _tool_mark(status, theme, running is not None and _pulse_dim(running, now))
+    name = unit[0].name
+    durations = [tool.duration_s for tool in unit if tool.duration_s is not None]
+    tail: Line = (Span(COLUMN_GAP + _seconds(sum(durations)), theme.faint),) if durations and running is None else ()
+    head: Line = (mark, Span(" "), Span(name, kind_style(name, theme)), Span(f"{LABEL_SEPARATOR}{len(unit)} calls",
+                                                                           theme.muted), *tail)
+    first, rest = _output_leads(theme)
+    rows = [truncate_line(head, width)]
+    for index, tool in enumerate(unit):
+        lead = rest if index else first
+        took: Line = (Span(COLUMN_GAP + _seconds(tool.duration_s), theme.faint),) if tool.duration_s is not None else ()
+        shown = tool.script or tool.args_summary or name
+        room = width - line_width(lead) - line_width(took)
+        cut = truncate_left if _is_path(shown) else truncate
+        style = theme.dim if tool.status == TOOL_RUNNING and _pulse_dim(tool, now) else theme.muted
+        rows.append(truncate_line((*lead, Span(cut(shown, max(room, 1)), style), *took), width))
+    return rows
+
+
 def _tool_rows(
     group: ToolGroup, width: int, theme: Theme, expanded: bool, now: float | None = None, glint: bool = False,
 ) -> list[Line]:
@@ -1555,6 +1596,8 @@ def _tool_rows(
         status = _unit_status(unit)
         if not expanded and _folds(unit[0]):
             own = [_folded_row(unit, inner, theme, now)]
+        elif not expanded and len(unit) > 1:
+            own = _run_rows(unit, inner, theme, now)
         else:
             tool = unit[0]
             own = [_tool_row(tool, inner, theme, now, expanded)]
@@ -1700,8 +1743,8 @@ class Transcript:
         """Every prompt not yet taken takes the preview `lookup` gives for each of its images (by what `images`
         holds for it; one it has already stays where `lookup` gives none); the live region draws them at the next frame. At most
         `PREVIEW_KEEP` prompts keep previews: an older one past them keeps only its labels."""
-        for block in self.blocks[self._cursor :]:
-            if not isinstance(block, UserBlock) or not block.images:
+        for block in [*self.blocks[self._cursor :], *self._held]:
+            if not isinstance(block, (UserBlock, SteerBlock)) or not block.images:
                 continue
             old = block.previews
             previews = tuple(lookup(label) or (old[index] if index < len(old) else None)
@@ -1741,7 +1784,9 @@ class Transcript:
                 self._version += 1
         return moved >= 0 and moved >= self._tail_start(width, theme, max_rows)
 
-    def add_steer(self, text: str, agent: str = "") -> SteerBlock:
+    def add_steer(
+        self, text: str, agent: str = "", images: tuple[str, ...] = (), previews: tuple[Preview | None, ...] = (),
+    ) -> SteerBlock:
         """A steer the person just sent, held until Hermes answers and the transcript reaches a block boundary.
 
         A steer never closes a live block (closing a tool group would mark its
@@ -1752,7 +1797,7 @@ class Transcript:
         `steer_answered`. `agent` names the subagent a steer from the agent
         list is for.
         """
-        block = SteerBlock(text, agent=agent)
+        block = SteerBlock(text, agent=agent, images=images, previews=previews)
         self._steered = self._steered or not agent
         self._held.append(block)
         self._write_held()
@@ -1784,6 +1829,18 @@ class Transcript:
             self._version += 1
         else:
             self.add_aside(block)
+
+    def held_steers(self) -> list[SteerBlock]:
+        """The steer rows still held under the live blocks, in the order they were sent."""
+        return [block for block in self._held if isinstance(block, SteerBlock)]
+
+    def withdraw_steer(self, block: SteerBlock) -> None:
+        """Take back a steer row still held under the live blocks (never written, so never in scrollback): a cut-in
+        whose prompt now goes as a prompt of its own, or comes back to the composer."""
+        kept = [held for held in self._held if held is not block]  # by identity: two rows of one text are equal
+        if len(kept) != len(self._held):
+            self._held = kept
+            self._version += 1
 
     def steer_answered(self, block: SteerBlock, state: str, outcome: str = "") -> None:
         block.state, block.outcome = state, outcome

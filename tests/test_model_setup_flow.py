@@ -381,7 +381,7 @@ class ModelSetupFlowTests(unittest.TestCase):
                 "status": "observed_before",
             }
             for provider, model, source in (
-                ("openai", "gpt-6.1-sol", "codex"),
+                ("openai", "gpt-6.2-sol", "codex"),
                 ("openai", "gpt-5.6-terra", "codex"),
                 ("apitopia", "kimi-k3", RUNTIME_CONFIG_SOURCE),
                 ("anthropic", "claude-fable-5", "claude-code"),
@@ -600,8 +600,14 @@ class ModelSetupFlowTests(unittest.TestCase):
                     base + command,
                     output_json=False,
                 )
+                # The approval names the file and the change: the preview prints it.
+                _status, preview_stdout, _stderr = run_cli(
+                    base + [part for part in command if part != "--apply-model-config"],
+                    output_json=False,
+                )
+                approval = json.loads(preview_stdout)["steps"]["model_activation"]["preview"]["approval_digest"]
                 status, stdout, stderr = run_cli(
-                    base + command[:-1] + ["--model-config-digest", "before-digest", "--json"],
+                    base + command[:-1] + ["--model-config-digest", approval, "--json"],
                     output_json=False,
                 )
 
@@ -806,7 +812,7 @@ class ModelSetupFlowTests(unittest.TestCase):
             ):
                 status, stdout, stderr = run_cli(base, output_json=False)
                 self.assertEqual((status, stderr), (0, ""))
-                digest = json.loads(stdout)["steps"]["model_activation"]["preview"]["config_digest"]
+                digest = json.loads(stdout)["steps"]["model_activation"]["preview"]["approval_digest"]
                 # When: the apply is asked for under --dry-run.
                 status, stdout, stderr = run_cli(
                     base + ["--apply-model-config", "--model-config-digest", digest],
@@ -993,7 +999,7 @@ class ModelSetupFlowTests(unittest.TestCase):
                 # When: setup previews, then applies that preview by its digest.
                 status, stdout, stderr = run_cli(base, output_json=False)
                 self.assertEqual((status, stderr), (0, ""))
-                digest = json.loads(stdout)["steps"]["model_activation"]["preview"]["config_digest"]
+                digest = json.loads(stdout)["steps"]["model_activation"]["preview"]["approval_digest"]
                 status, stdout, stderr = run_cli(
                     base + ["--apply-model-config", "--model-config-digest", digest],
                     output_json=False,

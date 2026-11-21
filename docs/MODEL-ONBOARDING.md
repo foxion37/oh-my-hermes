@@ -330,6 +330,21 @@ official contract.
    only in the reasoning channel is rejected), and the preset the vendor
    benchmarks with says how much scaffolding the model wants (DeepSeek:
    Minimal — one shell tool, a one-line persona — scored above Standard).
+   The same lane reads the vendor's own coding client (Codex CLI, Claude
+   Code, Gemini CLI, Qwen Code, ZCode, the Kimi client, DeepSeek Harness)
+   for official-client facts. These come from the maintainer's
+   vendor-harness snapshot root: one directory per vendor and version,
+   holding the client's prompts, tools, model catalog, and policy lines
+   with a `meta.json` that pins the source. Refreshing that root when a
+   client releases (detect the version, extract it, diff against the
+   previous snapshot) is the maintainer's job. It runs outside this
+   repository and outside any user workspace, and no OMH command does it.
+   The rule for this step: copy a ladder or limit from the vendor client
+   at a pinned tag (or, for a closed binary, a pinned version), and record
+   the tag and commit sha (or the binary sha256) beside it. Never copy from
+   a branch head or from memory. A closed client is paraphrased, never
+   quoted. [Vendor Harness Review](VENDOR-HARNESS-REVIEW.md) is the
+   2026-11-20 pass.
 4. **Community harnesses** — OpenCode / models.dev, OpenRouter's endpoint
    listing, oh-my-pi, Aider, and the issue trackers. Use
    them for divergence (which ids 400, which harnesses drop the passback,
@@ -350,7 +365,13 @@ exact-model table when the new generation's documented traits differ from
 the family's and the older generation's prompts must stay byte-stable (GPT-6
 Astra over GPT-5.6) — and keep counters the guide says to keep even when it
 reads as redundant (for Claude 5.1: the single verification pass). Do not
-restate universal protocol rules inside a family entry. Then:
+restate universal protocol rules inside a family entry. A family block
+written for one generation can state a rule that a later generation's
+contract contradicts. The `qwen` block says the non-thinking Qwen3-Coder
+must not be asked for reasoning, and Qwen4-Max is hybrid with thinking on
+by default. Grepping the family block for the old generation's name
+(`Qwen3-Coder`, "non-thinking") finds it. The counter then goes in the
+exact-model table and the family block stays byte-stable. Then:
 
 - Update the family's section in `MODEL_OPTI.md` (trait, injected text,
   version rule, source). `tests/test_unit_prompt_protocol.py` fails when a
@@ -376,8 +397,10 @@ Rules that have held across every onboarding so far:
   same-line successor: its row is written out with an empty `successor` and
   a reason naming the model that now holds its only slot; and on 2026-10-24
   to Kimi K3 behind Kimi K3.1 Pro; on 2026-10-28 to Gemini 3.1 Pro
-  behind Gemini 4 Argon; and on 2026-11-10 to Claude Fable 5.1 behind
-  Fable 5.2, the `ultrabrain` head included).
+  behind Gemini 4 Argon; on 2026-11-10 to Claude Fable 5.1 behind
+  Fable 5.2, the `ultrabrain` head included; and on 2026-11-18 to GPT-6
+  Astra behind GPT-6.2 Astra and GPT-6.1 Sol behind GPT-6.2 Sol, two lines
+  of one family moved in one pass, the shared final order included).
   Record each retirement as a `RETIREMENT_DECISIONS` row with its
   own `decision_date`. The table is keyed by model id, so a second
   retirement of the same id rewrites its row rather than adding one: GPT-5.6
@@ -410,6 +433,14 @@ Rules that have held across every onboarding so far:
   Terra slot is a fresh placement decision, not an undo of the retirement.
   Copy the ladder from the new model page, not from the sibling released
   just before it. 6.1 Terra keeps `none` where 6.1 Sol dropped it.
+- A successor of a model that held no slot takes none either. Qwen3.8-Max
+  was priced and recognized but never chained, so Qwen4-Max (2026-11-16)
+  was onboarded with an exact contract, a price row, and calibration, but
+  no chain entry and no retirement row: there is nothing to retire and no
+  slot to inherit, and joining a chain is a fresh owner decision. A
+  Token Plan or similar preview id that publishes a different ladder and no
+  per-token price (`qwen4-max-preview`) is recognized only: it keeps the
+  family block and gets no contract, no price row, and no chain entry.
 - A chain names the id the vendor's own API serves, not the spelling a
   gateway or a model card uses. DeepSeek serves `deepseek-flash` and
   rejects `deepseek-v4.1-flash` with HTTP 400, so the chain names the
@@ -446,7 +477,8 @@ Rules that have held across every onboarding so far:
   decision, 2026-10-13, then for Fable 5.1), which reverses the 2026-09-06
   Fable → Opus order. The Hermes lane and the Maestro lane are different
   surfaces and both follow it, with two explicit exceptions. The Hermes-lane
-  `ultrabrain` chain is Fable 5.2 → GPT-6 Astra → Opus 5.5. It was GPT-6
+  `ultrabrain` chain is Fable 5.2 → GPT-6.2 Astra → Opus 5.5 (GPT-6.2
+  Astra in GPT-6 Astra's slot since 2026-11-18). It was GPT-6
   Astra alone, so the Claude entries give a user without OpenAI access a
   frontier fallback; putting Fable ahead of Astra is the owner's choice
   (2026-11-09, for Fable 5.1; Fable 5.2 took the head on 2026-11-10). The

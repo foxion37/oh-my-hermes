@@ -3,6 +3,8 @@
 // approval card that offers only Deny and Allow once (OpenCode's "always" is a saved project rule, never shown).
 import { expect, test, type Page } from "@playwright/test";
 
+test.skip(true, "chat-mode CLI sessions replaced by bot threads (2026-11-16: terminals kept)");
+
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 
 async function mock(op: string): Promise<void> {
@@ -29,7 +31,7 @@ async function open(page: Page, installed: string[]) {
   await page.addInitScript((list) => {
     localStorage.removeItem("omher.sessions.recent");
     const w = window as unknown as { __omherPickFolder: string; __omherMockAgents: string[] };
-    w.__omherPickFolder = "/Users/you/code/web-app";
+    w.__omherPickFolder = "/home/you/code/web-app";
     w.__omherMockAgents = list;
   }, installed);
   await page.goto("/");

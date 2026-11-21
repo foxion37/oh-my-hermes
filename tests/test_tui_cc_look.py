@@ -70,7 +70,7 @@ from omh.tui.transcript import (
     block_rows,
     rail_cell,
 )
-from omh.tui.width import line_width
+from omh.tui.width import cell_width, clusters, line_width
 
 SID = "s"
 
@@ -363,7 +363,7 @@ class WorkingRowTests(unittest.TestCase):
         for _ in range(len(WORKING_GLYPHS)):
             clock.now += TICK_SECONDS
             seen.append(app._tail(100)[-2][0])
-        self.assertEqual({span.text for span in seen}, set("·✢✳✶✻✽"))
+        self.assertEqual({span.text for span in seen}, {"·", "✢", "✳\ufe0e", "✶", "✻", "✽"})
         self.assertEqual({span.style for span in seen}, {THEME.accent})  # the launch look's, not a state's
         still, clock = self.busy(environ={"OMH_TUI_REDUCED_MOTION": "1"})
         held = set()
@@ -371,6 +371,20 @@ class WorkingRowTests(unittest.TestCase):
             clock.now += TICK_SECONDS
             held.add(still._tail(100)[-2][0].text)
         self.assertEqual(held, {WORKING_GLYPHS[0]})
+
+    def test_spinner_frames_keep_text_presentation_and_one_cell_without_extra_ticks(self) -> None:
+        expected = ("✻", "✽", "✻", "✶", "✳\ufe0e", "✢", "·", "✢", "✳\ufe0e", "✶")
+        self.assertEqual(WORKING_GLYPHS, expected)
+        app, _clock = self.busy()
+        for frame, glyph in enumerate(expected):
+            with self.subTest(frame=frame):
+                self.assertEqual(clusters(glyph), [glyph])
+                self.assertEqual(cell_width(glyph), 1)
+                with mock.patch.object(app, "_spinner_frame", return_value=frame):
+                    row = next(row for row in app._tail(100) if "Working…" in line_text(row))
+                self.assertEqual(row[0].text, glyph)
+                self.assertEqual(cell_width(line_text(row).split("Working…")[0]), 2)
+                self.assertEqual(row[0].style, THEME.accent)
 
     def test_the_interrupting_row_lines_up_with_the_working_row(self) -> None:
         app, _clock = self.busy()
@@ -454,15 +468,18 @@ class PromptRowTests(unittest.TestCase):
                     for span in words:
                         self.assertGreaterEqual(contrast_ratio(span.style.fg, theme.prompt_band.bg), TEXT_CONTRAST)
 
-    def test_a_prompt_the_queue_sent_says_so_in_the_same_dim(self) -> None:
+    def test_a_prompt_the_queue_sent_reads_as_any_prompt(self) -> None:
+        # The `⧗ from queue` tag is gone (owner, 2026-11-21): once sent, a queued prompt looks like a typed one.
         (row,) = block_rows(UserBlock("next one", from_queue=True), 40, THEME)
-        self.assertEqual(line_text(row), "┃ ❯ next one  ⧗ from queue")
-        self.assertEqual(row[-1].style, THEME.muted)
+        self.assertEqual(line_text(row).rstrip(), "┃ ❯ next one")
+        self.assertEqual(row, block_rows(UserBlock("next one"), 40, THEME)[0])
 
-    def test_the_queue_reads_apart_from_a_prompt(self) -> None:
-        prompt = line_text(block_rows(UserBlock("fix it"), 40, THEME)[0])
-        (queued,) = lines_text(queue_lines(["fix it"], 40, 3, THEME))
-        self.assertEqual([prompt[:4], queued[:2]], ["┃ ❯ ", "⧗ "])
+    def test_the_queue_reads_as_a_prompt_the_turn_has_not_taken(self) -> None:
+        sent = block_rows(UserBlock("fix it"), 40, THEME)[0]
+        _blank, queued, _hint = queue_lines([("fix it", (), ())], 40, THEME)
+        self.assertEqual([line_text(sent)[:4], line_text(queued)[:4]], ["┃ ❯ ", "┃ ❯ "])  # the same prompt row
+        words = [next(span for span in row if span.text == "fix it").style.fg for row in (sent, queued)]
+        self.assertEqual(words, [THEME.muted.fg, THEME.dim.fg])  # dim while it waits, as a steer not yet read
 
     def test_a_command_echoes_as_a_prompt_does_in_the_hint_colour(self) -> None:
         rows = block_rows(CommandBlock("/model", [("Current model: x", NOTICE_INFO)], done=True), 40, THEME)
@@ -577,21 +594,22 @@ class ResumedHistoryTests(unittest.TestCase):
 
     def test_each_recorded_call_is_one_row_with_a_neutral_mark_and_two_blank_rows_between_as_live(self) -> None:
         # Since 2026-11-09 a live turn puts two blank rows between two calls (one between other blocks); a record too.
+        # Since 2026-11-20 consecutive calls of one tool fold into one row and their commands (test_tui_same_tool_runs).
         lines = self.history()
         texts = lines_text(lines)
-        first, after = texts.index("┃ ● read_file(README.md)"), texts.index("┃ ● terminal(sleep 6 + 1 command)")
-        self.assertEqual(texts[first + 1 : first + 7], ["", "", "┃ ● read_file(calc.py)", "", "", "┃ ● patch(calc.py)"])
-        diff = texts[first + 7 : after - 2]
+        first, after = texts.index("┃ ● read_file · 2 calls"), texts.index("┃ ● terminal · 2 calls")
+        self.assertEqual(texts[first + 1 : first + 6], ["┃   ⎿  README.md", "┃      calc.py", "", "", "┃ ● patch(calc.py)"])
+        diff = texts[first + 6 : after - 2]
         self.assertTrue(diff and all(text.startswith("┃ ") for text in diff), texts)  # the diff, on the edit's rail
-        self.assertEqual(texts[after - 2 : after + 5],
-                         ["", "", "┃ ● terminal(sleep 6 + 1 command)", "", "", "┃ ● terminal(ls does-not-exist)", ""])
-        self.assertEqual(texts[after + 5], "⚚ Hermes", texts)  # the reply's header, then its words
-        self.assertTrue(texts[after + 6].startswith("  Done — div added to calc.py"), texts)
-        calls = [lines[index] for index in (first, first + 3, first + 6, after, after + 3)]
+        self.assertEqual(texts[after - 2 : after + 4],
+                         ["", "", "┃ ● terminal · 2 calls", "┃   ⎿  sleep 6 + 1 command", "┃      ls does-not-exist", ""])
+        self.assertEqual(texts[after + 4], "⚚ Hermes", texts)  # the reply's header, then its words
+        self.assertTrue(texts[after + 5].startswith("  Done — div added to calc.py"), texts)
+        calls = [lines[index] for index in (first, first + 5, after)]
         # The record says what ran, not how it ended: neither green nor red, its mark grey on the look's rail.
         self.assertEqual({row[0] for row in calls}, {rail_cell(THEME.accent)})
         self.assertEqual({row[2] for row in calls}, {Span("●", THEME.dim)})
-        self.assertNotIn("·", "".join(texts[first : after + 4]))  # no old-style `· name  args` row
+        self.assertNotIn("·", "".join(texts[first + 1 : after]))  # no old-style `· name  args` row
 
     def test_a_record_whose_result_metadata_is_not_a_mapping_draws_its_row_alone(self) -> None:
         for junk in ("inline_diff", ["inline_diff"], 7):
@@ -604,7 +622,7 @@ class ResumedHistoryTests(unittest.TestCase):
     def test_the_edit_shows_the_diff_a_live_call_shows(self) -> None:
         texts = lines_text(self.history())
         start = texts.index("┃ ● patch(calc.py)") + 1
-        recorded = texts[start : texts.index("┃ ● terminal(sleep 6 + 1 command)") - 2]  # up to the two blank rows
+        recorded = texts[start : texts.index("┃ ● terminal · 2 calls") - 2]  # up to the two blank rows
         patch = next(message for message in RESUME if message.get("name") == "patch")
         transcript = Transcript(clock=Clock())
         transcript.cwd = RESUME_CWD
@@ -654,7 +672,7 @@ class DocumentedLookTests(unittest.TestCase):
         self.assertTrue(f"`✶ {working[2:]}`" in prose, working)
         self.assertTrue(f"(`{' '.join(tip.split())}`)" in prose, tip)
         self.assertTrue("(`· ✢ ✳ ✶ ✻ ✽`)" in prose)
-        self.assertEqual(set(WORKING_GLYPHS), set("·✢✳✶✻✽"))
+        self.assertEqual({glyph.removesuffix("\ufe0e") for glyph in WORKING_GLYPHS}, set("·✢✳✶✻✽"))
         self.assertTrue(f"On a terminal {TIP_MIN_ROWS} rows tall or more a tip sits under it" in prose)
         app.interrupting, app.turn_shown = True, 0  # the example has written nothing yet
         (row,) = [line for line in lines_text(app._tail(100)) if INTERRUPTING in line]

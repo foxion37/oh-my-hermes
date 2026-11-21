@@ -28,16 +28,70 @@ DOCS_INDEX = ROOT / "docs" / "README.md"
 
 RULES = (
     "omher never patches Hermes.",
+    "that is the third and last writer to a terminal's pseudo-terminal (`typeAllowed`).",
+    "Without the person's Allow, nothing a bot sent is typed.",
+    "The sender name is what the requesting local process wrote in the request, and any process of the same OS user"
+    " can write any name: omher shows it on the card and never treats it as proof of which bot asked.",
+    "Each prompt asks: every request shows its own card and types nothing until the person allows that one, and omher"
+    " keeps no standing grant, for a session, a sender name or a bot.",
+    "an Allow that types nothing keeps the card, with a line saying so.",
+    "On Windows, where these owner-only checks cannot be held, sharing is off: omher writes no status file, makes no"
+    " inbox and reads none,",
+    "it closes the split pane that holds the keyboard (the same pane the ⌘W key in it closes)",
+    "Copy link (the row menu, ⌘⇧C, Alt+Shift+C off macOS) writes only `omher://terminal/<id>` to the clipboard,",
+    "On macOS, Close Window (⌘W) is omher's own menu item:",
+    "Otherwise, including a running session with the undo window Off, it closes the window (`window_close`) and stops no"
+    " session.",
+    "One press closes one session: while ⌘W stays held, its repeats close nothing more.",
+    "38. A program in a terminal may put text on the clipboard, never read it.",
+    "A query (`?`) is never answered, so no program reads the clipboard;",
+    "A copy is taken only as the answer to the person: that terminal has the keyboard, and the person pressed a key or"
+    " clicked in the window within the last 3 seconds;",
+    "Off macOS, Ctrl+Shift+C and Ctrl+Insert copy the selection, and Ctrl+Shift+V and Shift+Insert are the page's own"
+    " paste.",
+    "Reset puts back the terminal's own state in the page and sends nothing to the program,",
+    "On macOS, the person's Cmd+Left, Cmd+Right, Cmd+Backspace and Cmd+Delete reach the program as Ctrl+A, Ctrl+E,"
+    " Ctrl+U and Ctrl+K, and Option+Left and Option+Right as ESC b and ESC f",
+    "a dropped or pasted file's saved path is typed at a terminal's prompt, shell-quoted, as a bracketed paste when the"
+    " program asked for one.",
+    "Opening a link brings omher's window forward and nothing else: it starts, resumes, types into, reads or closes"
+    " nothing.",
+    "No other `omher://` address is accepted, and none is ever passed to the system opener.",
+    "omher reads an inbox file only if it is a plain file it opened without following a link, owned by the user omher"
+    " runs as, mode 0600 and at most 16 KB.",
+    "Every inbox file omher looks at is removed, whether taken or refused, and reading one never types anything:",
     "Stop sends only the agent's own interrupt, and for Claude Code with no turn running also its own `stop_task`",
     "omher never signals or kills an agent's process or the work it started.",
     "omher never writes to Slack, Discord or any other elsewhere session.",
     "omher may pass a thread reference to the bot; the bot posts with its own tools and approvals.",
     "omher sends, answers and interrupts only in the bot's main chat, the session titled `Bot Chat`,",
-    "and in folder chats the bridge created itself for an oh-my-hermes session (`folder.open`);",
-    "the bridge has exactly one `prompt.submit` call site and it takes the main chat's id or such a folder chat's.",
+    "and in folder chats and threads the bridge created itself (`folder.open` for an oh-my-hermes session;"
+    " `thread.create`, or an `omher-thread` block in the bot's own main-chat answer, for a thread under the bot);",
+    "the bridge has exactly one `prompt.submit` call site and it takes the main chat's id or such a folder chat's or thread's.",
+    "an `omher-thread-route` block in an answer only asks the person whether to send their message to an open thread,"
+    " and nothing is sent until they press Send there.",
+    "The SESSIONS entry is back as TERMINALS (the sidebar section, its `+` menu and background menu, ⌘N/⌘T and ⌘⇧[ ])"
+    " and lists terminal sessions only:",
+    "Chat mode is not offered (chat-mode CLI sessions are replaced by bot threads): no Chat/Terminal choice,",
+    "The Shell row runs the same login shell, by the same rule and command (`shell_start`), as the bottom panel.",
+    "the only program omher starts for the person is their login shell for the bottom terminal panel (Ctrl+`) and the"
+    " TERMINALS Shell row:"
+    " `[$SHELL, -l]` when `$SHELL` is an absolute path to an executable file that `/etc/shells` lists,",
+    "the page sends only a folder and a size (`shell_start`), omher types nothing into it, and the shell is stopped when"
+    " its tab closes and when the app exits.",
+    "omher also reads the messages of the subagent sessions of the bot's own runs from its `state.db` (read-only),",
+    "A child named by an earlier read (`hermes:<id>`) is read only when it is a subagent session whose parent chain reaches"
+    " one of the bot's own sessions;",
+    "It never selects a reasoning or thinking field, clips each input and result to 4 KB and masks token-like strings in"
+    " every field it returns.",
+    "and then only archives it through Hermes' own `session.mutate` `archive` operation (`session.archive` on an older"
+    " gateway that has no `session.mutate`; hidden, its messages kept, restorable in Hermes); omher never deletes a"
+    " session, and never removes the main chat or a session the bridge did not create or list as a thread.",
     "Files the person attaches go to that same chat only, as bytes through Hermes' own `image.attach_bytes`,",
     "the bridge never opens the person's files.",
-    "on the person's press it may instead steer the running turn through Hermes' own `session.steer` (`chat.steer`), in the main chat only and never a folder chat,",
+    "on the person's press it may instead steer that chat's running turn through Hermes' own `session.steer` (`chat.steer`),"
+    " only in the main chat or a thread or folder chat the bridge created (the same chats `chat.send` takes, with that"
+    " chat's own execution generation) and never any other session,",
     "A steer Hermes refuses is sent as a normal message after the turn; the bridge never sends it another way.",
     "A bot that an automation delivers to (`deliver: bot-chat:<bot>` in `cron/jobs.json`) has its existing `Bot Chat`"
     " attached the same way, without the person opening it,",
@@ -59,7 +113,8 @@ RULES = (
     "and from `--version` only the version number (the first `digits.digits.digits` run with its suffix; never the rest of its text), shown beside the CLI's name.",
     "The browser sign-in happens inside the CLI: omher never asks for, accepts, reads, copies or shows a token or key.",
     "deletes only `~/.omher/accounts/<cli>/<id>/`. An account switch never stops a running session.",
-    "Besides rule 21's one GitHub CLI read, the only program the bridge runs is `git`, for reads (`worktree list`, `rev-parse`, `status`, `diff`, `log`,",
+    "Besides rule 21's one GitHub CLI read and rule 24's one `hermes -p <bot> cron create` for the briefing, the only"
+    " program the bridge runs is `git`, for reads (`worktree list`, `rev-parse`, `status`, `diff`, `log`,",
     "omher never commits, checks out, pushes or edits a repository.",
     "and OmO's subagent records (`~/.omo/agent/projects/*/senpi-task/tasks/st_*.json`, never the subagents' own"
     " transcripts under `children/`).",
@@ -68,7 +123,7 @@ RULES = (
     "An OmO session chat reads the same records for one more thing: when OmO's `task` result names a subagent's"
     " task id but not its answer, it reads that one record (`st_<task id>.json`, from the same folders and under the"
     " same rules, read-only, and only a record of that session)",
-    "omher starts a terminal program only when the person asks for a session (SESSIONS `+`), and only one of a"
+    "omher starts a terminal program only when the person asks for a session (TERMINALS `+`), and only one of a"
     " fixed allow-list: `claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`, `opencode`, `gemini`, `qwen`, `kimi`, `copilot`, `cline`, with no arguments,",
     "A chat session starts the same program with its fixed structured-mode arguments from the allow-list",
     "(`claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages"
@@ -145,6 +200,27 @@ RULES = (
     " and only after the person presses the update button and confirms the restart; then it restarts omher.",
     "For the Plans graph the bridge asks the person's own GitHub CLI for the state of a pull request a plan node names",
     "with one fixed read: `gh pr view <number> -R <owner>/<repo> --json state,isDraft,mergedAt,url`.",
+    "Tasks (the sidebar's Tasks row and the Tasks page) list open issues and pull or merge requests read-only,"
+    " through the person's own GitHub CLI (`gh`) and GitLab CLI (`glab`) under their own logins:",
+    "The only argv are `auth status` (only its exit code is read; its output, which can name a token, goes nowhere:"
+    " it is never piped to omher),",
+    "omher passes no token to them, asks for none and shows none, and never comments, closes, assigns, labels, merges"
+    " or edits anything on GitHub, GitLab or Linear.",
+    "A token-like string (also one broken over lines) inside an item's own text (title, label, description, comment,"
+    " check name) or a CLI's error"
+    " line is shown as `••••`, in the list, the drawer, the error line and the text \"Start in thread\" sends, by omher's"
+    " one masker (the patterns in `apps/omher/src/lib/secrets.json`, read by the desktop shell, the page and the"
+    " bridge's `mask_secrets` alike).",
+    "For Linear omher holds no key. The bot's `config.yaml` is the file the bridge already parses whole (and keeps"
+    " parsed) to find the bots, for every op; for `tasks.linear` it runs that file through a YAML event reader of its"
+    " own, and the only values that leave"
+    " that parser are the server names under `mcp_servers` and each one's plain `enabled`: a header, env or args value"
+    " (or a url or auth) is never copied out of it.",
+    "The Tasks/Linear path adds nothing to that and returns, caches and shows only that: the first server whose name"
+    " has `linear` in it and"
+    " whether it is turned on, so a server is Linear by its name alone; it never sends, logs, stores or displays any"
+    " other value of the file,",
+    "Besides the TERMINALS agents and the GitHub and GitLab CLIs' read-only lists of rule 33,",
     "This is the one exception to rules 5 and 10: the request is `gh`'s own, under its own login; omher passes no token,"
     " reads none and changes nothing on GitHub.",
     "An answer is kept 5 minutes, a call is stopped after 3 seconds,",
@@ -156,8 +232,25 @@ RULES = (
     "A link in a SESSIONS terminal's output follows the same rule, whether omher found the address in the printed text"
     " or the program marked it as a hyperlink itself (OSC 8):",
     "A plain click opens nothing, and the terminal library's own confirm-and-open path for marked hyperlinks is never used.",
-    "How terminals look and behave (themes, font, cursor, scrollback, renderer, those two clipboard switches) is one"
-    " record in this computer's storage for the app (`omher.term`); omher reads no other program's terminal settings or theme files.",
+    "How terminals look and behave (themes, font, cursor, scrollback, renderer, those two clipboard switches, and one"
+    " custom theme) is one record in this computer's storage for the app (`omher.term`). omher reads no other program's"
+    " terminal settings or theme files, with one exception: on macOS, Settings › Terminal › Import from… reads, only when"
+    " the person presses it and picks the app, exactly one of two fixed files,",
+    "The read is read-only, refuses a symlink (opened with `O_NOFOLLOW`) and a file over 8 MB, and hands the page only the"
+    " parsed profiles (at most 64: a name, `#rrggbb` colours and a font name and size), never the file.",
+    "omher never writes to either file and never reads them again by itself.",
+    "The page shows that list and sends back only an id (`shell_start`'s `shell_id`: `powershell`, `pwsh`, `cmd`,"
+    " `gitbash`, `wsl` or `unix:<path>`), which the shell looks up in the list again when it starts the shell;",
+    "no path, argument or command line is ever sent by the page.",
+    "When the person closes a running TERMINALS row, its program is stopped after an undo window counted from the close"
+    " (Settings › Terminal › Undo window after closing: Off, 5 s or 10 s, 10 s by default),",
+    "the shell reads one filesystem statistic of the volume that holds the home folder once a minute",
+    "It opens and reads no file, runs no program and deletes nothing. The page hears `disk-level`",
+    "Quitting is always explicit: tray Quit, ⌘Q / the app menu Quit, or the updater's restart, and each goes through the"
+    " one exit path that stops every pty and the bridge. If no tray icon can be made, the close quits.",
+    "omher holds one OS assertion against idle system sleep: `PreventUserIdleSystemSleep` on macOS, `ES_SYSTEM_REQUIRED`"
+    " on Windows, nothing on Linux.",
+    "It never prevents lid-close sleep or display sleep, needs no privilege, and the page sends edges only.",
     "Settings › Providers \"Add key\" may open the person's own system terminal running exactly"
     " `hermes auth add <provider> --type api-key`, only when the person picks a provider.",
     "The chat's connect block may open the same terminal running exactly `hermes auth add <id>` (no `--type`: Hermes"
@@ -171,7 +264,7 @@ RULES = (
     "Hermes asks for the key in that terminal and stores it itself: omher never sees the key.",
     "never runs this in its own pseudo-terminal, so no keystroke passes through omher.",
     "The two exceptions are a bot's automations and plugins, which omher changes only by asking that bot's own gateway"
-    " (rules 24 and 25); omher writes no file of either itself.",
+    " (rules 24 and 25); omher writes no file of either itself, with one exception of its own:",
     "omher changes a bot's automations only through Hermes' own `cron.manage` on that bot's gateway (`add`, `pause`,"
     " `resume`, `remove`), only when the person presses a button.",
     "It reads `cron/jobs.json` and never writes it;",
@@ -180,22 +273,106 @@ RULES = (
     "A job whose script is the channel-watch collector (`channel_watch_<watch>.py`) is listed as a watch:",
     "the newest 20 run records Hermes keeps in `cron/output/<job id>/`, bounded, read-only and never through a link.",
     "+ New watch only sends one sentence the person filled in to that bot's chat and opens it; it creates no job itself,",
+    "The one exception is the briefing: once per bridge run, after its first bot list, for each bot on this computer",
+    "whose profile `.env` names `SLACK_BOT_TOKEN` (the key name only: the value is never read)",
+    "`hermes -p <bot> cron create --name omher-brief --script channel_watch_omher-brief.py --deliver bot-chat:<bot>"
+    " --continuity \"every 15m\" <the fixed briefing prompt>`",
+    "When the person removes that job in Automations, omher adds the bot to `~/.omher/brief-optout.json` (omher's own"
+    " folder) and never sets it up again.",
+    "omher sets up exactly one briefing job by itself (rule 24), writing only the collector copy"
+    " `scripts/channel_watch_omher-brief.py` and its config `channel_watch/omher-brief.json`",
+    "rule 24's one `hermes -p <bot> cron create` for the briefing, the only program the bridge runs is `git`,",
     "omher changes a bot's plugins only through Hermes' own `plugins.manage` on that bot's gateway (`list`, `toggle`,"
     " `inspect`, `install` from the curated catalog by name, `update`, `remove`), only when the person presses a button,",
     "`install` carries the pin `inspect` returned.",
     "never installs from a Git URL or `owner/repo`, and never edits config itself.",
     "A refused install is read from Hermes' reason code (`exists`, `source_moved`), never from its message.",
     "Files the person attaches in a SESSIONS chat (paste, the + menu, a drop on the chat) or drops on a session's terminal"
-    " are saved by the desktop app under omher's own folder, one folder per session:",
+    " or on a bottom-panel terminal (saved under `~/.omher/session-files/s0<the shell's id>/`, removed when that pane"
+    " closes) are saved by the desktop app under omher's own folder, one folder per session:",
     "`~/.omher/session-files/<session id>/<n>-<name>`, never in the project folder and never in a Hermes profile;",
     "The shell reads back only plain files in that folder (no links, no other path), and the page never names a file outside it.",
     "A session's folder is removed when the session is closed, and the folders of sessions that are no longer in the list"
     " are removed when omher starts.",
     "An oh-my-hermes session takes no files: rule 3 keeps files to a bot's main chat.",
+    # terminal parity (2026-11-19): split panes, prompt marks / OSC 7 / OSC 9;4, images and Kitty keys, the paste
+    # confirm, terminal history and the Claude Code / Codex conversation ids a TERMINALS session continues
+    "each started by the same `shell_start` only when the person splits a pane,",
+    "When the app starts, the page asks the shell once for this computer's name (`host_name`, read from the system, no"
+    " program run), which it uses only to accept OSC 7 folders from this computer in any terminal (below); it is not"
+    " kept or sent anywhere.",
+    "a new Claude Code terminal gets `--session-id <id>`, a random UUID omher makes and keeps with the session,",
+    "The page sends only the id; the shell (`sessions::terminal_args`) checks it is a UUID, gives `--session-id` to"
+    " Claude Code only, never sends both, and refuses every other agent or shape.",
+    "omher also listens for three escapes a shell or CLI sends by itself, and puts no hook, script or variable into the"
+    " shell for them:",
+    "None of these is kept beyond the open terminal or sent anywhere, and nothing is run, opened or read from the"
+    " reported folder.",
+    "none of it is sent anywhere, and it is kept only as the terminal history of rule 26.",
+    "omher reads only the text being pasted and the terminal's own mode flag for it.",
+    "Kitty file and shared-memory transfers, where a program names a path for the terminal to read, are refused.",
+    "The Kitty keyboard protocol changes only how keys are encoded for a program that asks for it (`CSI > flags u`)."
+    " omher sends no keys of its own and reads nothing new from the program.",
+    "On macOS, Cmd with any key is the app's (Copy, Paste and the rest of the menu) and is never sent to the program,"
+    " with the Kitty keyboard protocol on or off, except the line-edit keys below.",
+    "A TERMINALS row dragged onto another row of its folder moves there; that order is kept with the rows in"
+    " `omher.resume` and starts nothing.",
+    "the desktop app writes it, only under omher's own folder, to `~/.omher/term-history/<key>.txt`,",
+    "the file is the owner's only (0600), holds at most 2000 lines and 1 MB, is never written or read through a link,",
+    "that file is not opened, and only its id (a UUID) is kept with the session so that a restart continues it.",
+    "no file is opened, and nothing else is shown, kept or sent; Windows does not do this.",
     "what it restarts is the gateway process that serves that bot, through Hermes' own command:",
     "never one profile's unserve and serve inside the host. The profile is always named, never left to Hermes'",
     "It adds `--yes` only when the person presses \"Restart anyway\" right after Hermes refused because something was running,",
     "omher never stops a bot, never restarts every gateway at once, never restarts anything by itself",
+    # oh-my-hermes comes back after a restart (2026-11-20): the omh terminal's one variable, folder.resume's title check
+    "A TERMINALS oh-my-hermes (`omh`) session that was running when omher closed also starts again by itself after the"
+    " restart, and on Restart, with no arguments; it is the one session that gets one more environment variable,"
+    " `OMHER_TERMINAL_LINK=<link id>`",
+    "The page sends only that id; the shell (`sessions::terminal_env`) checks its shape and refuses it for every other"
+    " agent, and omher types nothing into the terminal for it.",
+    "an oh-my-hermes session that was running is attached again (`folder.resume`) only by the stored session id"
+    " `folder.open` returned and its row kept, and only when that session is a folder chat the bridge made for that folder.",
+    # folder.resume's proof is omher's own record, and admission is serialized (review round 1, 2026-11-21)
+    "The proof is omher's own record, not the session's title: each `folder.open` adds one entry to"
+    " `~/.omher/folder-chats.json` (owner-only, mode 600, replaced whole through a new temporary file;",
+    "`folder.resume` takes a session only when that file holds it for this bot and this folder.",
+    "the main chat, a thread (even one titled like the folder), a messenger session, a folder chat made before the"
+    " record existed or any other id is refused (`not_found`) and nothing is attached.",
+    "The same record keeps a folder chat out of `thread.list`, and a folder chat attached in the bridge stays out of"
+    " it whether or not its entry is still there.",
+    # the record survives other bridges and its own size (review round 2, R2-B1 and R2-B2)
+    "Every omher bridge on the computer writes it under `~/.omher/folder-chats.lock` beside it (a file lock, waited for"
+    " at most about 2 seconds), so two bridges opening folder chats at once both keep their entry;",
+    "when the lock is not free in time or the file cannot be replaced, the chat still opens, the bridge log records the"
+    " failure as an error, `folder.open` answers `recorded: false`, and the page keeps no stored id for that row, so"
+    " after a restart it comes back paused instead of being refused.",
+    "An entry whose chat is attached in that bridge, or made in the last 30 days, is never dropped; of the others the"
+    " newest 512 stay, and the oldest of the rest go first while the file would pass the 256 KB the reader accepts.",
+    # a chat attached while another bot's write waits keeps its entry (review round 4, R4-B1)
+    "A write asks the bridge which chats it holds only when it writes, under the lock, and a chat counts as held from"
+    " the moment `folder.resume` starts checking its entry until it is attached or refused, while that check waits for"
+    " a write already deciding what to keep; so a folder chat attached while another bot's entry is being written"
+    " keeps its entry.",
+    "The bridge never writes a file its reader refuses: when even the kept entries do not fit, the file stays as it was"
+    " and that write fails the same way.",
+    "`folder.open` and `folder.resume` are admitted one at a time per bot, so the cap of open folder chats holds for"
+    " requests that overlap, and a `folder.resume` of a stored id already on its way gets that request's answer instead"
+    " of a second `session.resume`: nothing is attached twice.",
+    # rule 39: a gateway that went away without omher restarting it is looked for, never started
+    "looks for that gateway again by itself while omher runs: first after 2 seconds, the wait doubling after each look"
+    " up to 30 seconds.",
+    "A look only asks Hermes' own `discover_gateway_endpoint` for that bot's profile, which sends `identify` on the"
+    " gateway's control socket",
+    "Only when it finds a ready gateway does the bridge attach again, through the same `connect_gateway` as rule 4 given"
+    " that gateway (`endpoint`), which dials it as it is and never starts one; on a Hermes whose `connect_gateway` takes"
+    " no `endpoint` the bridge does not look at all.",
+    "It never starts, stops, restarts or signals a gateway, looks only for a bot it attached or tried to attach, and"
+    " stops once that bot is attached again.",
+    "While a Hermes update holds the install (its `.hermes-update-in-progress` marker in the profile or the Hermes root,"
+    " judged by Hermes' own `_update_fenced`, which reads the markers and, only when a stale one is left, briefly tries a"
+    " shared lock; it writes nothing) the bridge does not look, as Hermes' own"
+    " `ensure_gateway_runtime` does not.",
 )
 TAURI_CONF = ROOT / "apps" / "omher" / "src-tauri" / "tauri.conf.json"
 CAPABILITIES = ROOT / "apps" / "omher" / "src-tauri" / "capabilities" / "default.json"
@@ -208,11 +385,11 @@ SHELL_SRC = ROOT / "apps" / "omher" / "src-tauri" / "src"
 # installer's exit status (a script block never reaches install.ps1's own `exit`).
 UNIX_RUN = (
     "f=$(mktemp) && trap 'rm -f \"$f\"' EXIT && curl -fsSL -o \"$f\" "
-    "https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh && sh \"$f\" omher@beta"
+    "https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh && sh \"$f\" omher"
 )
 WINDOWS_RUN = (
     "$ErrorActionPreference = 'Stop'; try { & ([scriptblock]::Create((irm "
-    "https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher@beta } "
+    "https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher } "
     "catch { $_.Exception.Message; exit 1 }; exit $LASTEXITCODE"
 )
 
@@ -309,10 +486,19 @@ class DocPins(unittest.TestCase):
         # after a refusal; plugin loads through its `reload-plugins`); 30: rule 30 (continue a Claude Code or Codex
         # conversation from its own files, read-only; a row's folder in the file manager or the system terminal; the
         # asks count on the Dock); 31: rule 31 (a Hermes on another computer over the person's own ssh, after a
-        # Connect on the confirm card: one fixed ssh argv, key login only, remote writes only under ~/.omher/peer).
-        # The rules stay numbered 1..n with no gap or repeat.
+        # Connect on the confirm card: one fixed ssh argv, key login only, remote writes only under ~/.omher/peer);
+        # 32: rule 32 (removing a thread interrupts it and archives it through Hermes' own `session.mutate` archive,
+        # `session.archive` on an older gateway, never a delete); 33: rule 33 (Tasks: open issues and pull / merge requests
+        # through the person's own `gh` / `glab`, a fixed read-only argv, no token; Linear only as a config check); 34: rule
+        # 34 (a TERMINALS session's owner-only status file under ~/.omher/terminals and its inbox, which only shows rule
+        # 11's card); 35: rule 35 (one free-space statistic of the home volume a minute, `disk-level`, deletes
+        # nothing); 36: rule 36 (the window's close hides to the tray, quitting stays explicit); 37: rule 37 (keep
+        # awake: one idle-sleep assertion while agents work); 38: rule 38 (a program's OSC 52 copy to the clipboard,
+        # copy only, never a read, off in Settings › Terminal); 39: rule 39 (a bot whose gateway went away without
+        # omher restarting it is looked for through Hermes' own discovery, which starts nothing, and attached again
+        # once ready). The rules stay numbered 1..n with no gap or repeat.
         rules = re.findall(r"^(\d+)\. ", DOC.read_text(encoding="utf-8"), re.M)
-        self.assertTrue(6 <= len(rules) <= 31, len(rules))
+        self.assertTrue(6 <= len(rules) <= 39, len(rules))
         self.assertEqual([int(n) for n in rules], list(range(1, len(rules) + 1)))
 
     def test_glossary_and_docs_index_name_omher(self) -> None:
@@ -364,7 +550,7 @@ class SignedSelfUpdateFromOneAddress(unittest.TestCase):
 class TheOneInstaller(unittest.TestCase):
     """Rule 12: the shell spawns the bridge and, on Install, one fixed installer; nothing else."""
 
-    def test_the_installer_is_the_omher_beta_one_liner_without_the_app(self) -> None:
+    def test_the_installer_is_the_omher_one_liner_without_the_app(self) -> None:
         setup = SETUP_RS.read_text(encoding="utf-8")
         # The definitions themselves, not the Rust tests that repeat them.
         unix = setup[setup.index("const UNIX: InstallCommand"):]
@@ -396,9 +582,10 @@ class TheOneInstaller(unittest.TestCase):
         # CLIs' fixed status / sign-in argv (rule 18); hermes_auth.rs opens the system terminal with
         # `hermes auth add <id> --type api-key` (rule 23); dsh_chat.rs runs a DSH chat's message through DeepSeek
         # Harness's headless profile (rule 11); folder_open.rs opens the person's own system terminal in a session's
-        # folder with no command (rule 30); peers.rs starts the person's own `ssh` with a fixed argv (rule 31).
+        # folder with no command (rule 30); peers.rs starts the person's own `ssh` with a fixed argv (rule 31); tasks.rs
+        # runs the person's own `gh` / `glab` with a fixed read-only argv (rule 33).
         # Terminal sessions start theirs through the PTY's `spawn_command`, not `Command::new`.
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1})
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1, "tasks.rs": 1})
 
     def test_the_install_command_takes_nothing_from_the_page(self) -> None:
         lib = (SHELL_SRC / "lib.rs").read_text(encoding="utf-8")
@@ -477,6 +664,59 @@ class LinkChipsFetchNothing(unittest.TestCase):
             for bad in ("window.open", "fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "confirm("):
                 self.assertNotIn(bad, text, f"{path.name}: {bad}")
 
+    def test_shell_escapes_are_read_passively_and_kept_in_the_page(self) -> None:
+        # rule 11: OSC 133 / 7 / 9;4 are listened to, never injected; the folder is from this computer only
+        marks = (UI_SRC / "sessions" / "term" / "engine-marks.ts").read_text(encoding="utf-8")
+        code = "\n".join(l for l in marks.splitlines() if not l.lstrip().startswith(("//", "*", "/**")))
+        self.assertEqual(sorted(re.findall(r"registerOscHandler\((\d+)", code)), ["133", "7", "9"])
+        osc7 = code[code.index("export function parseOsc7"):]
+        osc7 = osc7[: osc7.index("\n}\n")]
+        self.assertIn('!== "file://"', osc7)
+        self.assertIn('host !== "localhost"', osc7)
+        self.assertIn("[\\x00-\\x1f\\x7f]", osc7)
+        for bad in ("localStorage", "fetch(", "invoke(", "WebSocket", "write(", "paste("):
+            self.assertNotIn(bad, code)
+        engine = (UI_SRC / "sessions" / "term" / "engine.ts").read_text(encoding="utf-8")
+        self.assertEqual(engine.count("attachMarks(term, el)"), 1)
+        # no hook into the shell: the login shell's argv and env are unchanged
+        rs = (SHELL / "sessions.rs").read_text(encoding="utf-8")
+        for hook in ("133;", "OSC 7", "PROMPT_COMMAND", "precmd", "ZDOTDIR"):
+            self.assertNotIn(hook, rs)
+        # this computer's name comes from the system, never from a program, and the page hands it only to OSC 7
+        host = (SHELL / "this_host.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        self.assertIn("libc::gethostname(", host)
+        self.assertIn("GetComputerNameExW(", host)
+        self.assertNotIn("Command::new", host)
+        lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+        self.assertEqual(lib.count("this_host::name()"), 1)
+        self.assertIn("fn host_name() -> String {\n    this_host::name()\n}", lib)
+        page = (UI_SRC / "terminal" / "host.ts").read_text(encoding="utf-8")
+        self.assertEqual(page.count("setThisHost("), 1)
+
+    def test_terminal_pictures_stay_in_the_terminals_memory(self) -> None:
+        # rule 11: decoded pictures only in memory, 32 MB per terminal; no Kitty file or shared-memory transfer
+        images = (UI_SRC / "sessions" / "term" / "engine-image.ts").read_text(encoding="utf-8")
+        self.assertIn("export const IMAGE_STORAGE_MB = 32;", images)
+        self.assertIn("storageLimit: IMAGE_STORAGE_MB,", images)
+        self.assertNotIn("readKittyFile", images)
+
+    def test_a_programs_clipboard_copy_is_write_only_and_capped(self) -> None:
+        # rule 38: OSC 52 writes decoded text to the clipboard, answers no query, reads nothing, is capped and can be
+        # turned off; it is the one OSC 52 handler in the page
+        osc = (UI_SRC / "sessions" / "term" / "engine-osc52.ts").read_text(encoding="utf-8")
+        self.assertIn("export const OSC52_MAX_CHARS = 1_000_000;", osc)
+        self.assertIn('b64 === "?") return null;', osc)
+        self.assertIn("if (!readTermSettings().osc52) return true;", osc)
+        self.assertIn("navigator.clipboard?.writeText(text)", osc)
+        # only the terminal with the keyboard, within moments of the person's key or click; no control characters
+        self.assertIn("export const OSC52_ACTIVE_MS = 3000;", osc)
+        self.assertIn("term.textarea === document.activeElement", osc)
+        self.assertIn("/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]/", osc)
+        for bad in ("readText", "clipboard.read(", "term.input(", ".paste("):
+            self.assertNotIn(bad, osc, bad)
+        handlers = [p for p in [*UI_SRC.rglob("*.ts"), *UI_SRC.rglob("*.tsx")] if "registerOscHandler(52" in p.read_text(encoding="utf-8")]
+        self.assertEqual([p.name for p in handlers], ["engine-osc52.ts"])
+
     def test_terminal_settings_are_one_record_and_read_no_other_programs_files(self) -> None:
         term = UI_SRC / "sessions" / "term"
         settings = (term / "settings.ts").read_text(encoding="utf-8")
@@ -492,6 +732,20 @@ class LinkChipsFetchNothing(unittest.TestCase):
                 self.assertNotIn(bad, text, f"{path.name}: {bad}")
             if path.name != "settings.ts":
                 self.assertNotIn("localStorage", text, path.name)
+
+    def test_term_import_opens_only_the_two_fixed_prefs_files(self) -> None:
+        # rule 11: Import from… reads one of two fixed prefs files, read-only, no symlink, capped, never writes
+        body = (SHELL / "term_import.rs").read_text(encoding="utf-8").split("#[cfg(test)]")[0]
+        self.assertIn('const ITERM2_PLIST: &str = "Library/Preferences/com.googlecode.iterm2.plist";', body)
+        self.assertIn('const TERMINAL_PLIST: &str = "Library/Preferences/com.apple.Terminal.plist";', body)
+        self.assertEqual(body.count("home.join("), 1)
+        self.assertEqual(body.count(".open("), 1)
+        self.assertIn("opts.read(true);", body)
+        self.assertIn("libc::O_NOFOLLOW", body)
+        self.assertIn("pub const MAX_BYTES: u64 = 8 * 1024 * 1024;", body)
+        self.assertIn("pub const MAX_PROFILES: usize = 64;", body)
+        for bad in ("write(", "File::create", "OpenOptions::new().write", "fs::write", "remove_file"):
+            self.assertNotIn(bad, body, bad)
 
 
 class OmhNeverReachesOmher(unittest.TestCase):
@@ -557,21 +811,26 @@ class BridgeSubmitsOnlyToTheMainChat(unittest.TestCase):
         params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
         self.assertNotIn("session_id", params, "the submitting function must not take a session id from its caller")
 
-    def test_chat_steer_reaches_only_the_main_chat(self) -> None:
-        """Rule 3: `chat.steer` is `op_chat_steer`, the one place `session.steer` is named; it refuses a folder chat,
-        takes the main chat's id from `_main` and sends nothing else (a refused steer is not resent here)."""
+    def test_chat_steer_reaches_only_a_chat_the_bridge_sends_to(self) -> None:
+        """Rule 3: `chat.steer` is `op_chat_steer`, the one place `session.steer` is named; it takes its chat from
+        `_target` (the main chat, or a folder chat or thread this bridge created; any other id is refused there),
+        steers with that chat's own generation and sends nothing else (a refused steer is not resent here)."""
         self.assertEqual(self.source.count('"session.steer"'), 1)
         fns = {f.name: f for f in ast.walk(self.tree) if isinstance(f, ast.AsyncFunctionDef)}
         steer = ast.unparse(fns["op_chat_steer"])
         self.assertIn("'chat.steer': self.op_chat_steer", ast.unparse(fns["__init__"]) if "__init__" in fns else
                       ast.unparse([f for f in ast.walk(self.tree) if isinstance(f, ast.FunctionDef) and f.name == "__init__"
                                    and "self.ops" in ast.unparse(f)][0]))
-        self.assertIn("if p.get('session') is not None:", steer)
-        self.assertIn("main = await self._main(conn)", steer)
-        # the main chat's own id and the turn's generation (the canonical gateway requires it), nothing else
-        self.assertIn("self._call(conn, 'session.steer', session_id=main, text=text, execution_generation=await self._generation(conn, main))", steer)
+        self.assertIn("main, chat = await self._target(conn, p)", steer)
+        # that chat's own id and its turn's generation (the canonical gateway requires it), nothing else
+        self.assertIn("self._call(conn, 'session.steer', session_id=main, text=text, execution_generation=await self._generation(conn, main, chat))", steer)
         calls = re.findall(r"self\.(_call|_submit|_target)\(", steer)
-        self.assertEqual(calls, ["_call"])
+        self.assertEqual(calls, ["_target", "_call"])
+        self.assertNotIn("session_id')", steer)  # a client-supplied session_id is never read
+        # _target refuses any id this bridge did not create (it never resolves a client id itself)
+        target = ast.unparse(fns["_target"])
+        self.assertIn("conn.folders.get(fid)", target)
+        self.assertIn("raise BridgeError('not_found'", target)
         self.assertIn('"chat.steer"', self.source.split("PEER_FORWARD = frozenset({", 1)[1].split("})", 1)[0])
 
     def test_watch_attach_never_makes_a_bot_chat_and_reads_only_history(self) -> None:
@@ -585,6 +844,51 @@ class BridgeSubmitsOnlyToTheMainChat(unittest.TestCase):
         tag = fns["_watch_tag"]
         methods = set(re.findall(r"self\._call\(conn, '([a-z_.]+)'", tag))
         self.assertEqual(methods, {"session.history"})
+
+    def test_a_lost_gateway_is_only_looked_for_never_started(self) -> None:
+        """Rule 39: `_recover` asks the probe and attaches only after it said ready, through `_conn` (rule 4's
+        `connect_gateway`); the probe is Hermes' read-only discovery and nothing that starts a gateway."""
+        fns = {f.name: f for f in ast.walk(self.tree) if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+        def code(name: str) -> str:  # the function's code, without its docstring, on one line
+            fn = fns[name]
+            body = fn.body[1:] if fn.body and isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) else fn.body
+            return " ".join(" ".join(ast.unparse(n) for n in body).split())
+
+        recover = code("_recover")
+        self.assertLess(recover.index("ready = await self.gateway_probe(bot['path'])"),
+                        recover.index("if not ready or name in self._reattaching: continue"))
+        # the only dial: the owner discovery found, after it said ready (`ready` is that owner, never None here)
+        self.assertEqual(re.findall(r"self\._conn\([^)]*\)", recover), ["self._conn(name, endpoint=ready)"])
+        self.assertLess(recover.index("if not ready or name in self._reattaching: continue"),
+                        recover.index("await self._conn(name, endpoint=ready)"))
+        self.assertIn("except RecoveryUnsupported as e: log.info", recover)  # an old Hermes: stop, never dial
+        for bad in ("gateway_factory", "connect_gateway", "ensure_gateway_runtime", "run_hermes_restart", "subprocess",
+                    "os.kill", "signal"):
+            self.assertNotIn(bad, recover)
+        # the probe is discovery only, and refuses a Hermes that cannot dial a discovered owner as-is
+        probe = code("_default_probe")
+        self.assertIn("from hermes_cli import gateway_runtime", probe)
+        # an update that still holds the install is checked first, with Hermes' own read-only judge
+        self.assertLess(probe.index("fenced = getattr(gateway_runtime, '_update_fenced', None)"),
+                        probe.index("gateway_runtime.discover_gateway_endpoint, home"))
+        self.assertIn("if fenced is not None and await asyncio.to_thread(fenced, {Path(home), self.home}): return None",
+                      probe)
+        self.assertIn("if 'endpoint' not in inspect.signature(connect_gateway).parameters: raise RecoveryUnsupported", probe)
+        for bad in ("connect_gateway(", "ensure_gateway_runtime", "subprocess", "os.kill", "signal"):
+            self.assertNotIn(bad, probe)
+        # an endpoint reaches the factory, and the default factory dials it with `endpoint=`: connect_gateway only
+        # calls ensure_gateway_runtime (which may start a gateway) when it is given none
+        self.assertIn("self.gateway_factory(stack, bot['path'], endpoint=endpoint)", code("_conn"))
+        self.assertIn("connect_gateway() if endpoint is None else connect_gateway(endpoint=endpoint)",
+                      code("_default_connect"))
+        self.assertIn("self.gateway_probe = gateway_probe or self._default_probe", self.source)
+        self.assertIn("self._reattaching.update(down or [name])", code("op_bots_restart"))
+        # the waits rule 39 states: 2 s first, doubling up to 30 s
+        consts = {t.id: ast.literal_eval(n.value) for n in self.tree.body if isinstance(n, ast.Assign)
+                  for t in n.targets if isinstance(t, ast.Name) and t.id == "RECOVER_POLL"}
+        self.assertEqual(consts, {"RECOVER_POLL": (2.0, 30.0)})
+        self.assertIn("wait = min(wait * 2, RECOVER_POLL[1])", recover)
 
     def test_profile_writes_are_only_name_and_picture(self) -> None:
         """Every Hermes profile method the bridge names is a read, except set_asset (the avatar)."""
@@ -612,6 +916,81 @@ class BridgeSubmitsOnlyToTheMainChat(unittest.TestCase):
         opener = [f for f in ast.walk(self.tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "op_folder_open"][0]
         self.assertIn("'session.create'", ast.unparse(opener))
         self.assertIn("cwd=cwd", ast.unparse(opener))
+
+    def test_folder_resume_checks_the_saved_title_before_it_attaches(self) -> None:
+        """Rule 3: ``folder.resume`` refuses the main chat, then (admitted under ``conn.admit``) takes a session only
+        when omher's own record holds it for this bot and folder, and its saved title (state.db, read-only) is still
+        ``FOLDER_CHAT_PREFIX`` + the folder's name, all before its one ``session.resume``; the chat it keeps is a
+        folder chat through ``_keep_chat``, and the folder chat cap holds."""
+        fns = {f.name: f for f in ast.walk(self.tree) if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        front = ast.unparse(fns["op_folder_resume"])
+        self.assertIn("'folder.resume': self.op_folder_resume", ast.unparse(fns["__init__"]) if "__init__" in fns else self.source)
+        self.assertIn("if stored in conn.main_ids:", front)
+        self.assertLess(front.index("conn.resuming.get(key)"), front.index("async with conn.admit:"))
+        self.assertLess(front.index("async with conn.admit:"), front.index("await self._folder_resume(conn, cwd, stored)"))
+        self.assertNotIn("self._call(", front)
+        body = ast.unparse(fns["_folder_resume"])
+        proof = body.index("is_folder_chat, self.omher_home, conn.name, cwd, stored")
+        check = body.index("saved[0] != FOLDER_CHAT_PREFIX + leaf")
+        self.assertLess(proof, check)
+        self.assertLess(check, body.index("'session.resume'"))
+        self.assertEqual(body.count("self._call("), 1)
+        self.assertIn("self._call(conn, 'session.resume', session_id=stored)", body)
+        self.assertIn("chat.kind != 'folder'", body)
+        self.assertIn("MAX_FOLDER_CHATS", body)
+        self.assertIn("self._keep_chat(conn, chat)", body)
+        self.assertNotIn("session.create", body)
+        # folder.open takes the same admission and records its chat; thread.list leaves every recorded one out
+        opener = ast.unparse(fns["op_folder_open"])
+        self.assertLess(opener.index("async with conn.admit:"), opener.index("MAX_FOLDER_CHATS"))
+        self.assertLess(opener.index("'session.create'"), opener.index("record_folder_chat, self.omher_home, conn.name, cwd, chat.stored_id"))
+        self.assertIn("folder_chat_ids, self.omher_home, conn.name", ast.unparse(fns["op_thread_list"]))
+        # the record: omher's own folder only, a new 600 temp file replaced over it, read without following a link
+        self.assertIn('FOLDER_CHATS_FILE = "folder-chats.json"', self.source)
+        writer = ast.unparse(fns["record_folder_chat"])
+        self.assertIn("tmp = home / f'.{FOLDER_CHATS_FILE}", writer)
+        self.assertIn("_write_new(tmp,", writer)
+        self.assertIn("os.replace(tmp, home / FOLDER_CHATS_FILE)", writer)
+        self.assertIn("0o600)", self.source.split("def _write_new(", 1)[1].split("\n\n", 1)[0])
+        self.assertIn("O_NOFOLLOW", ast.unparse(fns["read_folder_chats"]))
+        # one shape and one size policy for reader and writer; the write is under the cross-process lock and never
+        # publishes a document the reader refuses; folder.open passes every attached chat and says when it failed
+        self.assertIn("_folder_chat_row(r)", ast.unparse(fns["read_folder_chats"]))
+        self.assertIn("len(raw) > _FOLDER_CHATS_BYTES", ast.unparse(fns["read_folder_chats"]))
+        self.assertIn("len(data) <= _FOLDER_CHATS_BYTES", ast.unparse(fns["_folder_chats_doc"]))
+        self.assertIn('FOLDER_CHATS_LOCK = "folder-chats.lock"', self.source)
+        self.assertIn("FOLDER_CHATS_KEEP_SECONDS = 30 * 86400", self.source)
+        self.assertLess(writer.index("with _folder_chats_locked(home):"), writer.index("read_folder_chats(home)"))
+        self.assertLess(writer.index("_kept_folder_chats(rows, held"), writer.index("_write_new(tmp, data)"))
+        self.assertIn("if data is None:", writer)
+        locker = ast.unparse(fns["_folder_chats_locked"])
+        self.assertIn("fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)", locker)
+        self.assertIn("msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)", locker)
+        self.assertIn("FOLDER_CHATS_LOCK_WAIT", locker)
+        self.assertIn("attached=held", opener)
+        # the held chats are asked under the lock, right before the write; a resume on its way counts, and its proof
+        # check reads the record under the same in-process lock the writer holds (R4-B1)
+        self.assertLess(writer.index("with _folder_chats_locked(home):"), writer.index("attached() if callable(attached)"))
+        self.assertLess(writer.index("attached() if callable(attached)"), writer.index("_kept_folder_chats(rows, held"))
+        self.assertIn("self._held_folder_chats()", opener)
+        held = ast.unparse(fns["_held_folder_chats"])
+        self.assertIn("c.folders.values()", held)
+        self.assertIn("c.resuming", held)
+        proof = ast.unparse(fns["is_folder_chat"])
+        self.assertLess(proof.index("_FOLDER_CHATS_LOCK.acquire("), proof.index("read_folder_chats(omher_home)"))
+        front = ast.unparse(fns["op_folder_resume"])
+        self.assertLess(front.index("conn.resuming[key] = fut"), front.index("await self._folder_resume(conn, cwd, stored)"))
+        self.assertIn("log.error(", opener)
+        self.assertIn("'recorded': recorded", opener)
+        # its one caller is folder.open
+        callers = {f.name for f in ast.walk(self.tree) if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and any(isinstance(n, ast.Name) and n.id == "record_folder_chat" for n in ast.walk(f))}
+        self.assertEqual(callers, {"op_folder_open"})
+        reader = ast.unparse(fns["read_session_title"])
+        self.assertIn("ro_uri(db)", reader)
+        self.assertIn("'SELECT title, cwd FROM sessions WHERE id = ?'", reader)
+        for write in ("INSERT", "UPDATE", "DELETE", "write", "commit"):
+            self.assertNotIn(write, reader, write)
 
     def test_media_read_checks_the_bots_own_messages_read_only(self) -> None:
         """`media.read` serves a path only after looking it up in state.db (opened with ``ro_uri``)."""
@@ -700,7 +1079,8 @@ class BridgeSubmitsOnlyToTheMainChat(unittest.TestCase):
         fns = {f.name: f for f in ast.walk(self.tree) if isinstance(f, ast.FunctionDef)}
         calls = [(fn.name, c) for fn in fns.values() for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and ast.unparse(c.func) == "subprocess.run"]
-        self.assertEqual(sorted(name for name, _ in calls), ["_git", "gh_pr_view", "run_hermes_restart"])
+        # _hermes_run: rule 24's one `hermes -p <bot> cron create` for the briefing
+        self.assertEqual(sorted(name for name, _ in calls), ["_git", "_hermes_run", "gh_pr_view", "run_hermes_restart"])
         fn = fns["gh_pr_view"]
         body = ast.unparse(ast.Module(body=fn.body[1:], type_ignores=[]))  # the code, without its docstring
         self.assertIn("timeout=timeout", body)
@@ -735,7 +1115,8 @@ class BridgeSubmitsOnlyToTheMainChat(unittest.TestCase):
         runs = [c for c in ast.walk(self.tree) if isinstance(c, ast.Call) and ast.unparse(c.func).startswith("subprocess.")]
         self.assertEqual(sorted(ast.unparse(c.args[0]) for c in runs),
                          ["['git', *pre, *args]", "[gh, 'pr', 'view', str(number), '-R', repo, '--json', 'state,isDraft,mergedAt,url']",
-                          "argv"])  # argv: rule 29's restart_argv, checked in RestartOneBotOnAPress
+                          "argv", "argv"])  # argv: rule 29's restart_argv (RestartOneBotOnAPress) and rule 24's
+        # brief_create_argv (`hermes -p <bot> cron create`, pinned in bridge/tests/test_brief_setup.py)
         for host in ("slack.com/api", "discord.com/api", "api.telegram.org", "hooks.slack.com"):
             self.assertNotIn(host, self.source)
         hermes_send = [fn.name for fn in ast.walk(self.tree) if isinstance(fn, ast.FunctionDef)
@@ -887,8 +1268,8 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         # agent_chat.rs starts an allow-listed agent in its structured mode (rule 11); hermes_auth.rs opens the
         # system terminal for `hermes auth add` (rule 23); dsh_chat.rs runs DeepSeek Harness's headless profile (rule 11);
         # folder_open.rs opens the system terminal in a session's folder with no command (rule 30); peers.rs starts the
-        # person's own `ssh` with a fixed argv (rule 31).
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1})
+        # person's own `ssh` with a fixed argv (rule 31); tasks.rs runs `gh` / `glab` read-only (rule 33).
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1, "tasks.rs": 1})
 
 
 
@@ -1263,11 +1644,12 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         """`Command::new` only in bridge.rs (Hermes' Python), setup.rs (the one fixed installer,
         rule 12), once in agent_chat.rs (the chat spawner), in accounts.rs (rule 18's fixed status /
         sign-in argv), in hermes_auth.rs (rule 23's terminal), in folder_open.rs (rule 30's terminal in a session's
-        folder) and in peers.rs (rule 31's `ssh`); `spawn_command` only in sessions.rs."""
+        folder), in peers.rs (rule 31's `ssh`) and in tasks.rs (rule 33's read-only `gh` / `glab`); `spawn_command` only
+        in sessions.rs."""
         for path in sorted(SHELL.glob("*.rs")):
             text = path.read_text(encoding="utf-8")
             prod = text.split("#[cfg(test)]", 1)[0]
-            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs", "peers.rs"):
+            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs", "peers.rs", "tasks.rs"):
                 self.assertNotIn("Command::new", prod, path.name)
             if path.name != "sessions.rs":
                 self.assertNotIn("spawn_command", text, path.name)
@@ -1278,11 +1660,40 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         sig = re.search(r"async fn session_start\((.*?)\) -> ", self.lib, re.S)
         self.assertIsNotNone(sig)
         params = {p.split(":")[0].strip() for p in sig.group(1).split(",") if ":" in p}
-        # `resume` is the only extra: a conversation id (Claude Code, DSH) that resume_args checks is a UUID
-        self.assertEqual(params, {"shell", "agent", "cwd", "resume", "account", "cols", "rows", "on_data", "on_exit"})
+        # `resume` is a conversation id to continue (Claude Code, Codex, DSH), `session_id` a new Claude Code
+        # conversation id (2026-11-19, terminal restore); resume_args / sessions::terminal_args check both are UUIDs.
+        # `app` is Tauri's handle, injected by the shell, not sent by the page: the `session-fg` event (the CLI in the
+        # session's foreground) is emitted through it (2026-11-16, terminal sessions). `link` is an oh-my-hermes row's
+        # link id, which only that terminal gets as OMHER_TERMINAL_LINK (2026-11-20, sessions::terminal_env checks it)
+        self.assertEqual(params, {"app", "shell", "agent", "cwd", "session_id", "resume", "link", "account", "cols", "rows", "on_data", "on_exit"})
+        self.assertIn("app: AppHandle,", sig.group(1))
         body = self.lib[sig.end():].split("\n}\n", 1)[0]
-        self.assertIn("start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref()", body)
+        self.assertIn("start_agent(&agent, std::path::Path::new(&cwd), session_id.as_deref(), resume.as_deref(), link.as_deref()", body)
         self.assertNotIn(".spawn(", body)
+
+    def test_terminal_args_are_only_a_checked_claude_or_codex_conversation_id(self) -> None:
+        # rule 11: a new Claude Code terminal gets `--session-id`, a restarted Claude Code / Codex one `--resume` /
+        # `resume`; each id is a UUID, never both, no other agent or shape
+        tf = self.prod.split("pub fn terminal_args", 1)[1].split("\n}\n", 1)[0]
+        for needle in ('(Some(s), None) => {', 'if id != "claude" {', 'Ok(vec!["--session-id".into(), s.into()])',
+                       'Ok(vec!["resume".into(), r.into()])', '(Some(_), Some(_)) => Err('):
+            self.assertIn(needle, tf)
+        self.assertEqual(tf.count("is_uuid("), 2)
+
+    def test_only_an_omh_terminal_gets_its_checked_link_as_one_variable(self) -> None:
+        # rule 11: an oh-my-hermes terminal is told its row's link id (OMHER_TERMINAL_LINK) and nothing else; the shell
+        # checks the shape and refuses it for any other agent; start_agent adds it beside the account's variable
+        env = self.prod.split("pub fn terminal_env", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('if id != "omh" {', env)
+        self.assertIn("crate::term_link::is_link_id(link)", env)
+        self.assertIn('Ok(vec![("OMHER_TERMINAL_LINK".into(), link.into())])', env)
+        self.assertEqual(env.count("Ok(vec!["), 1)
+        start = self.prod.split("pub fn start_agent", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("env.extend(terminal_env(agent_id, link)?);", start)
+        self.assertEqual(self.prod.count("OMHER_TERMINAL_LINK\""), 1)
+        # the page passes the row's link only for omh
+        ui = (UI_SRC / "sessions" / "sessions.ts").read_text(encoding="utf-8")
+        self.assertIn('const link = !ofChat && r.agent === "omh" && isLinkId(r.linkId) ? r.linkId : undefined;', ui)
 
     def test_a_session_gets_only_the_chosen_account_home(self) -> None:
         """Rule 11's account sentence: session_start and chat_start pass `accounts::session_env_for` (the saved
@@ -1293,7 +1704,9 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
             sig = re.search(rf"async fn {command}\((.*?)\) -> ", self.lib, re.S)
             body = self.lib[sig.end():].split("\n}\n", 1)[0]
             self.assertEqual(body.count("accounts::session_env_for(&h, &agent, account.as_deref())"), 1, command)
-            self.assertIn("start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref(), &account_env,", body)
+            # session_start also passes the new Claude Code conversation id (rule 11, terminal restore)
+            call = "session_id.as_deref(), resume.as_deref(), link.as_deref()" if command == "session_start" else "resume.as_deref()"
+            self.assertIn(f"start_agent(&agent, std::path::Path::new(&cwd), {call}, &account_env,", body)
         accounts = (SHELL / "accounts.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
         cli = accounts.split("pub fn session_cli", 1)[1].split("\n}\n", 1)[0]
         self.assertEqual(re.findall(r'"(\w+)" => Some\("(\w+)"\)', cli), [("claude", "claude"), ("codex", "codex"), ("grok", "grok")])
@@ -1515,6 +1928,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TerminalHistoryStaysInOmhersFolder(unittest.TestCase):
+    """Rule 26: terminal history is written only under `~/.omher/term-history/<key>.txt`, owner-only, capped, by key
+    (a session id or `panel-<n>`), never through a link; the shell runs nothing for it."""
+
+    def test_one_folder_owner_only_and_capped(self) -> None:
+        src = (SHELL / "term_history.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        for needle in ('home.join(".omher").join("term-history")', "mode(&mut o, 0o600)",
+                       "pub const MAX_LINES: usize = 2000;", "pub const MAX_BYTES: usize = 1024 * 1024;",
+                       'key.strip_prefix("panel-")'):
+            self.assertIn(needle, src)
+        self.assertNotIn("Command::new", src)
+        lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+        cmds = re.findall(r"async fn (term_history_\w+)\(", lib) + re.findall(r"\bfn (term_history_\w+)\(", lib)
+        self.assertEqual(sorted(set(cmds)), ["term_history_clear", "term_history_prune", "term_history_read",
+                                             "term_history_remove", "term_history_save"])
+        self.assertEqual(len(re.findall(r"term_history::\w+\(&(?:home|user_home\(\)\?)", lib)), 5)
+
+
 class SessionFilesStayInOmhersFolder(unittest.TestCase):
     """Rule 26: SESSIONS attachments are saved only under `~/.omher/session-files/<session>/`, read back only from
     there, typed at a terminal only as a saved path, removed with their session; Hermes sessions take none."""
@@ -1527,6 +1958,11 @@ class SessionFilesStayInOmhersFolder(unittest.TestCase):
         cls.chat = (SHELL / "agent_chat.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
         cls.ui = (UI_SRC / "sessions" / "sessions.ts").read_text(encoding="utf-8")
         cls.view = (UI_SRC / "sessions" / "SessionView.tsx").read_text(encoding="utf-8")
+
+    def test_an_undone_close_expires_into_the_old_teardown(self) -> None:
+        # rule 11: the undo window's expiry runs the unchanged close(), so files and the pty go as before
+        expire = self.ui.split("const grace = createCloseGrace<Held>({ expire: (g) =>", 1)[1].split(")", 1)[0]
+        self.assertEqual(expire.strip(), "close(g.id")
 
     def test_the_one_folder_is_under_omhers_own_home(self) -> None:
         root = self.prod.split("pub fn root", 1)[1].split("\n}\n", 1)[0]
@@ -1578,7 +2014,22 @@ class SessionFilesStayInOmhersFolder(unittest.TestCase):
     def test_a_terminal_gets_only_a_saved_quoted_path_and_hermes_sessions_take_no_files(self) -> None:
         drop = self.ui.split("const dropOnTerminal = async", 1)[1].split("\n  };\n", 1)[0]
         self.assertIn("shellQuote(await host.saveFile(id, f.name, await f.read()), windows)", drop)
-        self.assertEqual(self.ui.count("host.write("), 2)  # xterm's own typing, and the dropped path
+        # xterm's own typing, the dropped path, and (rule 11) a bot's prompt the person allowed on its card
+        # (`typeAllowed`), through the terminal's PTY (the agent host, or the Shell row's login-shell host)
+        self.assertEqual(self.ui.count("io.write("), 3)
+        allowed = self.ui.split("const typeAllowed = async", 1)[1].split("\n  };\n", 1)[0]
+        self.assertEqual(allowed.count("io.write("), 1)
+        # typeAllowed is called from one place only: termShare.ts's `type`, reached by the card's Allow (or Resume and
+        # send) on that request's own card; its false (nothing typed) keeps the card
+        callers = []
+        for path in sorted((UI_SRC).rglob("*.ts*")):
+            if path.name.endswith((".test.ts", ".test.tsx")):
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "typeAllowed(" in line and "const typeAllowed" not in line:
+                    callers.append((path.relative_to(UI_SRC).as_posix(), line.strip()))
+        self.assertEqual(callers, [("sessions/termShare.ts",
+                                    "const type = (r: PendingRequest) => sessions().typeAllowed(r.sessionId, cleanPrompt(r.prompt));")])
         # files go to chat agents only: an oh-my-hermes session's composer has no onSendFiles
         self.assertIn('onSendFiles={takesFiles ? (t, files) => getSessions().sendFiles(rec.id, t, files) : undefined}', self.view)
         self.assertIn("=== \"chat\";", self.view.split("const takesFiles", 1)[1].split("\n", 1)[0])
@@ -1790,7 +2241,8 @@ class PastConversationsAreOnlyRead(unittest.TestCase):
         self.assertIn("const TAIL: u64 = 1024 * 1024;", self.past)
         self.assertIn("pub const MSG_MAX: usize = 40;", self.past)
         # every file read goes through inside(): the listing and the messages
-        for fn in ("pub fn claude_list(", "pub fn claude_messages(", "pub fn codex_list(", "pub fn codex_messages(", "fn codex_names("):
+        for fn in ("pub fn claude_list(", "pub fn claude_messages(", "pub fn codex_list(", "pub fn codex_messages(", "fn codex_names(",
+                   "pub fn rollout_id("):
             body = self.past.split(fn, 1)[1].split("\n}\n", 1)[0]
             self.assertIn("inside(root, ", body, fn)
         # an id is a UUID before it names a file
@@ -1803,12 +2255,41 @@ class PastConversationsAreOnlyRead(unittest.TestCase):
 
     def test_the_commands_take_only_an_agent_folders_and_an_id(self) -> None:
         for cmd, params in (("past_chats_list", "agent: String, cwds: Vec<String>"), ("past_chat_messages", "agent: String, id: String, cwd: String"),
+                            ("codex_conversation", "shell: State<'_, Shell>, id: u32"),
                             ("session_reveal", "cwd: String"), ("session_open_terminal", "cwd: String"),
                             ("asks_badge", "window: tauri::WebviewWindow, count: u32")):
             sig = re.search(rf"async fn {cmd}\((.*?)\) -> ", self.lib, re.S)
             self.assertIsNotNone(sig, cmd)
             self.assertEqual(sig.group(1).strip(), params, cmd)
         self.assertIn('matches!(agent, "claude" | "codex")', self.past)
+        # a TERMINALS Codex session's conversation is the rollout its own Codex holds open (rule 11): only a path in
+        # the home, under sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl, and only its UUID; no file is opened
+        rid = self.past.split("pub fn rollout_id(", 1)[1].split("\n}\n", 1)[0]
+        for needle in ("let real = inside(root, path)?;", 'if top != "sessions" || !digits(y, 4) || !digits(m, 2) || !digits(d, 2) {',
+                       'name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?', "is_uuid(id)"):
+            self.assertIn(needle, rid)
+        for banned in ("File::open", "read_to_", "lines_in(", "head(", "last_part("):
+            self.assertNotIn(banned, rid, banned)
+        self.assertNotIn("codex_latest", self.lib)
+        fg = (SHELL / "fg.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
+        own = fg.split("pub fn codex_conversation(fg: u32, home: &Path)", 1)[1].split("\n}\n", 1)[0]
+        for needle in ('Probe::default().agent(pid) == Some("codex")', "if !is_codex(fg) {", ".filter(|p| is_codex(*p))",
+                       "crate::past_chats::rollout_id(home, &p)", "tree.len() < TREE_MAX"):
+            self.assertIn(needle, own)
+        self.assertIn("const TREE_MAX: usize = 64;", fg)
+        # the open files are listed, never opened: only proc_pidinfo / proc_pidfdinfo (macOS), /proc/<pid>/fd links (Linux)
+        listing = fg.split("fn open_paths(", 1)[1]
+        listing = listing[: listing.index("#[cfg(test)]")] if "#[cfg(test)]" in listing else listing
+        for banned in ("File::open", "OpenOptions", "read_to_string(&", "fs::write", "Command::new"):
+            self.assertNotIn(banned, listing, banned)
+        self.assertIn("libc::PROC_PIDLISTFDS", listing)
+        self.assertIn("PROC_PIDFDVNODEPATHINFO", listing)
+        self.assertIn('std::fs::read_link(e.ok()?.path())', listing)
+        self.assertIn("pub fn codex_conversation(_fg: u32, _home: &Path) -> Option<String> {\n    None\n}", fg)
+        doc = _flat(DOC.read_text(encoding="utf-8"))
+        self.assertIn("For a TERMINALS Codex session the shell also lists, when the page asks (`codex_conversation`, only the session id goes out), the open files of that foreground Codex process", doc)
+        self.assertIn("only the UUID is kept, as the session's conversation for `codex resume` after a restart; no file is opened, and nothing else is shown, kept or sent; Windows does not do this.", doc)
+        self.assertIn("a TERMINALS Codex session's conversation id comes from the rollout path its own Codex process holds open (rule 11)", doc)
 
     def test_the_system_terminal_runs_no_command_and_the_folder_is_no_shell_string(self) -> None:
         self.assertEqual(self.open.count("Command::new("), 1)
@@ -1913,11 +2394,295 @@ class SshPeersOnlyOverTheOwnSsh(unittest.TestCase):
 
     def test_the_bridge_refuses_this_computers_ops_and_probes_read_only(self) -> None:
         refused = self.bridge.split("PEER_REFUSED = {", 1)[1].split("\n}\n", 1)[0]
-        self.assertEqual(re.findall(r'^    "([a-z.]+)":', refused, re.M), ["folder.open", "folder.close", "bots.restart"])
+        self.assertEqual(re.findall(r'^    "([a-z.]+)":', refused, re.M), ["folder.open", "folder.close", "folder.resume", "bots.restart"])
         forward = self.bridge.split("PEER_FORWARD = frozenset({", 1)[1].split("})", 1)[0]
-        for op in ("folder.open", "folder.close", "bots.restart", "accounts.list", "sessions.start", "usage.read"):
+        for op in ("folder.open", "folder.close", "folder.resume", "bots.restart", "accounts.list", "sessions.start", "usage.read"):
             self.assertNotIn(f'"{op}"', forward, op)
         probe = self.bridge.split("async def op_peers_probe(", 1)[1].split("\n    async def ", 1)[0]
         self.assertEqual(sorted(set(re.findall(r'call\("([a-z.]+)"', probe))), ["bots.list", "hello"])
         # the peer URL is the forwarded loopback port only
         self.assertIn(r'PEER_URL = re.compile(r"ws://127\.0\.0\.1:[0-9]{1,5}/\?token=[0-9a-f]{32}")', self.bridge)
+
+
+class BotThreads(unittest.TestCase):
+    """Rules 3, 11 and 32 for bot threads: a thread is removed by interrupt + Hermes' own archive, never a
+    delete; the SESSIONS entry is back as TERMINALS (terminal sessions only, no chat mode); the terminal panel's and the
+    Shell row's only program is the person's login shell."""
+
+    APP = ROOT / "apps" / "omher"
+
+    def test_thread_remove_archives_and_never_deletes(self) -> None:
+        src = (self.APP / "bridge" / "omher_bridge.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        op = [f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "op_thread_remove"][0]
+        body = ast.get_source_segment(src, op) or ""
+        self.assertIn('"archive"', body)
+        self.assertIn("archived=True", body)
+        self.assertLess(body.index('"session.interrupt"'), body.index('"archive"'))
+        self.assertNotIn("session.delete", src)
+        for word in ("delete", "unlink", "rmtree"):
+            self.assertNotIn(word, body.replace("never a delete", ""), word)
+        # the one archive path: session.mutate's `archive` (or rename), else the older gateway's own verb, and nothing else
+        meta = [f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "_set_meta"][0]
+        helper = ast.get_source_segment(src, meta) or ""
+        self.assertIn('"session.mutate"', helper)
+        self.assertIn('{"rename": "session.title", "archive": "session.archive"}[operation]', helper)
+        for word in ("delete", "reset", "rewind", "unlink", "rmtree"):
+            self.assertNotIn(word, helper, word)
+        operations = set(re.findall(r'await self\._set_meta\(conn, [^,]+, "(\w+)"', src))
+        self.assertEqual(operations, {"rename", "archive"})
+
+    def test_sessions_entry_is_terminals_only(self) -> None:
+        entry = (self.APP / "src" / "sessions" / "entry.ts").read_text(encoding="utf-8")
+        self.assertIn("export const SESSIONS_ENTRY = true;", entry)
+        section = (self.APP / "src" / "sessions" / "SessionsSection.tsx").read_text(encoding="utf-8")
+        # the + menu starts terminals only (startTerminal), offers only agents with a terminal view, and never a draft
+        # chat; the list shows terminal sessions only
+        self.assertIn("getSessions().startTerminal(id, at || undefined);", section)
+        self.assertIn("terminalAgents(ss.agents, ss.recent)", section)
+        self.assertNotIn("getSessions().draft(", section)
+        self.assertNotIn("session-way", section)
+        self.assertIn("ss.list.filter((r) => isTerminalRec(ss.agents, r))", section)
+        sessions = (self.APP / "src" / "sessions" / "sessions.ts").read_text(encoding="utf-8")
+        start = sessions.split("const startTerminal = ", 1)[1].split("\n  };\n", 1)[0]
+        self.assertIn('view: "terminal"', start)
+        self.assertNotIn("startAgentChat", start)
+        self.assertNotIn("startFolderChat", start)
+        # the Shell row goes through the bottom panel's login-shell command: a folder, a size and at most a shell id
+        # from the shell's own list, never a program, path or argument
+        self.assertIn("await getShellHost().start(r.cwd || null, cols, rows, onData, onExit, rec(id)?.shell)", sessions)
+        lib = (self.APP / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn("shell_id: Option<String>,", lib)
+        self.assertIn("sessions.start_shell(cwd.as_deref(), shell_id.as_deref(), &home, cols, rows,", lib)
+        rs = (self.APP / "src-tauri" / "src" / "sessions.rs").read_text(encoding="utf-8")
+        self.assertIn("pub fn shells_available<E, X>(env: &E, etc_shells: &str, is_program: X, os: Os) -> Vec<ShellEntry>", rs)
+        self.assertIn("#[serde(skip)]\n    pub args: Vec<&'static str>,", rs)
+        self.assertIn("let (argv, missing) = shell_argv_for(shell, &host_env, &etc_shells, is_program_file, Os::current())?;", rs)
+        # a saved chat-mode session restarts nothing
+        restore = sessions.split("const restore = ", 1)[1].split("\n  };\n", 1)[0]
+        self.assertIn("const auto = !terminalOnly &&", restore)
+
+    def test_terminal_panel_runs_only_the_login_shell(self) -> None:
+        rs = (self.APP / "src-tauri" / "src" / "sessions.rs").read_text(encoding="utf-8")
+        self.assertIn('return Ok(vec![OsString::from(sh), OsString::from("-l")]);', rs)
+        self.assertIn('std::fs::read_to_string("/etc/shells")', rs)
+        lib = (self.APP / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn("async fn shell_start(", lib)
+
+
+class TasksReadOnly(unittest.TestCase):
+    """Rule 33: Tasks runs only `gh` / `glab` reads from tasks.rs, with a fixed argv the page cannot extend, no token,
+    and the Linear source reads only the MCP server's name from the bot's config."""
+
+    def setUp(self) -> None:
+        text = (SHELL / "tasks.rs").read_text(encoding="utf-8")
+        self.prod = text.split("#[cfg(test)]\nmod tests", 1)[0]
+        self.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+
+    def test_one_spawn_with_no_shell_and_a_timeout(self) -> None:
+        self.assertEqual(self.prod.count("Command::new("), 1)
+        self.assertIn("Command::new(exe)", self.prod)
+        self.assertIn(".stdin(Stdio::null())", self.prod)
+        self.assertIn("pub const TIMEOUT: Duration = Duration::from_secs(20);", self.prod)
+        self.assertIn("pub const KEEP: Duration = Duration::from_secs(60);", self.prod)
+        for shell in ('"sh"', '"bash"', '"-c"', '"cmd"', '"/c"', "powershell"):
+            self.assertNotIn(shell, self.prod, shell)
+        # the programs are the two CLIs, named in one place
+        self.assertIn('Source::Github => "gh",', self.prod)
+        self.assertIn('Source::Gitlab => "glab",', self.prod)
+
+    def test_every_verb_is_a_read_and_no_token_is_read(self) -> None:
+        verbs = set(re.findall(r's\("(list|view|create|close|edit|comment|merge|delete|reopen|review|api)"\)', self.prod))
+        self.assertEqual(verbs, {"list", "view"})
+        self.assertIn('vec!["auth".into(), "status".into()]', self.prod)
+        # auth status: its exit code only (its output is never piped: `keep` false sends it to Stdio::null())
+        self.assertIn("matches!(run(&exe, &auth_argv(source), false), Ok(Ran { code: Some(0), .. }))", self.prod)
+        self.assertIn("let out = || if keep { Stdio::piped() } else { Stdio::null() };", self.prod)
+        self.assertEqual(self.prod.count("run(&exe, "), 2)
+        self.assertIn("let ran = run(&exe, &argv, true)?;", self.prod)
+        for word in ("GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "hosts.yml", "keyring", "auth token", '"token"', "--web", "Authorization"):
+            self.assertNotIn(word, self.prod, word)
+
+    def test_the_page_sends_only_words_and_numbers(self) -> None:
+        for cmd, want in (("tasks_status", "source: String, fresh: Option<bool>"),
+                          ("tasks_list", "source: String, repo: String, kind: String, filter: String, page: u32"),
+                          ("tasks_view", "source: String, repo: String, kind: String, number: u64"),
+                          ("tasks_remote", "cwd: String")):
+            sig = self.lib[self.lib.index(f"async fn {cmd}("):]
+            sig = sig[: sig.index(") ->")]
+            self.assertIn(want, sig, cmd)
+            self.assertNotRegex(sig, r"\b(argv|args|program|command|token)\b", cmd)
+        # the repository is checked before any argv is built
+        self.assertIn("let repo = check_repo(source, repo)?;", self.prod.split("pub fn list_argv", 1)[1].split("\n}\n", 1)[0])
+        self.assertIn("let repo = check_repo(source, repo)?;", self.prod.split("pub fn view_argv", 1)[1].split("\n}\n", 1)[0])
+
+    def test_linear_reads_only_the_server_names(self) -> None:
+        src = (ROOT / "apps" / "omher" / "bridge" / "omher_bridge.py").read_text(encoding="utf-8")
+        fn = src.split("def read_linear_mcp(", 1)[1].split("\ndef ", 1)[0]
+        self.assertEqual(fn.split('"""', 2)[2].strip(), 'return linear_server(mcp_server_names(profile_dir / "config.yaml"))')
+        # the config never goes through the shared YAML cache; the event reader keeps only names and `enabled`
+        names = src.split("def mcp_server_names(", 1)[1].split("\ndef ", 1)[0]
+        for word in ("_load_yaml", "_YAML_CACHE", "yaml.load(", "safe_load", "compose", "read_text"):
+            self.assertNotIn(word, names, word)
+        self.assertIn("events, yaml = _yaml_events(f)", names)
+        # its events come from a parser of the library Hermes reads YAML with, never from a loader
+        events = src.split("def _yaml_events(", 1)[1].split("\ndef ", 1)[0]
+        for word in ("_load_yaml", "_YAML_CACHE", "load(", "safe_load", "compose", "read_text"):
+            self.assertNotIn(word, events, word)
+        self.assertIn("yaml.parse(stream, Loader=loader)", events)
+        self.assertIn('YAML(typ="safe", pure=True).parse(stream)', events)
+        self.assertEqual(sorted(set(re.findall(r'== "([a-z_]+)"', names))), ["enabled", "mcp_servers"])
+        body = src.split("def linear_server(", 1)[1].split("\ndef ", 1)[0].split('"""', 2)[2]
+        # the keys, then of the Linear-named server only its `enabled`: no url, no values(), no items()
+        self.assertIn("for name in servers.keys():", body)
+        self.assertIn('if isinstance(name, str) and "linear" in name.lower():', body)
+        self.assertEqual(re.findall(r'\.get\("([a-z_]+)"', body), ["enabled"])
+        for word in ('"url"', '"headers"', '"env"', '"auth"', '"token"', ".values(", ".items(", "open(", "subprocess", "write"):
+            self.assertNotIn(word, body, word)
+        self.assertIn('return {"configured": on, "server": name[:64]}', body)
+        self.assertIn('"tasks.linear": self.op_tasks_linear', src)
+        # rule 33: the Linear path sends, logs, stores and shows nothing else; the op only looks the bot up and returns
+        op = src.split("async def op_tasks_linear(", 1)[1].split("\n    async def ", 1)[0].split('"""', 2)[2]
+        self.assertEqual([l.strip() for l in op.strip().splitlines()],
+                         ['bot = self._bot(p.get("bot"))', 'return await asyncio.to_thread(read_linear_mcp, bot["path"])'])
+        for part in (fn, names, body):
+            for word in ("log.", "print(", "_YAML_CACHE", "emit(", "send(", "write", "global "):
+                self.assertNotIn(word, part, word)
+
+    def test_one_masker_for_task_text(self) -> None:
+        self.assertIn('const SECRETS: &str = include_str!("../../src/lib/secrets.json");', self.prod)
+        self.assertIn("mask_secrets(&t)", self.prod.split("fn text(", 1)[1].split("\n}\n", 1)[0])
+        self.assertIn("one_line(mask_secrets(line), 200)", self.prod.split("pub fn error_line(", 1)[1].split("\n}\n", 1)[0])
+        host = (UI_SRC / "tasks" / "host.ts").read_text(encoding="utf-8")
+        self.assertIn('import { maskSecrets } from "../lib/secrets";', host)
+        self.assertIn("new MaskingTaskHost(inTauri() ? new TauriTaskHost() : new MockTaskHost())", host)
+        msg = (UI_SRC / "tasks" / "message.ts").read_text(encoding="utf-8")
+        self.assertIn("maskSecrets(d.body)", msg)
+        self.assertIn("maskSecrets(item.title)", msg)
+        self.assertIn('import spec from "./secrets.json";', (UI_SRC / "lib" / "secrets.ts").read_text(encoding="utf-8"))
+
+    def test_the_page_starts_threads_only_through_thread_create_and_chat_send(self) -> None:
+        page = (UI_SRC / "tasks" / "TasksPage.tsx").read_text(encoding="utf-8")
+        self.assertNotIn("invoke(", page)
+        self.assertNotIn("bridge.request", page)
+        store = (UI_SRC / "state" / "store.ts").read_text(encoding="utf-8")
+        start = store.split("async startTaskThread(", 1)[1].split("\n    },\n", 1)[0]
+        self.assertEqual(re.findall(r'(threadReq|bridge\.request)\("([a-z.]+)"', start), [("threadReq", "thread.create")])
+        self.assertIn("await actions.threadSend(bot, row.thread, text);", start)
+        host = (UI_SRC / "tasks" / "host.ts").read_text(encoding="utf-8")
+        self.assertEqual(sorted(set(re.findall(r'invoke<[^>]+>\("([a-z_]+)"', host))), ["tasks_list", "tasks_remote", "tasks_status", "tasks_view"])
+
+
+class TerminalLinksAndBotRequests(unittest.TestCase):
+    """Rules 11, 22 and 34: a TERMINALS session's `omher://terminal/<id>` link opens only inside omher and starts
+    nothing; its status file and inbox stay owner-only; a bot's request only shows a card, and only Allow types."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.link = (SHELL / "term_link.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        cls.share = (SHELL / "term_share.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        cls.tool = (ROOT / "src" / "plugin_bundle" / "omh" / "tools" / "omher_terminal_tool.py").read_text(encoding="utf-8")
+
+    def test_the_shell_takes_only_a_well_formed_terminal_link(self) -> None:
+        body = self.link.split("pub fn link_id", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('strip_prefix("omher://terminal/")', body)
+        self.assertIn("id.len() == 10", body)
+        import json
+        conf = json.loads((SHELL.parent / "tauri.conf.json").read_text(encoding="utf-8"))
+        self.assertEqual(conf["plugins"]["deep-link"]["desktop"]["schemes"], ["omher"])
+        # the link code runs, opens and types nothing
+        for bad in ("Command::new", "opener", "open_url", "write(", "shell_start"):
+            self.assertNotIn(bad, self.link, bad)
+
+    def test_the_page_only_opens_the_session_a_link_names(self) -> None:
+        page = (UI_SRC / "sessions" / "termLinkOpen.tsx").read_text(encoding="utf-8")
+        code = "\n".join(l for l in page.splitlines() if not l.lstrip().startswith(("//", "*", "/**")))
+        self.assertEqual(sorted(set(re.findall(r"actions\.(\w+)\(", code))), ["openSession"])
+        for bad in ("typeAllowed", ".write(", ".start(", "resume(", "send(", "openExternal"):
+            self.assertNotIn(bad, code, bad)
+        # in markdown only the exact terminal-link shape passes; everything else keeps react-markdown's own transform
+        remark = (UI_SRC / "chat" / "parts" / "remarkTermLinks.ts").read_text(encoding="utf-8")
+        self.assertIn("return parseTermLink(url) ? url.trim() : defaultUrlTransform(url);", remark)
+
+    def test_sharing_is_off_on_windows_in_the_shell_and_the_tool(self) -> None:
+        self.assertIn("pub const ENABLED: bool = cfg!(not(windows));", self.share)
+        for fn in ("pub fn write(", "pub fn take("):
+            body = self.share.split(fn, 1)[1].split("\n}\n", 1)[0]
+            self.assertIn("if !ENABLED {", body, fn)
+        handler = self.tool.split("def omh_omher_terminal_handler(", 1)[1]
+        self.assertLess(handler.index("if not sharing_available():"), handler.index("root = terminals_root()"))
+        self.assertIn('"terminal sharing is not available on Windows"', handler)
+
+    def test_every_bot_prompt_asks_and_no_grant_is_kept(self) -> None:
+        # the sender name is self-reported, so nothing may stand in for the person's Allow on each request's own card
+        share = (UI_SRC / "sessions" / "termShare.ts").read_text(encoding="utf-8")
+        card = (UI_SRC / "sessions" / "TermShareCard.tsx").read_text(encoding="utf-8")
+        self.assertIn('const answer = async (key: string, choice: "deny" | "once" | "resume") => {', share)
+        for bad in ("granted", "grantKey", '"session"'):
+            self.assertNotIn(bad, share, bad)
+            self.assertNotIn(bad, card, bad)
+        # a request that arrives only ever becomes a card: arrive() types nothing
+        arrive = share.split("const arrive = (reqs: ShareRequest[]) => {", 1)[1].split("\n  };\n", 1)[0]
+        self.assertNotIn("type(", arrive)
+        for lang in ("en", "ja", "ko", "zh"):
+            self.assertNotIn('"tshare.thisSession"', (UI_SRC / "i18n" / f"{lang}.ts").read_text(encoding="utf-8"), lang)
+
+    def test_the_inbox_is_read_owner_only_and_never_types(self) -> None:
+        for needle in ("libc::O_NOFOLLOW", "meta.mode() & 0o7777 != 0o600", "meta.uid() != my_uid()",
+                       "pub const REQUEST_MAX: u64 = 16 * 1024;"):
+            self.assertIn(needle, self.share, needle)
+        for bad in ("sessions::", "Sessions", "pty::", "portable_pty", "Command::new", "TcpStream"):
+            self.assertNotIn(bad, self.share, bad)
+
+    def test_the_omh_tool_writes_only_the_files_and_never_imports_omher(self) -> None:
+        self.assertIn('_LINK = re.compile(r"^(?:omher://terminal/)?([a-z2-7]{10})/?$")', self.tool)
+        for bad in ("import omher", "from omher", "subprocess", "import socket", "urllib"):
+            self.assertNotIn(bad, self.tool, bad)
+
+    def test_the_bridge_reads_a_status_file_without_following_a_link(self) -> None:
+        src = BRIDGE.read_text(encoding="utf-8")
+        body = src.split("def read_term_status(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn('root = Path(omher_home) / "terminals"', body)
+        self.assertIn('os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)', body)
+        for bad in ("write", "unlink", "rename", "replace("):
+            self.assertNotIn(bad, body.split('"""', 2)[2], bad)
+
+    def test_close_window_asks_the_page_and_splits_persist_only_numbers(self) -> None:
+        menu = (SHELL / "app_menu.rs").read_text(encoding="utf-8")
+        self.assertIn('pub const CLOSE_EVENT: &str = "menu-close";', menu)
+        self.assertIn("window_close,", (SHELL / "lib.rs").read_text(encoding="utf-8"))
+        split = (UI_SRC / "sessions" / "splitState.ts").read_text(encoding="utf-8")
+        self.assertIn('export const SPLITS_KEY = "omher.splits";', split)
+
+
+class DiskTrayAndKeepAwake(unittest.TestCase):
+    """Rules 35-37: one free-space statistic a minute and nothing deleted; the close hides to the tray and quitting
+    stays explicit; keep awake holds only an idle-sleep assertion, released on quit."""
+
+    def test_disk_watch_makes_only_the_free_space_call(self) -> None:
+        disk = (SHELL / "disk.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        for bad in ("Command::new(", "std::fs::", "fs::", "File::", "remove"):
+            self.assertNotIn(bad, disk, bad)
+        for call in ("statfs(", "statvfs(", "GetDiskFreeSpaceExW("):
+            self.assertIn(call, disk, call)
+        self.assertIn('"disk-level"', disk)
+        self.assertIn("disk::disk_watch", (SHELL / "lib.rs").read_text(encoding="utf-8"))
+        doc = _flat(DOC.read_text(encoding="utf-8"))
+        self.assertIn("`disk-level`", doc)
+        self.assertIn("deletes nothing", doc)
+
+    def test_close_hides_and_tray_quit_really_quits(self) -> None:
+        tray = (SHELL / "tray.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        self.assertIn("api.prevent_close()", tray)
+        self.assertIn("OnClose::Hide", tray)
+        self.assertIn("Item::Quit => app.exit(0)", tray)
+
+    def test_keep_awake_is_an_idle_sleep_assertion_released_on_quit(self) -> None:
+        power = (SHELL / "power.rs").read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        self.assertIn("PreventUserIdleSystemSleep", power)
+        self.assertIn("LINGER: Duration = Duration::from_secs(60)", power)
+        for bad in ('PreventSystemSleep"', "NoDisplaySleep", "ES_DISPLAY_REQUIRED"):
+            self.assertNotIn(bad, power, bad)
+        lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+        exit_arm = lib.split("RunEvent::Exit = event {", 1)[1].split("shell.sessions.close_all();", 1)[0]
+        self.assertIn("power.quit();", exit_arm)

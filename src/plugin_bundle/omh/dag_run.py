@@ -52,6 +52,15 @@ superseded. ``extend`` adds a round of nodes to a run whose every node passed
 when the goal check finds work missing, at most `MAX_EXTEND_ROUNDS` per run.
 Each node records where it came from (``origin``): ``define``,
 ``repair:<root>`` or ``extend:<round>``.
+
+A re-run can carry work forward, only when the parent asks
+(``carry_forward``, the base revision the run builds on): a node accepted in
+an earlier run of the same goal, base and workspace root, with the same id, prompt, write
+scope, depends_on and role, its handoff checked and still on this host, is
+recorded ``carried`` and never handed out; its dependents read the earlier
+handoff (`carry_forward`). The graph must hold a verify node, which is never
+carried, so it runs over the carried work; a carried node whose parent runs
+again runs again too.
 """
 
 from __future__ import annotations
@@ -68,6 +77,7 @@ import re
 import secrets
 import shlex
 import shutil
+import time
 from typing import Any, Final
 import unicodedata
 
@@ -76,6 +86,7 @@ from .awareness_delivery import _awareness_delivery_lock
 from .delegation_ledger import ledger_key
 from .hermes_delegation import HERMES_MIXTURE_CATEGORY_CHAINS
 from .iso_datetime import strict_fromisoformat
+from .omh_identities import IDENTITY_REFERENCE_RE, resolve_identity
 
 DAG_SCHEMA_VERSION: Final = "omh_dag/v1"
 DAG_RESULT_SCHEMA_VERSION: Final = "omh_dag_result/v1"
@@ -84,6 +95,8 @@ MAX_NODES: Final = 48
 MAX_RUNS_PER_SESSION: Final = 16
 MAX_PROMPT_CHARS: Final = 3_000
 MAX_LABEL_CHARS: Final = 80
+# A node's `review_focus`: one plain line saying what the parent will look for when it reads the node's work.
+MAX_REVIEW_FOCUS_CHARS: Final = 400
 MAX_NAME_CHARS: Final = 48
 MAX_GOAL_CHARS: Final = 240
 MAX_SCOPE_ENTRIES: Final = 16
@@ -134,7 +147,13 @@ DEEP_CATEGORIES: Final = frozenset({"deep", "deep-work"})
 # trade-off); a graph this wide with none of them is told to give that node `ultrabrain` (`no_judgement_node`).
 JUDGEMENT_CATEGORIES: Final = frozenset({"ultrabrain", "architect", "forensics"})
 JUDGEMENT_GRAPH_NODES: Final = 4
-OUTCOMES: Final = ("accepted", "failed", "blocked", "parked")
+# ``escalated`` closes the attempt like a provider-error ``retry``: the node is pending again, one category up.
+OUTCOMES: Final = ("accepted", "failed", "blocked", "parked", "escalated")
+# The difficulty ladder a node climbs when its child stops on a judgement it cannot settle (`settle` escalated); a
+# category that is not a key cannot escalate. At most `MAX_ESCALATIONS` rungs per node.
+ESCALATION_LADDER: Final = {"quick": "unspecified-low", "unspecified-low": "unspecified-high",
+                            "unspecified-high": "ultrabrain"}
+MAX_ESCALATIONS: Final = 2
 # The ``origin`` kinds of a node added after define: ``repair:<root>`` and ``extend:<round>``.
 ADDED_ORIGIN_KINDS: Final = ("repair", "extend")
 PROMPT_MARKERS: Final = ("TASK", "DELIVERABLE", "SCOPE", "VERIFY", "STOP WHEN")
@@ -147,8 +166,15 @@ CHILD_FAILURE_STOPS: Final = frozenset({"failed", "error", "timeout", "interrupt
 # What every view says for a node accepted while its handoff could not be read where the child wrote it.
 HANDOFF_NOT_CHECKED: Final = "handoff not checked"
 EXTERNAL_OWNERS: Final = ("claude-code", "codex")
+# The line a builder gets for its `review_focus` (native task and external export alike).
+REVIEW_FOCUS_PREFIX: Final = "Review focus (what the parent will check when it reads your work): "
+# Every native build node with a write scope gets this (OpenAI's Codex guide, read 2026-11-20); an exported unit gets
+# the fanout prompt's own `unit.shared_machine` block instead.
+SHARED_MACHINE_LINE: Final = ("Other agents share this machine: run only the builds and tests you need at once, and before "
+                              "you stop, stop the background jobs you started and remove the temporary files you "
+                              "created.")
 NODE_FIELDS: Final = frozenset({"id", "label", "category", "prompt", "depends_on", "write_scope", "role", "owner",
-                                "local", "read_only"})
+                                "local", "read_only", "identity", "review_focus"})
 # What a node is for, as the parent declares it (``build`` when it names none). A ``build`` node with a write scope is a
 # producer; baseline, verify and review nodes stay native whoever builds, and only a ``verify`` node verifies the goal.
 ROLES: Final = ("build", "baseline", "verify", "review")
@@ -196,8 +222,13 @@ _MARKER_PATTERNS: Final = {
     for marker in PROMPT_MARKERS
 }
 
+# A node a re-run took over from an earlier run's accepted node (`carry_forward`): not an outcome settle takes.
+CARRIED: Final = "carried"
+# The base revision `carry_forward` matches runs on, as the parent passes it (a commit sha, a tag, a branch@sha).
+_BASE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@-]{0,63}$")
+
 # Node states the derivation produces.
-SATISFIED: Final = frozenset({"accepted", "repaired"})
+SATISFIED: Final = frozenset({"accepted", "repaired", CARRIED})
 OPEN: Final = frozenset({"handed_out", "running", "returned"})
 LIVE: Final = OPEN | {"parked"}
 
@@ -341,7 +372,21 @@ def locked(path: Path) -> AbstractContextManager[str]:
 
 def session_runs(omh_home: Path, session_id: str) -> list[tuple[dict[str, Any], Path]]:
     """Every readable run stored under one session, newest change first."""
-    directory = session_dir(omh_home, session_id)
+    return _runs_in(session_dir(omh_home, session_id))
+
+
+def every_run(omh_home: Path) -> list[tuple[dict[str, Any], Path]]:
+    """Every readable run of this OMH home, any session, newest change first: what `carry_forward` matches."""
+    root = Path(omh_home) / "runtime" / DAG_DIRNAME
+    try:
+        folders = [path for path in root.iterdir() if path.is_dir() and not path.is_symlink()]
+    except OSError:
+        return []
+    runs = [item for folder in folders for item in _runs_in(folder)]
+    return sorted(runs, key=lambda item: _number(item[0].get("updated_at")) or 0.0, reverse=True)
+
+
+def _runs_in(directory: Path) -> list[tuple[dict[str, Any], Path]]:
     try:
         paths = [path for path in directory.iterdir()
                  if path.suffix == ".json" and not path.name.startswith(".") and not path.is_symlink()]
@@ -395,7 +440,7 @@ def _validated_node(raw: object) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or set(raw) - NODE_FIELDS:
         raise DagRefusal("invalid_node",
                          "Each node takes only id, label, category, prompt, depends_on, write_scope, role, owner, "
-                         "local and read_only.")
+                         "local, read_only, identity and review_focus.")
     node_id = valid_id(raw.get("id"), "invalid_node_id", "Each node needs a short lowercase id (a-z, 0-9, -).")
     label = _plain(raw.get("label"), MAX_LABEL_CHARS, "invalid_label", f"Node {node_id} needs a short label.")
     # Either lane's reader also takes a marker that opens a goal (one handed out before an update), so a label holding
@@ -422,6 +467,13 @@ def _validated_node(raw: object) -> dict[str, Any]:
     role = raw.get("role", DEFAULT_ROLE)
     if role not in ROLES:
         raise DagRefusal("invalid_role", f"Node {node_id}: role is one of {', '.join(ROLES)}.")
+    identity = raw.get("identity")
+    if "identity" in raw:
+        if (not isinstance(identity, str) or ":" not in identity
+                or not IDENTITY_REFERENCE_RE.fullmatch(identity.strip())):
+            raise DagRefusal("invalid_identity",
+                             f"Node {node_id}: identity is a qualified builtin:<name> or custom:<name> reference.")
+    focus = _review_focus(raw.get("review_focus"), node_id)
     validated = {
         "id": node_id,
         "label": label,
@@ -436,6 +488,11 @@ def _validated_node(raw: object) -> dict[str, Any]:
         "found_by": "",
         "attempts": [],
     }
+    if "identity" in raw:
+        validated["identity"] = identity.strip()
+    if focus:
+        # Stored only when given, so a node without one keeps the digest it had before the field existed.
+        validated["review_focus"] = focus
     guess = guessed_role(validated) if "role" not in raw else DEFAULT_ROLE
     if guess == DEFAULT_ROLE and "role" not in raw and _DOUBLE_CHECK.search(label.casefold()):
         guess = "verify"
@@ -471,6 +528,19 @@ def _validated_node(raw: object) -> dict[str, Any]:
         if raw["read_only"]:
             validated["read_only"] = True
     return validated
+
+
+def _review_focus(value: object, node_id: str) -> str:
+    """A node's review focus as one line: absent (``""``) when left out, null, empty or spaces only. Refused when it
+    is no string, holds a control character, is only line breaks or tabs, or runs past `MAX_REVIEW_FOCUS_CHARS`."""
+    if value is None or (isinstance(value, str) and not value.strip(" ")):
+        return ""
+    text = " ".join(value.split()) if isinstance(value, str) else ""
+    if not text or len(text) > MAX_REVIEW_FOCUS_CHARS or _CONTROL.search(str(value)):
+        raise DagRefusal("invalid_review_focus",
+                         f"Node {node_id}: review_focus is one line of at most {MAX_REVIEW_FOCUS_CHARS} characters "
+                         "saying what you will look for when you read its work; leave it out when there is none.")
+    return text
 
 
 def _validated_criteria(raw: object, taken: Sequence[str] = ()) -> list[dict[str, str]]:
@@ -767,6 +837,10 @@ def lint(nodes: Sequence[Mapping[str, Any]], *, defining: bool = True) -> list[s
     # alone: they judge the run goal, which can need a high category.
     findings += [f"review_not_review_category:{node['id']}" for node in nodes
                  if node.get("role") == "review" and node["category"] != "review"]
+    # A build node that writes code and says nothing about what the parent will check when it reads the work.
+    findings += [f"no_review_focus:{node['id']}" for node in nodes
+                 if node_role(node) == DEFAULT_ROLE and node["write_scope"] and writes_code(node)
+                 and not node.get("review_focus")]
     return findings
 
 
@@ -996,8 +1070,10 @@ def derive(record: Mapping[str, Any], children: Sequence[Mapping[str, Any]], now
         attempts = node.get("attempts") or []
         last = attempts[-1] if attempts else None
         info: dict[str, Any] = {"child": None, "attempts": len(attempts), "waits_on": [], "held_by": []}
-        if last is None or last.get("outcome") == "retry":
+        if last is None or last.get("outcome") in ("retry", "escalated"):
             info["state"] = "pending"
+        elif last.get("outcome") == CARRIED:
+            info["state"] = CARRIED
         elif last.get("outcome") in OUTCOMES:
             info["state"] = str(last["outcome"])
             info["child"] = attempt_child(last, bound.get(node_id, []))
@@ -1007,6 +1083,8 @@ def derive(record: Mapping[str, Any], children: Sequence[Mapping[str, Any]], now
                 child = None
                 info["lost"] = True
             info["child"] = child
+            if child is not None and isinstance(child.get("waiting_resume"), Mapping):
+                info["waiting_resume"] = dict(child["waiting_resume"])
             if child is None:
                 info["state"] = "handed_out"
             elif isinstance(child.get("stop"), Mapping):
@@ -1212,7 +1290,9 @@ def counts(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]]) 
     live = {node_id: info for node_id, info in derived.items() if info["state"] != "superseded"}
     failures = open_failures(record, derived)
     labels = {str(node["id"]): str(node["label"]) for node in record["nodes"]}
+    carried = sum(1 for info in live.values() if info["state"] == CARRIED)
     return {
+        **({"carried": carried} if carried else {}),
         "total": len(live),
         "done": sum(1 for info in live.values() if info["state"] in SATISFIED),
         "running": sum(1 for info in live.values() if info["state"] == "running"),
@@ -1234,6 +1314,8 @@ def status_line(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, An
     """
     tally = counts(record, derived)
     parts = [f"DAG {record['name']}", f"{tally['done']}/{tally['total']} done", f"{tally['running']} running"]
+    if tally.get("carried"):
+        parts.append(f"carried {tally['carried']} of {tally['total']} nodes from {record.get('carried_from')}")
     if tally["parked"]:
         parts.append(f"{tally['parked']} parked")
     if tally["failed"]:
@@ -1318,16 +1400,23 @@ def stuck(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]], n
           limits: Limits = DEFAULT_LIMITS) -> list[tuple[str, float]]:
     """Open nodes past ``limits.stuck_after_s``, oldest first, as ``(node id, seconds open)``; none when the mark is 0.
 
-    Left out: a node whose child a restart ended (offered again, or settled past the bound, on its own line), and
-    one exported to a coding owner or left to the parent, which no delegate_task child runs.
+    Left out: a node whose child a restart ended (offered again, or settled past the bound, on its own line), one
+    whose child Hermes will resume (a usage limit can hold it for hours), and one exported to a coding owner or
+    left to the parent, which no delegate_task child runs.
     """
     if limits.stuck_after_s <= 0:
         return []
     lanes = {str(node["id"]): (node.get("attempts") or [{}])[-1].get("lane") for node in record["nodes"]}
     found = [(node_id, age) for node_id, age in open_for(record, derived, now).items()
              if age > limits.stuck_after_s and not derived[node_id].get("lost")
+             and not derived[node_id].get("waiting_resume")
              and lanes[node_id] not in ("fanout", "parent")]
     return sorted(found, key=lambda item: (-item[1], item[0]))
+
+
+def _clock(epoch: float) -> str:
+    """``HH:MM`` local time, as Hermes writes a resume time."""
+    return time.strftime("%H:%M", time.localtime(epoch))
 
 
 def age_text(seconds: float) -> str:
@@ -1418,8 +1507,8 @@ def resume_handle_for(attempts: Sequence[Mapping[str, Any]]) -> str:
     return ""
 
 
-def hand_out(node: dict[str, Any], derived_state: str, now: float, *, lost: bool = False,
-             token: bool = False) -> dict[str, Any]:
+def hand_out(node: dict[str, Any], derived_state: str, now: float, *, lost: bool = False, token: bool = False,
+             omh_home: Path | None = None) -> dict[str, Any]:
     """Write-ahead: the attempt exists before its goal leaves this tool, so a marker always finds it.
 
     ``lost``: the attempt is offered again because a restart ended its child, which the attempt counts.
@@ -1427,6 +1516,13 @@ def hand_out(node: dict[str, Any], derived_state: str, now: float, *, lost: bool
     for another attempt, earlier or later, counts for it. Offering the same attempt again keeps its token.
     """
     attempts = node.setdefault("attempts", [])
+    selected = resolve_identity(str(node["identity"]), omh_home) if node.get("identity") else None
+    if node.get("identity"):
+        if selected is None:
+            raise DagRefusal("identity_unavailable", "The selected identity is missing, disabled or ambiguous.")
+        digest = selected["fingerprint"]["digest"]
+        if any(item.get("identity_digest") and item["identity_digest"] != digest for item in attempts):
+            raise DagRefusal("identity_config_changed", "The selected identity changed since this node was prepared.")
     if derived_state == "handed_out" and attempts:
         attempts[-1].setdefault("opened_at", attempts[-1].get("handed_out_at"))
         attempts[-1]["handed_out_at"] = now
@@ -1442,6 +1538,8 @@ def hand_out(node: dict[str, Any], derived_state: str, now: float, *, lost: bool
         attempt["resume_handle"] = handle
     if token:
         attempt["token"] = secrets.token_hex(ATTEMPT_TOKEN_BYTES)
+    if selected is not None:
+        attempt.update(identity=selected["reference"], identity_digest=selected["fingerprint"]["digest"])
     attempts.append(attempt)
     return attempt
 
@@ -1458,6 +1556,15 @@ def reads_for(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]
     return reads
 
 
+def read_handoff_path(record: Mapping[str, Any], omh_home: Path, node_id: str) -> str:
+    """Where a dependent reads ``node_id``'s handoff: the earlier run's file for a carried node, else its own."""
+    node = next((item for item in record["nodes"] if str(item["id"]) == node_id), None)
+    last = (node.get("attempts") or [None])[-1] if node is not None else None
+    if isinstance(last, Mapping) and last.get("outcome") == CARRIED and isinstance(last.get("carried_from"), Mapping):
+        return str(last["carried_from"]["handoff"])
+    return node_handoff(record, omh_home, node_id)
+
+
 def _fit(items: Sequence[str], limit: int, sep: str) -> tuple[list[str], int]:
     """The leading ``items`` whose ``sep`` join fits ``limit`` (the first always), and how many were left out."""
     shown = list(items[:1])
@@ -1466,6 +1573,15 @@ def _fit(items: Sequence[str], limit: int, sep: str) -> tuple[list[str], int]:
             break
         shown.append(item)
     return shown, len(items) - len(shown)
+
+
+def _producer_focus(record: Mapping[str, Any], node: Mapping[str, Any], preceding: set[str]) -> list[str]:
+    """``- id: focus`` for each producer a verify node follows (and their repairs) that was given a review focus, in
+    run order. The verify node's own focus is its task's first line, so it is not listed here again."""
+    holders = preceding | {str(node["id"])}
+    return [f"- {item['id']}: {item['review_focus']}" for item in record["nodes"]
+            if item.get("review_focus") and str(item["id"]) != str(node["id"]) and is_producer(item)
+            and (str(item["id"]) in preceding or item.get("repairs") in holders)]
 
 
 def _producer_scopes(record: Mapping[str, Any], node: Mapping[str, Any], preceding: set[str]) -> str:
@@ -1506,10 +1622,23 @@ def task_for(
     """One `delegate_task` task: the marked goal, and the node's prompt with where to write and read handoffs."""
     run = str(record["run"])
     lines = [str(node["prompt"]), ""]
+    if node.get("review_focus"):
+        lines.extend([f"{REVIEW_FOCUS_PREFIX}{node['review_focus']}", ""])
     attempts = node.get("attempts") or []
     if attempts and attempts[-1].get("resume_handle"):
         lines.extend([f"Resume the still-running wait: {attempts[-1]['resume_handle']}. "
                       "Check its result before starting any replacement work.", ""])
+    # A provider-error retry replaces the attempt it follows, so the brief looks past it to the escalated one.
+    closed = [item for item in attempts if item.get("outcome") and item.get("outcome") != "retry"]
+    if closed and closed[-1].get("outcome") == "escalated":
+        escalated = closed[-1]
+        question = str(escalated.get("reason") or "").rstrip()
+        # The question ends the sentence: add a full stop only when it carries no end mark of its own.
+        stop = "" if question.endswith((".", "?", "!")) else "."
+        lines.extend([f"Escalated from {escalated.get('escalated_from')} to {escalated.get('escalated_to')}. The "
+                      f"previous attempt stopped on this question: {question}{stop} Read its handoff at "
+                      f"{node_handoff(record, omh_home, str(node['id']))} for what it found, decide the question, "
+                      "then do the task.", ""])
     goal = record.get("goal")
     if isinstance(goal, str) and goal.strip():
         lines.extend([
@@ -1554,14 +1683,14 @@ def task_for(
         "file and your final message.",
     ])
     if node["depends_on"]:
-        reads = ", ".join(node_handoff(record, omh_home, parent) for parent in reads_for(record, derived, node))
+        reads = ", ".join(read_handoff_path(record, omh_home, parent) for parent in reads_for(record, derived, node))
         lines.append(f"Read first: {reads}. A missing file means that part did not finish: stop and say so.")
     if is_verification(node):
         parents = {str(item["id"]): item["depends_on"] for item in record["nodes"]}
         preceding = ancestors(str(node["id"]), parents)
         for baseline in record["nodes"]:
             if str(baseline["id"]) in preceding and is_baseline(baseline):
-                lines.append(f"Baseline: Read {node_handoff(record, omh_home, str(baseline['id']))}. Exempt only a "
+                lines.append(f"Baseline: Read {read_handoff_path(record, omh_home, str(baseline['id']))}. Exempt only a "
                              "failure it lists that you re-ran here with the same test id and assertion/error "
                              "signature, under a comparable command and environment at the pinned base and candidate "
                              "revisions; report it as pre-existing. A same-id failure that changed, missing evidence, "
@@ -1570,6 +1699,14 @@ def task_for(
                              "goal done.")
         lines.append("Check the complete run goal, not only this node's local VERIFY. "
                      "Name each unmet or unobserved goal criterion; producer claims are not verification evidence.")
+        focus = _producer_focus(record, node, preceding)
+        if focus:
+            lines.extend(["Review focus the producers were given (judge their work on these too):", *focus])
+        carried = [str(item["id"]) for item in record["nodes"]
+                   if str(item["id"]) in preceding and derived[str(item["id"])]["state"] == CARRIED]
+        if carried:
+            lines.append(f"Carried from run {record.get('carried_from')} without running again: {', '.join(carried)}. "
+                         "Check their work as you check the rest; an earlier run's acceptance is no evidence here.")
         criteria = run_criteria(record)
         if criteria:
             # The engine reads these lines from the handoff (`criterion_statuses`); a criterion without one is unobserved.
@@ -1590,6 +1727,17 @@ def task_for(
                          f"its failing path, or `unattributed`: by declared scope, not proven cause. Scopes: {scopes}")
     if node.get("repairs") and node["write_scope"]:
         lines.append(_leftovers_line(record, node))
+    if can_escalate(node):
+        lines.append("If the task turns on a judgement you cannot settle with confidence (a design choice, a root "
+                     "cause you cannot pin down), do not guess: before editing, write ESCALATE: <the question> and "
+                     "what you found into the handoff, and stop.")
+    if node["write_scope"] and not node.get("read_only"):
+        # Parallel parts share the checkout's index and stash, so a whole-tree add or stash takes their files too.
+        lines.append("Commit only your own SCOPE paths: stage them by name (`git add -- <paths>`), never `git add -A`, "
+                     "`git add .` or `git commit -a`, and never `git stash`; the index and stash are shared with the "
+                     "parallel parts.")
+        if node_role(node) == DEFAULT_ROLE:
+            lines.append(SHARED_MACHINE_LINE)
     lines.append("Stay inside your SCOPE: other parts of this run work at the same time. If you cannot finish, "
                  "say plainly that you are blocked and why; do not report blocked work as done.")
     # The marker ends the goal: Hermes previews each goal by its first 40 characters, and a person reads the label
@@ -1598,8 +1746,21 @@ def task_for(
 
 
 def retry_count(node: Mapping[str, Any]) -> int:
-    """How many of the node's attempts ended in a provider-error retry: the index of its next model_map option."""
-    return sum(1 for item in node.get("attempts") or [] if item.get("outcome") == "retry")
+    """How many of the node's attempts since its last escalation ended in a provider-error retry: the index of its
+    next model_map option. A new category starts from its first option."""
+    attempts = list(node.get("attempts") or [])
+    since = max((index for index, item in enumerate(attempts) if item.get("outcome") == "escalated"), default=-1)
+    return sum(1 for item in attempts[since + 1:] if item.get("outcome") == "retry")
+
+
+def can_escalate(node: Mapping[str, Any]) -> bool:
+    """True when the node's category has a rung above it and it escalated fewer than `MAX_ESCALATIONS` times.
+
+    A node pinned to an `identity` runs on that identity's own model chain whatever its category, so a climb would
+    change only the label; such a node cannot escalate (the parent picks another identity instead)."""
+    if node.get("identity"):
+        return False
+    return str(node.get("category")) in ESCALATION_LADDER and len(node.get("escalations") or []) < MAX_ESCALATIONS
 
 
 def local_blocked(record: Mapping[str, Any], offered: Iterable[str], backend: Mapping[str, Any] | None) -> list[str]:
@@ -1618,14 +1779,20 @@ def local_blocked(record: Mapping[str, Any], offered: Iterable[str], backend: Ma
         node = nodes[node_id]
         if not node.get("local"):
             continue
-        names = list(local_options.get(str(node["category"])) or []) if readable else []
+        identity = str(node.get("identity") or "")
+        has_chain = bool(((backend or {}).get("identity_chains") or {}).get(identity))
+        key = identity if has_chain else str(node["category"])
+        identity_local = (backend or {}).get("identity_local_options") or {}
+        source = identity_local if has_chain else local_options
+        names = list(source.get(key) or []) if readable else []
         if retry_count(node) >= len(names):
             blocked.append(node_id)
     return blocked
 
 
 def _call_route(
-    category: str, fallback: bool, retries: int, backend: Mapping[str, Any] | None, local: bool = False
+    category: str, fallback: bool, retries: int, backend: Mapping[str, Any] | None, local: bool = False,
+    identity: str = ""
 ) -> tuple[dict[str, Any], str]:
     """The call's ``route`` and the model_map option its tasks carry (``""`` for none).
 
@@ -1639,14 +1806,22 @@ def _call_route(
     """
     name = str((backend or {}).get("backend") or "default")
     if name == "default":
+        if identity:
+            return {"tool": "omh_delegate_route", "action": "set", "category": category,
+                    "identity": identity, "attempt": retries}, ""
         return {"tool": "omh_delegate_route", "action": "fallback" if fallback else "set", "category": category}, ""
     route: dict[str, Any] = {"backend": name, "category": category}
+    if identity:
+        route.update(identity=identity, attempt=retries)
     if local:
         route["local"] = True
     if name != "model_map" or (backend or {}).get("status") != "read":
         route["status"] = "not_applied"
         return route, ""
-    names = list(((backend or {}).get("local_options" if local else "options") or {}).get(category) or [])
+    has_chain = bool(((backend or {}).get("identity_chains") or {}).get(identity))
+    option_key = ("identity_local_options" if local else "identity_options") if has_chain else (
+        "local_options" if local else "options")
+    names = list(((backend or {}).get(option_key) or {}).get(identity if has_chain else category) or [])
     if retries < len(names):
         route.update(status="option_selected", option=names[retries])
         return route, names[retries]
@@ -1676,21 +1851,31 @@ def calls_for(
     by_option = str((backend or {}).get("backend") or "") == "model_map"
     # A local node no local model can take is never handed out, whatever the caller skips.
     skipped |= set(local_blocked(record, offerable(record, derived, now, limits=limits), backend))
-    groups: dict[tuple[str, bool, int, bool], list[str]] = {}
+    groups: dict[tuple[str, bool, int, bool, str], list[str]] = {}
     for node_id in offerable(record, derived, now, limits=limits):
         if node_id in skipped:
             continue
         node = nodes[node_id]
         attempts = node.get("attempts") or []
         fallback = bool(attempts) and attempts[-1].get("outcome") == "retry"
-        retries = retry_count(node) if by_option else 0
-        groups.setdefault((str(node["category"]), fallback, retries, bool(node.get("local"))), []).append(node_id)
+        identity = str(node.get("identity") or "")
+        selected = resolve_identity(identity, omh_home) if identity else None
+        if identity and selected is None:
+            raise DagRefusal("identity_unavailable", "The selected identity is missing, disabled or ambiguous.")
+        retries = retry_count(node) if by_option or identity else 0
+        if (selected and selected["model_chain"] and not by_option
+                and retries >= len(selected["model_chain"])):
+            raise DagRefusal("identity_chain_exhausted", "This node has tried every entry in its identity chain.")
+        groups.setdefault((str(node["category"]), fallback, retries, bool(node.get("local")), identity),
+                          []).append(node_id)
     calls: list[dict[str, Any]] = []
     held: list[str] = []
     size = max(1, per_call)
     left = None if task_budget is None else max(0, task_budget)
-    for (category, fallback, retries, local), members in groups.items():
-        route, option = _call_route(category, fallback, retries, backend, local)
+    for (category, fallback, retries, local, identity), members in groups.items():
+        route, option = _call_route(category, fallback, retries, backend, local, identity)
+        if identity and "backend" in route and route.get("status") != "option_selected":
+            raise DagRefusal("identity_route_unavailable", "The backend cannot apply the selected identity's route.")
         for start in range(0, len(members), size):
             chunk = members[start:start + size]
             if left is not None:
@@ -1705,13 +1890,17 @@ def calls_for(
                 left -= len(chunk)
             for node_id in chunk:
                 attempt = hand_out(nodes[node_id], derived[node_id]["state"], now,
-                                   lost=bool(derived[node_id].get("lost")), token=wants_token(record, nodes[node_id]))
+                                   lost=bool(derived[node_id].get("lost")), token=wants_token(record, nodes[node_id]),
+                                   omh_home=omh_home)
                 if "backend" in route:
                     attempt.update(backend=route["backend"], option=option)
             tasks = [task_for(record, nodes[node_id], omh_home, derived) for node_id in chunk]
             if option:
                 tasks = [{**task, "option": option} for task in tasks]
-            calls.append({"category": category, "route": dict(route), "nodes": chunk, "tasks": tasks})
+            call = {"category": category, "route": dict(route), "nodes": chunk, "tasks": tasks}
+            if identity:
+                call["identity"] = identity
+            calls.append(call)
     return calls, held
 
 
@@ -1764,7 +1953,7 @@ def settle(
     if record.get("cancelled_at") is not None:
         raise DagRefusal("run_cancelled", "The run was cancelled; nothing in it settles now.")
     if outcome not in OUTCOMES:
-        raise DagRefusal("invalid_outcome", "Settle a node as accepted, failed, blocked or parked.")
+        raise DagRefusal("invalid_outcome", "Settle a node as accepted, failed, blocked, parked or escalated.")
     info = derived[node_id]
     if info["state"] not in OPEN:
         raise DagRefusal("node_not_out", f"Node {node_id} is {info['state']}, not out with a child; nothing to settle.")
@@ -1777,7 +1966,20 @@ def settle(
                 or _CONTROL.search(handle) or any(char in handle for char in "\r\n\t")):
             raise DagRefusal("invalid_handle", "parked needs a nonempty handle of at most 120 characters on one line.")
         wake_at = _park_deadline(wake_at, now)
+    if outcome == "escalated":
+        return _escalate(nodes[node_id], reason, now)
     child = info["child"]
+    waiting = info.get("waiting_resume")
+    if isinstance(waiting, Mapping) and isinstance(child, Mapping):
+        sid = child.get("subagent_id")
+        when = (f"after its limit resets ({_clock(waiting['at'])})" if isinstance(waiting.get("at"), (int, float))
+                else "once the gateway is up")
+        raise DagRefusal(
+            "child_resume_pending",
+            f"Hermes will resume node {node_id}'s child {sid} {when}, on its own conversation and worktree, and its "
+            f"result settles the node then. Wait for it; to give it up, call delegate_task(action='stop', "
+            f"subagent_id='{sid}') first, then settle the node.",
+        )
     stop = child.get("stop") if isinstance(child, Mapping) else None
     if outcome == "accepted" and isinstance(stop, Mapping) and stop.get("status") in CHILD_FAILURE_STOPS:
         raise DagRefusal(
@@ -1846,6 +2048,34 @@ def settle(
     if statuses is not None:
         attempt["criteria"] = statuses  # the status words only: no evidence text, no handoff content
     return str(outcome)
+
+
+def _escalate(node: dict[str, Any], reason: object, now: float) -> str:
+    """Close the open attempt as escalated and move the node one rung up `ESCALATION_LADDER`. No handoff is read."""
+    node_id, category = str(node["id"]), str(node["category"])
+    if not isinstance(reason, str) or not reason.strip():
+        raise DagRefusal("escalation_needs_reason",
+                         "escalated needs the question the child stopped on as the reason, one short line.")
+    if node.get("identity"):
+        raise DagRefusal("identity_node_cannot_escalate",
+                         f"Node {node_id} runs on identity {node['identity']}, whose own model chain a category climb "
+                         "would not change; settle it accepted, failed or blocked.")
+    if category not in ESCALATION_LADDER:
+        raise DagRefusal("no_higher_category",
+                         f"Node {node_id} is on {category}, which has no category above it; settle it accepted, "
+                         "failed or blocked.")
+    if len(node.get("escalations") or []) >= MAX_ESCALATIONS:
+        raise DagRefusal("escalation_limit_reached",
+                         f"Node {node_id} has escalated {MAX_ESCALATIONS} times; settle it accepted, failed or "
+                         "blocked.")
+    note = _plain(reason, MAX_REASON_CHARS, "invalid_reason", "The reason is one short line.")
+    higher = ESCALATION_LADDER[category]
+    node["attempts"][-1].update(settled_at=now, outcome="escalated", reason=note, provider_error=False,
+                                escalated_from=category, escalated_to=higher)
+    node.setdefault("defined_category", category)
+    node.setdefault("escalations", []).append({"from": category, "to": higher, "at": now})
+    node["category"] = higher
+    return "escalated"
 
 
 def _checked_again(nodes: Mapping[str, Mapping[str, Any]], node: Mapping[str, Any]) -> str:
@@ -2040,15 +2270,148 @@ def node_rows(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]
             row["origin"] = node["origin"]
         if node.get("found_by"):
             row["found_by"] = node["found_by"]
+        if node.get("identity"):
+            row["identity"] = node["identity"]
         if attempts and attempts[-1].get("reason"):
             row["reason"] = attempts[-1]["reason"]
+        if info["state"] == CARRIED and isinstance(attempts[-1].get("carried_from"), Mapping):
+            row["carried_from"] = dict(attempts[-1]["carried_from"])
         if info["state"] == "accepted" and handoff_unchecked(node):
             row.update(handoff_checked=False, handoff_unread=str(attempts[-1].get("handoff_unread") or ""))
         if info["state"] == "parked":
             row.update(handle=attempts[-1]["handle"], wake_at=attempts[-1]["wake_at"])
         if info["state"] in ("failed", "blocked"):
             row["repair_cycles_left"] = cycles_left(record, node_id)
+        if node.get("escalations"):
+            row["escalations"] = len(node["escalations"])
+            if node.get("defined_category"):
+                row["defined_category"] = node["defined_category"]
+        if info.get("waiting_resume"):
+            row["waiting_resume"] = dict(info["waiting_resume"])
         if node_id in ages:
             row["open_for_s"] = int(ages[node_id])
         rows.append(row)
+    return rows
+
+
+# ── carrying accepted nodes forward on a re-run ──────────────────────────
+
+
+def valid_base(value: object) -> str:
+    """The base revision ``carry_forward`` names, or a refusal."""
+    if not isinstance(value, str) or not _BASE.fullmatch(value.strip()):
+        raise DagRefusal("invalid_carry_forward",
+                         "carry_forward is the base revision this run builds on (a commit sha or tag, at most 64 "
+                         "characters, no spaces); pass the same value on every run a later one may carry from.")
+    return value.strip()
+
+
+def _carry_key(node: Mapping[str, Any]) -> tuple[str, list[str], list[str], str]:
+    """What must be equal for a node to be the same work: prompt digest, write scope, depends_on and role."""
+    return (hashlib.sha256(str(node["prompt"]).encode("utf-8")).hexdigest(), sorted(node["write_scope"]),
+            sorted(node["depends_on"]), node_role(node))
+
+
+def _carry_from(record: Mapping[str, Any], prior: Mapping[str, Any], handoff_of: Callable[[Mapping[str, Any], str], str],
+                now: float) -> tuple[dict[str, str], dict[str, str]]:
+    """``({node: earlier handoff}, {node: why not})`` for carrying ``record``'s nodes from one earlier run."""
+    earlier = {str(node["id"]): node for node in prior["nodes"]}
+    states = derive(prior, [], now)
+    carried: dict[str, str] = {}
+    refused: dict[str, str] = {}
+    for node in record["nodes"]:
+        node_id = str(node["id"])
+        old = earlier.get(node_id)
+        key, old_key = _carry_key(node), _carry_key(old) if old is not None else None
+        if is_verification(node) or node.get("role_guess") == "verify":
+            refused[node_id] = "verify_runs_again"
+        elif old is None or old.get("origin", "define") != "define":
+            refused[node_id] = "not_in_prior_run"
+        elif old_key is not None and key[0] != old_key[0]:
+            refused[node_id] = "prompt_changed"
+        elif old_key is not None and key[1] != old_key[1]:
+            refused[node_id] = "write_scope_changed"
+        elif old_key is not None and key[2] != old_key[2]:
+            refused[node_id] = "depends_on_changed"
+        elif old_key is not None and key[3] != old_key[3]:
+            refused[node_id] = "role_changed"
+        elif states[node_id]["state"] != "accepted":
+            refused[node_id] = f"prior_{states[node_id]['state']}"
+        elif handoff_unchecked(old):
+            refused[node_id] = "prior_handoff_not_checked"
+        elif not handoff_of(prior, node_id):
+            refused[node_id] = "prior_handoff_missing"
+        else:
+            carried[node_id] = handoff_of(prior, node_id)
+    # A node whose parent runs again builds on new work, so it runs again too.
+    parents = {str(node["id"]): node["depends_on"] for node in record["nodes"]}
+    moved = True
+    while moved:
+        moved = False
+        for node_id in list(carried):
+            if any(parent not in carried for parent in parents[node_id]):
+                del carried[node_id]
+                refused[node_id] = "parent_runs_again"
+                moved = True
+    return carried, refused
+
+
+def carry_forward(record: dict[str, Any], base: str, earlier: Sequence[Mapping[str, Any]], *,
+                  handoff_of: Callable[[Mapping[str, Any], str], str], now: float,
+                  remote: bool = False) -> dict[str, Any]:
+    """Record as ``carried`` the nodes an earlier run of the same goal and ``base`` already accepted. Returns what
+    was carried, from which run, and why each other node was not.
+
+    Only an earlier run with the same goal (spaces and case aside) and the same
+    resolved workspace root (``workspace_root``; none known carries nothing),
+    whose own define passed the same ``base``, counts, and neither run may write its
+    handoffs in a Docker or SSH terminal (``remote``; an earlier ``backend``).
+    Of those, the run carrying the most nodes, then the newest, is used. A node
+    is carried only when the earlier one has its id, prompt, write scope,
+    depends_on and role, was settled accepted with its handoff checked, and
+    ``handoff_of`` finds that handoff (its path, or ``""``); never a verify
+    node, and never a node whose parent runs again. ``record`` keeps ``base``
+    either way, so a later run can carry from it.
+    """
+    record["carry_base"] = base
+    goal = str(record.get("goal") or "").casefold()
+    workspace = record.get("workspace_root")
+    runs = [] if remote or not goal or not workspace else [
+        prior for prior in earlier
+        if prior.get("carry_base") == base and str(prior.get("goal") or "").casefold() == goal
+        and prior.get("workspace_root") == workspace and not prior.get("backend") and not prior.get("handoff_root")]
+    best: tuple[Mapping[str, Any], dict[str, str], dict[str, str]] | None = None
+    for prior in runs:
+        carried, refused = _carry_from(record, prior, handoff_of, now)
+        if best is None or len(carried) > len(best[1]):
+            best = (prior, carried, refused)
+    if best is None:
+        why = ("remote_terminal" if remote else "no_goal" if not goal else "no_workspace_root" if not workspace
+               else "no_prior_run")
+        return {"base": base, "from_run": "", "carried": [],
+                "not_carried": [{"id": str(node["id"]), "reason": why} for node in record["nodes"]]}
+    prior, carried, refused = best
+    run = str(prior["run"])
+    reason = f"accepted in run {run} with the same prompt, write_scope, depends_on and base {base}"
+    for node in record["nodes"]:
+        node_id = str(node["id"])
+        if node_id in carried:
+            node["attempts"] = [{"n": 1, "outcome": CARRIED, "settled_at": now, "reason": reason,
+                                 "carried_from": {"run": run, "handoff": carried[node_id]}}]
+    if carried:
+        record["carried_from"] = run
+    return {"base": base, "from_run": run,
+            "carried": [{"id": node_id, "from_run": run, "reason": reason, "handoff": carried[node_id]}
+                        for node_id in (str(node["id"]) for node in record["nodes"]) if node_id in carried],
+            "not_carried": [{"id": node_id, "reason": why} for node_id, why in refused.items()]}
+
+
+def carried_nodes(record: Mapping[str, Any], derived: Mapping[str, Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Every carried node with the run it came from and why, as define and status list them."""
+    rows = []
+    for node in record["nodes"]:
+        if derived[str(node["id"])]["state"] == CARRIED:
+            last = node["attempts"][-1]
+            rows.append({"id": str(node["id"]), "from_run": str(last["carried_from"]["run"]),
+                         "reason": str(last.get("reason") or ""), "handoff": str(last["carried_from"]["handoff"])})
     return rows

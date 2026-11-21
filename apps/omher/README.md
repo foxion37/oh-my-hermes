@@ -2,30 +2,36 @@
 
 omher is a desktop app for your Hermes bots, on macOS, Windows and Linux. Each Hermes profile is one bot. Each bot has one main
 chat, and the app shows what that bot is doing in its other sessions (Slack, Discord, Telegram, cron)
-read-only. Under the bots, SESSIONS starts a coding agent (Claude Code, Codex, OmO, OpenCode, Gemini CLI and more, oh-my-hermes, pi) in a
-folder you pick and runs it inside the window, as if you had typed `claude` or `codex` in a terminal. It is part of
-this repository but is not part of the `omh` Python package.
+read-only. Work happens in threads under a bot: right-click a bot for "New thread · <bot>", or let the bot open
+threads itself when a request splits into separate tasks. Each thread row shows its live state (running, needs you,
+done, failed) and the marks of whoever works in it (Hermes, or a harness it handed work to such as Claude Code or
+Codex); its x archives the thread in Hermes, never deletes it. Under the bots, TERMINALS lists the terminal sessions
+you start yourself (a Shell, or a coding CLI such as Claude Code or Codex), grouped by folder; each row carries the
+official logo of the CLI running in it. Above the bots, Tasks lists open issues and pull or merge requests read-only
+through your own `gh` or `glab`, and starts a thread from one; Linear shows a connect screen. Ctrl+` opens a bottom
+terminal panel running your own login shell in the open thread's folder. It is part of this repository but is not
+part of the `omh` Python package.
 
 Boundary: [`docs/OMHER-BOUNDARY.md`](../../docs/OMHER-BOUNDARY.md).
 
 ## Install
 
-**One command (beta).** It installs Hermes Agent and oh-my-hermes if they are missing, then omher
+**One command.** It installs Hermes Agent and oh-my-hermes if they are missing, then omher
 (macOS, Windows and Linux x86_64). Download buttons are on [omher.app](https://omher.app/).
 
 ```sh
 curl -fsSL https://omher.app/omher | sh
-# same as: curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh -s -- omher@beta
+# same as: curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh -s -- omher
 ```
 
 ```powershell
 irm https://omher.app/omher.ps1 | iex
-# same as: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher@beta
+# same as: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher
 ```
 
 The installer copies omher into `/Applications` (or `~/Applications`) on macOS, runs the Windows installer
 silently for your user, and on Linux puts the AppImage at `~/.local/bin/omher` with an app menu entry. `OMH_WITH_HERMES=0` skips installing Hermes; `OMH_WITH_DESKTOP=0` skips the app.
-Without `omher@beta` the one-liner installs only the `omh` command, as before.
+Without `omher` the one-liner installs only the `omh` command, as before.
 
 ![The omher desktop app in dark mode: a bot list on the left, and a chat with the bot Kami that reports a nightly digest from Discord, picks up a Slack thread about 502 errors, runs four steps and answers with the fix](../../assets/omher-in-use-dark.webp)
 
@@ -43,9 +49,19 @@ There is no App Store build. It runs on [Hermes Agent](https://github.com/NousRe
 machine and finds Hermes' Python on its own (see "Where omher looks for Hermes" below); when it finds none, the
 first launch offers to install it, as described above.
 
-**macOS (11 or later).** Download `omher-<version>-macos-arm64.dmg` (Apple Silicon) or `-macos-x64.dmg` (Intel),
-open it and drag omher into Applications. The app is ad-hoc signed, not notarized, so macOS stops the first
-launch of a copy downloaded in a browser with a warning that it cannot check the app. Allow it once:
+**macOS (11 or later).** Install with the one command, in Terminal:
+
+```sh
+curl -fsSL https://omher.app/omher | sh
+```
+
+This is the way to install on a Mac, and the macOS buttons on omher.app copy this line instead of downloading a
+file. omher is ad-hoc signed, not notarized, so a `.dmg` downloaded in a browser is stopped on first launch with
+"Apple could not verify omher is free of malware". `curl` sets no download flag, so the command's copy opens
+without that prompt.
+
+If you already downloaded `omher-<version>-macos-arm64.dmg` (Apple Silicon) or `-macos-x64.dmg` (Intel) from the
+releases page and dragged omher into Applications, allow it once:
 
 - **macOS 15 (Sequoia) or later:** close the warning, open **System Settings › Privacy & Security**, scroll down
   to Security and click **Open Anyway** next to omher, then **Open** when the warning comes back. Right-click ›
@@ -59,8 +75,6 @@ After that it opens normally. The same thing in one Terminal line, which also he
 xattr -dr com.apple.quarantine /Applications/omher.app
 ```
 
-The one-line installer above needs neither step: it downloads the same `.dmg` with `curl`, which sets no
-download flag.
 
 **Windows 10/11 (x64).** Download `omher-<version>-windows-x64-setup.exe` (installs for your user, no admin) or
 the `.msi`. The installer is not code-signed, so SmartScreen may say "Windows protected your PC": choose
@@ -96,25 +110,42 @@ UI (React in a Tauri window)  ⇄  bridge (Python, loopback WebSocket)  ⇄  the
 - **Bridge** (`bridge/omher_bridge.py`): uses Hermes' `connect_gateway`, one connection per profile. It binds
   127.0.0.1 only and refuses any connection without the launch token.
 - **Mock bridge** (`e2e/mock-bridge.mjs`): the same protocol, scripted, for the Playwright tests.
+- **Chat bubbles and composer** (`src/chat/parts/`): an answer and a message you sent each carry a quiet copy button,
+  shown on hover, that puts only that message's text on the clipboard; a message still held in the steer queue has none
+  until it goes out (`e2e/copy-prompt.spec.ts`). In a bot's main chat and its threads, ArrowUp on the composer's first
+  line recalls that chat's earlier prompts, newest first, and ArrowDown on the last line steps back to newer ones and
+  then to the unsent draft (Alt+ArrowUp/ArrowDown do the same from any line); editing a recalled prompt makes it the
+  draft and leaves the history as it was. A held message joins the history once it is sent, a message Stop dropped
+  never does, and a failed send stays in it to try again. An open picker (`$` skill, `/` command, `./thread`) keeps its
+  arrows, and inside a multi-line draft the arrows move between lines (`src/chat/parts/promptHistory.ts`,
+  `e2e/prompt-history.spec.ts`).
+- **While it answers** (Settings › General): a message sent while a bot is answering waits in the steer queue until
+  the turn ends (the default), or, set to Steer, is steered into the running answer at once, as its Steer button
+  would; a message behind another held one still waits its turn (`e2e/steer-queue.spec.ts`).
 - **Remote machines over SSH** (`src-tauri/src/peers.rs`, `src/peers/`): the sidebar `+` › Connect over SSH (or the
   chip under a bot's `omher-peer` reply, or Settings › Remote machines) takes a host from `~/.ssh/config` or
   `user@host`, checks it and shows the exact `ssh` command, the Hermes found there and its bots; only Connect saves it
   to `~/.omher/peers.json`. The shell runs the person's own `ssh` with a fixed argv (`BatchMode=yes`, so a key or the
   ssh agent only; a host that wants a password is told to run `ssh-copy-id`), copies omher's bridge to the other
-  computer's `~/.omher/peer/` (nothing else is written there) and forwards its loopback port. The local bridge then
-  lists that computer's bots as `<peer>:<name>`, marked **SSH · <name>** in the sidebar, header and Settings; folder
-  chats and Restart stay on this computer. The link reconnects with backoff when it drops. `BOUNDARY.md` rule 31.
-- **Sessions** (`src-tauri/src/sessions.rs`, `src/sessions/`): the SESSIONS `+` opens a menu of the agents found on
-  `PATH` and in the usual install folders (`~/.local/bin`, Homebrew, npm/pnpm/bun globals, `%APPDATA%\npm`): the
-  installed ones first, the last one used on top, the missing ones dimmed with their install line. Picking one
-  opens its New session chat at once; its composer names the agent, and the folder chip under it picks the folder
-  (the last one used, else home; recent folders, Choose folder… or home). Nothing runs until the first message, which
-  becomes the agent's first prompt; a terminal agent starts on Start. Beside the agent, Chat | Terminal picks how the
-  session opens (Chat by default, the last pick remembered per agent): Terminal runs the agent's own program, with no
-  arguments, in the pseudo-terminal, and a session opened that way ends with its program and comes back after a
-  restart waiting for Resume. DSH is DeepSeek Harness only (the CLI inside its
-  app, or the npm package `@deepseek-ai/dsh`; any other `dsh` on PATH is skipped) and opens as a chat: one
-  `dsh --profile headless --json` run per message, continued with the harness's `--session-id`. The program runs in a pseudo-terminal (`portable-pty`: a Unix PTY on macOS, ConPTY on
+  computer's `~/.omher/peer/` (nothing else is written there) and forwards its loopback port. The other computer may
+  be macOS, Linux, or Windows with an OpenSSH server whose login shell is POSIX (Git Bash, MSYS2 or Cygwin as
+  `DefaultShell`); on Windows the remote side finds the Hermes the Windows app installed under `%LOCALAPPDATA%\hermes`.
+  The local bridge then lists that computer's bots as `<peer>:<name>`, marked **SSH · <name>** in the sidebar, header
+  and Settings; folder chats and Restart stay on this computer. The link reconnects with backoff when it drops.
+  `BOUNDARY.md` rule 31.
+- **Threads, TERMINALS and Tasks** (`src/threads/`, `src-tauri/src/sessions.rs` with `src/sessions/`, `src-tauri/src/tasks.rs`
+  with `src/tasks/`): work you hand a bot goes into threads under that bot's row (see the top of this file). Below the
+  bots, TERMINALS holds terminal sessions only; chat-mode CLI sessions are replaced by bot threads, so there is no
+  Chat | Terminal choice, and a chat-mode session saved by an earlier version is not listed. Its `+` (⌘N or ⌘T)
+  offers the Shell first, then the agents found on `PATH` and in the usual install folders (`~/.local/bin`, Homebrew,
+  npm/pnpm/bun globals, `%APPDATA%\npm`) with their official marks, the missing ones dimmed with their install line;
+  the folder chip picks the folder (the last one used, else home; recent folders, Choose folder… or home), and picking
+  an agent starts it at once. Rows are grouped by folder under its git branch; each card shows its status (a spinner
+  while output flows, a check or an x when the program ends), the mark of the CLI in the foreground (a Shell running
+  `codex` shows Codex's), its name and age, and on its second line the CLI and the last line it printed. ⌘⇧] and ⌘⇧[
+  step through the terminals, and BOTS and TERMINALS scroll on their own. A session ends with its program and comes
+  back after a restart waiting for Resume. DSH has no terminal view and is not offered there. The program runs in a
+  pseudo-terminal (`portable-pty`: a Unix PTY on macOS, ConPTY on
   Windows) drawn with xterm.js. Settings › Terminal picks how every session terminal looks: a theme for the dark app
   theme and one for the light (omher's own two, plus 36 carried over from Orca with their licences in
   `THIRD_PARTY_NOTICES.md`), font, size, line height, cursor, scrollback, contrast and padding, kept on this
@@ -122,13 +153,12 @@ UI (React in a Tauri window)  ⇄  bridge (Python, loopback WebSocket)  ⇄  the
   link in the browser. The shell reads a program only as far ahead of the terminal as the terminal has drawn (2 MiB
   at most), so a runaway program holds memory flat and Ctrl+C is answered at once. The UI sends only an agent id (`claude`, `codex`, `omo`, `dsh`, `omh`, `pi`, `omp`, `grok`, `opencode`, `gemini`, `qwen`, `kimi`, `copilot`, `cline`); the shell
   refuses anything else and never takes a command line or arguments. Closing a session or quitting the app stops
-  the program. In a plain browser (dev, e2e) a mock host echoes what you type instead. A chat session's approvals
-  and questions are asks like a bot's: they join the Needs-you strip and ⌘J (named by folder and agent), and the
-  session row rings while a turn runs and shows the amber dot while it asks. A row's first line is the session's
-  name: the one you gave it (double-click or right-click › Rename), else the title the agent gave the conversation
-  (`session_title_changed` from Claude Code, `thread/name/updated` from Codex, `session.title` from Hermes, or the
-  bridge's `cli.title` read of their own session files), else a summary of your first message made in the UI
-  (`src/sessions/titles.ts`, no model call), else the folder. The second line is the folder and the agent.
+  the program. In a plain browser (dev, e2e) a mock host echoes what you type instead. A row's first line is the
+  session's name: the one you gave it (double-click or right-click › Rename), else the title the agent gave the
+  conversation, else the CLI's name. Above the bots, the Tasks row opens the Tasks page: open issues and pull or merge
+  requests of the repository, read-only through your own `gh` or `glab` (`BOUNDARY.md` rule 33), with a drawer for
+  one item and Start in thread, which opens a thread under the bot you pick with the issue as its first message.
+  Linear shows a connect screen naming the `hermes -p <bot> mcp install linear` command; omher keeps no Linear key.
 - **ACP agents** (`src-tauri/src/acp_chat.rs`): one adapter for agents that speak the Agent Client Protocol
   (JSON-RPC on stdio), one table row per agent. OpenCode (`opencode acp`) is the first. omher turns off the
   protocol's file and terminal capabilities, so the agent uses its own tools; its permission requests become
@@ -184,6 +214,13 @@ Rules the code keeps:
   `cron/jobs.json` and changes a job only with that bot's `cron.manage` (add, pause, resume, remove); Run now and
   Edit are chat messages. The Plugins page reads the catalog cache and the profile's plugin folder names and changes
   a plugin only with the bot's `plugins.manage`; installs are catalog-only, inspected first and confirmed.
+- **A Slack briefing with nothing to set up.** For a bot whose Hermes profile has Slack connected, omher sets up one
+  automation, `omher-brief`, by itself: every 15 minutes the channel-watch collector checks the Slack channels the bot
+  shares with you and wakes the bot only when something needs you (someone asked you and got no answer, a thread it
+  told you about moved, you just came back, or enough happened in your working hours). The bot then tells you one
+  thing in its chat, or nothing. A line in that chat says so once, with Turn off; removing the job in Automations
+  stops omher from ever creating it again. A Mac that sleeps pauses it; a bot on an SSH remote is set up there by
+  its own bridge. Slack only for now.
 - **Four languages.** English, Korean, Japanese and Chinese (`src/i18n/`), picked in Settings › General › Language.
 
 ## Develop
@@ -212,6 +249,28 @@ Bump `version` in `src-tauri/tauri.conf.json` (and `src-tauri/Cargo.toml`, `pack
 tag `omher-v<version>`. `.github/workflows/omher-release.yml` builds the macOS (arm64, x64) and Windows (x64)
 installers, writes `SHA256SUMS.txt` and attaches everything to a GitHub Release of that tag. No Apple Developer
 or Windows signing certificate is involved: macOS builds use an ad-hoc signature (`signingIdentity: "-"`).
+
+## Repository rules
+
+Moved verbatim from the repository's `CLAUDE.md`.
+
+omher has its own toolchain (Node + pnpm, Rust, Tauri 2) and its own CI
+(`.github/workflows/omher.yml` for macOS and Windows plus the bridge tests,
+`omher-ci.yml` for Linux), which run only when `apps/omher/**`, the boundary
+doc or its test changes. The dev and test commands are in
+`apps/omher/README.md` (Develop); the release steps are in its Release section
+(version in three files, then an `omher-v<version>` tag; `/releases/latest`
+is the OMH package release, not omher's).
+
+- A change that widens what the app sends, writes, reads or runs adds a
+  numbered rule to `docs/OMHER-BOUNDARY.md` and a test in
+  `tests/test_omher_boundary.py`, and raises that test's rule-count cap in the
+  same commit with a comment naming the rule.
+- Every feature must work on macOS, Windows and Linux: no macOS-only `open`,
+  POSIX-only paths or `/dev/urandom`. Releases are unsigned (ad-hoc on macOS);
+  never treat a certificate as a prerequisite.
+- The OMH gates above do not cover the app, and the app's checks do not cover
+  OMH: a PR touching both runs both.
 
 ## Credits
 

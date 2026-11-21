@@ -5,6 +5,8 @@
 // chat, which omher draws itself). These functions are pure; resumeBoot.ts reads, writes and applies them.
 import type { PanelTabId } from "../state/store";
 import { continues, isAgentId, type AgentId } from "../sessions/agents";
+import { isLinkId } from "../sessions/termLink";
+import { cleanShellId } from "../sessions/term/settings";
 
 export const RESUME_KEY = "omher.resume";
 export const RESUME_VERSION = 1;
@@ -25,6 +27,8 @@ export interface SavedMsg {
 
 export interface SavedSession {
   id: string;
+  /** Its link id (`omher://terminal/<linkId>`); a session saved before links existed has none and gets one back. */
+  linkId?: string;
   agent: AgentId;
   cwd: string;
   startedAt: number;
@@ -55,6 +59,8 @@ export interface SavedSession {
   effort?: string;
   /** The chat's last messages, text only. */
   messages?: SavedMsg[];
+  /** A Shell row's shell id (`shells_available`). */
+  shell?: string;
 }
 
 export interface ResumeSnap {
@@ -97,6 +103,7 @@ function parseSession(v: unknown): SavedSession | null {
     view: v.view === "terminal" ? "terminal" : "chat",
     running: v.running === true,
   };
+  if (isLinkId(v.linkId)) out.linkId = v.linkId;
   if (v.open === "chat" || v.open === "terminal") out.open = v.open;
   if (v.failed === true) out.failed = true;
   if (v.draft === true) {
@@ -110,6 +117,8 @@ function parseSession(v: unknown): SavedSession | null {
     const s = str(v[k], 200);
     if (s) out[k] = s;
   }
+  const shell = cleanShellId(v.shell);
+  if (shell) out.shell = shell;
   if (Array.isArray(v.messages)) {
     const msgs = v.messages.map(parseMsg).filter((m): m is SavedMsg => !!m).slice(-MAX_MESSAGES);
     if (msgs.length) out.messages = msgs;
@@ -164,7 +173,7 @@ export function forBots(snap: ResumeSnap, bots: readonly string[]): ResumeSnap {
 export interface ResumeInput {
   bot: string | null;
   bots: readonly string[];
-  view: "chat" | "settings" | "session" | "automations" | "plugins";
+  view: "chat" | "settings" | "session" | "automations" | "plugins" | "tasks";
   session: string | null;
   panelOpen: boolean;
   panelTab: PanelTabId;

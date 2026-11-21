@@ -8,7 +8,7 @@ import { Bubble } from "./Bubble";
 import type { QueueChoice, QueueOffReasons } from "./QueueMark";
 import type { MessageItem } from "../../state/store";
 
-/** steer queue sessions: a SESSIONS chat's own ↵ menu. `off` says which items are off and why for a user row, or
+/** steer queue sessions: a SESSIONS chat's own ↵ ↓ × buttons. `off` says which items are off and why for a user row, or
  *  null for a row with no menu; `pick` runs the choice. */
 export interface SessionQueue {
   off(it: MessageItem): QueueOffReasons | null;
@@ -17,11 +17,14 @@ export interface SessionQueue {
 import { quoteFor } from "./answers";
 import { LiveFace, TypingRow, awaitingFirstToken } from "./Typing";
 import { liveFaceRow } from "./liveFace";
-import { ActivityFallback, CardFallback, ElsewhereFallback, RoutineFallback } from "./fallbacks";
+import { ActivityFallback, CardFallback, RoutineFallback } from "./fallbacks";
 import { PluginAddedCard, RoutineAddedCard } from "../../pages/ChatCards";
-import { WatchLine } from "../../routines/WatchLine";
+import { ThreadLinkLine, ThreadRouteCard } from "../cards/ThreadNotes";
+import { BriefNotice, WatchLine } from "../../routines/WatchLine";
 import { t } from "../../i18n";
 import { useBotReady } from "../connect/ready";
+import { isMac } from "../../app/shortcuts";
+import { JumpPill, PinnedOwn, useTimelineNav } from "./TimelineJump";
 
 /** A time label goes in when the day changes, or after a quiet gap within the same day. */
 const GAP = 30 * 60;
@@ -33,7 +36,7 @@ function divider(prev: TimelineItem | undefined, cur: TimelineItem): string | nu
 }
 
 /** A bot bubble right above: the next bot bubble keeps the indent but not the face (one face per run). */
-const botSpoke = (it?: TimelineItem) => it?.kind === "assistant" || it?.kind === "away";
+const botSpoke = (it?: TimelineItem) => it?.kind === "assistant";
 
 /** `face` stands in for the bot's picture beside its bubbles and the typing bubble (a SESSIONS chat: its
  *  agent's mark). Pass a stable element (useMemo): the bubbles are memoized on it. */
@@ -43,12 +46,15 @@ export function Timeline({
   onEditLast,
   connectionNotice = true,
   queue,
+  emptyHint,
 }: {
   bot: Bot;
   face?: ReactNode;
   onEditLast?: () => void;
   connectionNotice?: boolean;
   queue?: SessionQueue;
+  /** what an empty chat says instead of "Say hi to <bot>" (a new thread asks what it is about): one line, not two */
+  emptyHint?: ReactNode;
 }) {
   const s = useStore();
   const items = selectTimeline(s, bot.name);
@@ -67,6 +73,10 @@ export function Timeline({
   const lastUser = onEditLast ? [...items].reverse().find((i) => i.kind === "user") : undefined;
   // taking it back rewinds the conversation only: when its turn changed files, the Edit control says they stay
   const lastUserAt = lastUser ? items.indexOf(lastUser) : -1;
+  // the person's last message that went out: it carries the messenger-style "Read" mark
+  const lastSent = [...items].reverse().find((i) => i.kind === "user" && !i.held && !i.error && !i.steerUnknown)?.id;
+  // the way back: the Jump to bottom pill and the pinned own message (TimelineJump.tsx)
+  const nav = useTimelineNav(ref, items, bot.name, pinned);
   const keptFiles =
     lastUserAt >= 0 && items.slice(lastUserAt + 1).some((i) => i.kind === "activity" && i.turn.steps.some((st) => st.diff?.length));
 
@@ -76,7 +86,8 @@ export function Timeline({
     if (!el) return;
     if (lastBot.current !== bot.name || pinned.current) el.scrollTop = el.scrollHeight;
     lastBot.current = bot.name;
-  }, [bot.name, items, writing, typing]);
+    nav.measure();
+  }, [bot.name, items, writing, typing, nav.measure]);
 
   // Files the bot sent load after the row is drawn and make it taller: stay at the bottom if pinned.
   useEffect(() => {
@@ -90,7 +101,7 @@ export function Timeline({
     return () => ro.disconnect();
   }, [bot.name, items]);
 
-  // steer queue: the ↵ menu of a held message (Edit puts it back in this chat's box)
+  // steer queue: the ↵ ↓ × buttons of a held message (↓ = Edit puts it back in this chat's box)
   const queuePick = (id: string) => (c: QueueChoice) => {
     if (c === "now") void s.queueSendNow(id, bot.name);
     else if (c === "steer") void s.queueSteer(id, bot.name);
@@ -122,6 +133,7 @@ export function Timeline({
             queueBusy={it.held && chat?.steering === it.id}
             queueOff={off ?? undefined}
             steeredTo={bot.display_name}
+            last={it.id === lastSent}
           />
         );
       }
@@ -145,10 +157,6 @@ export function Timeline({
         const C = slots.cards ?? CardFallback;
         return <C bot={bot.name} item={it} />;
       }
-      case "away": {
-        const C = slots.elsewhereLine ?? ElsewhereFallback;
-        return <C bot={bot.name} item={it} face={!botSpoke(prev)} />;
-      }
       case "routine": {
         const C = slots.routineLine ?? RoutineFallback;
         return <C bot={bot.name} item={it} />;
@@ -157,6 +165,12 @@ export function Timeline({
         return <RoutineAddedCard bot={bot.name} item={it} />;
       case "pluginAdded":
         return <PluginAddedCard bot={bot.name} item={it} />;
+      case "threadLink":
+        return <ThreadLinkLine item={it} />;
+      case "threadRoute":
+        return <ThreadRouteCard item={it} />;
+      case "briefNotice":
+        return <BriefNotice bot={bot} />;
       case "system":
         return (
           <div className="line sys" data-testid="system-line">
@@ -184,27 +198,46 @@ export function Timeline({
       />
     </div>
   ) : null;
-  // the typing dots too: where the answer will land
+  // the typing dots with the ringed face until the answer starts: where the answer will land, or, once the live
+  // activity line shows ("OMH — recalled 2 memories", "Running cd …"), directly above it, the line under the dots in
+  // the text column (owner 2026-11-19: the dots stay put and the lines come under them)
+  const liveId = chat?.turn && turnHasActivity(chat.turn) ? chat.turn.id : undefined;
+  const aboveLine = !!liveId && items.some((i) => i.kind === "activity" && i.id === liveId);
   const typingRow = typing ? (
-    <div className="row row-assistant row-typing" data-kind="typing">
+    <div className={`row row-assistant row-typing${aboveLine ? " above-line" : ""}`} data-kind="typing">
       <TypingRow bot={bot.name} name={bot.display_name} face={face} />
     </div>
   ) : null;
 
   return (
     <div
-      className="thread"
+      className={`thread${nav.pin ? " pin-on" : ""}`}
       ref={ref}
       data-testid="timeline"
+      // focusable by a click, so End / ⌘↓ (Ctrl+End off macOS) can take the view back to the bottom
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        const tgt = e.target as HTMLElement;
+        if (tgt.closest("input, textarea, select, [contenteditable]")) return;
+        const plainEnd = e.key === "End" && !e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+        const modEnd = isMac() ? e.key === "ArrowDown" && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey : e.key === "End" && e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
+        if (!plainEnd && !modEnd) return;
+        e.preventDefault();
+        nav.jump();
+      }}
       onScroll={(e) => {
         const el = e.currentTarget;
+        const was = pinned.current;
         // only the person scrolling up lets go of the bottom: a reflow (the side panel opening narrows the column)
         // also fires scroll, with the bottom moved away but the position not moved up
         if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) pinned.current = true;
         else if (el.scrollTop < lastTop.current) pinned.current = false;
         lastTop.current = el.scrollTop;
+        if (was !== pinned.current) nav.letGo(!pinned.current);
+        nav.measure();
       }}
     >
+      <PinnedOwn nav={nav} />
       {!chat?.loaded && items.length === 0 && <div className="day">{t("tl.loading")}</div>}
       {chat?.openError && (
         <div className="day note" data-testid="chat-error">
@@ -224,7 +257,7 @@ export function Timeline({
           {t("tl.noModel", { bot: bot.display_name })}
         </div>
       )}
-      {chat?.loaded && !chat.openError && items.length === 0 && <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>}
+      {chat?.loaded && !chat.openError && items.length === 0 && (emptyHint ?? <div className="day">{t("tl.sayHi", { bot: bot.display_name })}</div>)}
       {items.map((it, i) => {
         // the live activity line with nothing to say yet: the typing bubble below stands in for it
         if (it.kind === "activity" && chat?.turn?.id === it.turn.id && !turnHasActivity(it.turn)) return null;
@@ -236,8 +269,9 @@ export function Timeline({
         return (
           <Fragment key={it.id}>
             {it.id === slotId && writingRow}
-            {it.id === slotId && typingRow}
+            {it.id === slotId && !aboveLine && typingRow}
             {label && <div className="day">{label}</div>}
+            {aboveLine && it.id === liveId && typingRow}
             <div className={`row row-${it.kind}${liveLine ? " live-line" : ""}`} data-kind={it.kind} {...(it.kind === "user" ? { "data-item": it.id } : {})}>
               {liveFace && <LiveFace bot={bot.name} face={face} />}
               {render(it, label ? undefined : items[i - 1], i)}
@@ -246,7 +280,8 @@ export function Timeline({
         );
       })}
       {!slotId && writingRow}
-      {!slotId && typingRow}
+      {!slotId && !aboveLine && typingRow}
+      <JumpPill nav={nav} />
     </div>
   );
 }

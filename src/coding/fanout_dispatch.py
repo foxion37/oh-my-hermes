@@ -38,7 +38,7 @@ from ..system.security_posture import resolve_security_posture
 from ..system.metadata_safety import redact_metadata_text
 from .fanout_output import FanoutOutput
 from .fanout_executor_sessions import SessionBinding, SessionDecoder, bound_session_fields, observe_session_workspace, read_session_receipt
-from .executor_readiness import negotiate_session_capability, observe_session_binary
+from .executor_readiness import negotiate_session_capability, observe_session_binary, session_launch_path
 from .executors import canonical_executor_profile
 from .fanout_capacity import (
     AdmissionBinding, CapacityBlocked, CapacityTrip, CodexAdmissionObserver, CodexAdmissionSource, LaunchCallable,
@@ -232,6 +232,7 @@ from .pi_family_interop import (
     PI_DISTRIBUTION_AGENT_DIR_ENV,
     PI_DISTRIBUTION_BRAND_ENV,
     PI_DISTRIBUTION_HOST,
+    PI_FORK_HOST,
 )
 from ..plugin_bundle.omh.run_records import FANOUT_DISPATCH_SCHEMA_VERSION, RUN_FILE
 
@@ -685,7 +686,11 @@ def fanout_child_environment(
     }
     if owner == "pi-family-runtime" and purpose == "owner":
         host = pi_family_host()
-        environment_variable = {"pi": "PI_CODING_AGENT_DIR", PI_DISTRIBUTION_HOST: PI_DISTRIBUTION_AGENT_DIR_ENV}.get(host)
+        environment_variable = {
+            "pi": "PI_CODING_AGENT_DIR",
+            PI_DISTRIBUTION_HOST: PI_DISTRIBUTION_AGENT_DIR_ENV,
+            PI_FORK_HOST: "PI_CODING_AGENT_DIR",
+        }.get(host)
         if environment_variable is not None:
             state_directories = owner_state_directories(owner, child_env)
             if len(state_directories) == 1:
@@ -838,13 +843,13 @@ DISPATCH_COMMAND_TEMPLATES: dict[str, tuple[str, ...]] = {
 
 # Fixed detection order for the pi-family runtime's local host CLI: first on PATH
 # wins ("usually pi" — user-stated common case; then pi's distribution host;
-# opencode hosts the runtime as a plugin). Both layouts — pi-family host CLI and
+# then the pi fork host; opencode hosts the runtime as a plugin). Both layouts — pi-family host CLI and
 # opencode plugin — are first-class dispatch hosts. Detection is
 # presence-only and recorded implicitly by argv[0]/probe command. Model
 # CONFIG, by contrast, is currently read only from the opencode config path
 # (see MODEL_INVENTORY_CATALOG_PROFILE in model_inventory): a pi-only
 # install still dispatches, but its routes degrade to `no_model_catalog`.
-PI_FAMILY_HOST_CANDIDATES: tuple[str, ...] = ("pi", PI_DISTRIBUTION_HOST, "opencode")
+PI_FAMILY_HOST_CANDIDATES: tuple[str, ...] = ("pi", PI_DISTRIBUTION_HOST, PI_FORK_HOST, "opencode")
 
 _PI_FAMILY_HOST_TEMPLATES: dict[str, dict[str, tuple[str, ...] | int | None]] = {
     "pi": {
@@ -858,6 +863,20 @@ _PI_FAMILY_HOST_TEMPLATES: dict[str, dict[str, tuple[str, ...] | int | None]] = 
         "model": ("--model", "{model}"),
         "effort": ("--thinking", "{effort}"),
         "insert": 5,
+    },
+    # The fork host's print mode (`--print`, `--no-session`) matches pi's, but
+    # it has no `--permission-preset`: approvals are `--approval-mode`, whose
+    # default is `yolo`. Print mode cannot answer an approval prompt, so a
+    # stricter mode would refuse the first shell call; no approval flag is
+    # passed and the default applies. Write confinement does not come from a
+    # flag on any host: it is the dispatcher's unit worktree cwd plus the
+    # fanout filesystem confinement. `--` ends flag parsing, so a prompt that
+    # starts with `-` stays message text.
+    PI_FORK_HOST: {
+        "argv": (PI_FORK_HOST, "--print", "--no-session", "--", "{prompt}"),
+        "model": ("--model", "{model}"),
+        "effort": ("--thinking", "{effort}"),
+        "insert": 3,
     },
     "opencode": {
         "argv": ("opencode", "run", "{prompt}"),
@@ -977,6 +996,54 @@ def with_codex_windows_sandbox(argv: list[str] | None, owner: str, backend: str)
     if backend not in CODEX_WINDOWS_SANDBOX_BACKENDS:
         raise ValueError(f"unknown codex Windows sandbox backend: {backend!r}")
     return [*argv[:-1], "--config", f"windows.sandbox={backend}", argv[-1]]
+
+
+_CODEX_SANDBOX_CHOICE_FLAGS = frozenset({
+    "-s", "--sandbox", "--full-auto", "--dangerously-bypass-approvals-and-sandbox", "--yolo",
+})
+
+
+def _codex_sandbox_chosen(options: Sequence[str]) -> bool:
+    previous = ""
+    for token in options:
+        if (
+            token in _CODEX_SANDBOX_CHOICE_FLAGS
+            or token.startswith("--sandbox=")
+            or (token.startswith("-s") and not token.startswith("--"))
+            or token.startswith("--config=sandbox_mode=")
+            or (previous in {"-c", "--config"} and token.startswith("sandbox_mode="))
+        ):
+            return True
+        previous = token
+    return False
+
+
+def with_codex_fenced_sandbox(
+    argv: list[str] | None, owner: str, confinement: FanoutFilesystemConfinement | None
+) -> list[str] | None:
+    """`argv` with `--sandbox danger-full-access` before the codex prompt when the fence is enforced.
+
+    `codex exec` defaults to a read-only session, and `workspace-write`
+    starts Codex's own sandbox, which cannot nest inside an enforced bwrap
+    or sandbox-exec fence ("read-only filesystem" on Linux,
+    `sandbox_apply: Operation not permitted` on macOS). Every write is then
+    refused. Inside the fence the dispatcher's confinement is the write
+    boundary, so Codex's own sandbox is turned off. No fence, an unenforced
+    or other backend, another owner, or an argv that already chooses a
+    sandbox: returned unchanged. The codex prompt is the last positional.
+    """
+    if (
+        owner != "codex"
+        or not argv
+        or len(argv) < 3
+        or argv[1] != "exec"
+        or confinement is None
+        or confinement.receipt.get("enforced") is not True
+        or confinement.selected not in {"bwrap", "sandbox-exec"}
+        or _codex_sandbox_chosen(argv[2:-1])
+    ):
+        return argv
+    return [*argv[:-1], "--sandbox", "danger-full-access", argv[-1]]
 
 
 def build_unit_prompt(
@@ -5035,7 +5102,9 @@ def _dispatch_unit(
             flags = ['--json'] if owner == 'codex' else ['--output-format', 'stream-json', '--verbose']
             # Keep the Codex positional prompt last and all original model/permission options.
             index = 2 if owner == 'codex' else 1
-            return [session_capability.binary_identity.resolved_path, *command[1:index], *flags, *command[index:]]
+            # The owner's own name, so a multi-call shim still picks its tool (#3014).
+            launch = session_launch_path(command[0], session_capability.binary_identity, env=child_env)
+            return [launch, *command[1:index], *flags, *command[index:]]
         if argv is not None:
             argv = session_argv(argv)
         verification_argv: list[list[str]] = []
@@ -5057,6 +5126,8 @@ def _dispatch_unit(
             if runner is signal_safe_unit_runner
             else None
         )
+        # Codex's own sandbox cannot start inside the fence; the fence is the boundary.
+        argv = with_codex_fenced_sandbox(argv, owner, confinement)
         filesystem_confinement = confinement_receipt(confinement, worktree)
         if confinement is not None and isinstance(filesystem_confinement, dict):
             filesystem_confinement["git_roots_skip"] = git_roots_skip_reason(worktree.resolve())
@@ -5275,7 +5346,7 @@ def _dispatch_unit(
                     prompt = assembled.text
                     argv = dispatch_argv()
                     assert argv is not None  # Same previously admitted owner and route.
-                    argv = session_argv(argv)
+                    argv = with_codex_fenced_sandbox(session_argv(argv), owner, confinement)
                     if confinement is not None:
                         spawn_kwargs['confinement_command'] = confinement.command(argv)
                 if not getattr(runner, 'accepts_launch', False):

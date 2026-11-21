@@ -2,20 +2,31 @@ mod accounts;
 mod acp_agents;
 mod acp_chat;
 mod agent_chat;
+mod app_menu;
 mod appimage;
 mod bridge;
 mod custom_agents;
+mod disk;
 mod dsh_chat;
+mod fg;
 mod folder_open;
 mod git_branch;
 mod hermes_auth;
 mod past_chats;
 mod peers;
+mod power;
 #[cfg(all(test, unix))]
 mod pty_bench;
 mod session_files;
 mod sessions;
 mod setup;
+mod tasks;
+mod term_history;
+mod term_import;
+mod term_link;
+mod term_share;
+mod this_host;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +38,7 @@ use bridge::{Bridge, BridgeStatus, Os};
 use sessions::{AgentInfo, Output, Sessions};
 use setup::InstallEvent;
 use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 struct Shell {
     bridge: Arc<Bridge>,
@@ -316,16 +327,21 @@ async fn custom_agent_remove(id: String) -> Result<(), String> {
 }
 
 /// Start allow-listed agent `agent` in folder `cwd` in a new pseudo-terminal (its own terminal UI). Only an
-/// agent id crosses from the UI: no program path, command line or argument; `resume` is a Claude Code
-/// session id or a DSH conversation id that the shell checks is a UUID (so the terminal continues it); `account` is the account a
-/// session restarted after an app restart ran with (checked by `accounts::session_env_for`). Terminal output goes
-/// to `on_data` as raw bytes, the exit code (null after a signal) once to `on_exit`.
+/// agent id crosses from the UI: no program path, command line or argument; `session_id` is a new Claude Code
+/// conversation id the page made, `resume` a Claude Code or Codex conversation id to continue, each checked to be a
+/// UUID (`sessions::terminal_args`); `link` is an oh-my-hermes row's link id, which that terminal gets as
+/// `OMHER_TERMINAL_LINK` (`sessions::terminal_env`: `omh` only, 10 lowercase base32 characters); `account` is the
+/// account a session restarted after an app restart ran with (checked by `accounts::session_env_for`). Terminal output
+/// goes to `on_data` as raw bytes, the exit code (null after a signal) once to `on_exit`.
 #[tauri::command]
 async fn session_start(
+    app: AppHandle,
     shell: State<'_, Shell>,
     agent: String,
     cwd: String,
+    session_id: Option<String>,
     resume: Option<String>,
+    link: Option<String>,
     account: Option<String>,
     cols: u16,
     rows: u16,
@@ -338,7 +354,7 @@ async fn session_start(
         // again after a restart, the one it ran with): its home variable, or nothing ("This computer").
         // chat_start passes the same.
         let account_env = user_home().map(|h| accounts::session_env_for(&h, &agent, account.as_deref())).unwrap_or_default();
-        sessions.start_agent(&agent, std::path::Path::new(&cwd), resume.as_deref(), &account_env, cols, rows, move |ev| match ev {
+        sessions.start_agent(&agent, std::path::Path::new(&cwd), session_id.as_deref(), resume.as_deref(), link.as_deref(), &account_env, cols, rows, move |ev| match ev {
             Output::Data(b) => {
                 let _ = on_data.send(InvokeResponseBody::Raw(b));
             }
@@ -346,9 +362,88 @@ async fn session_start(
                 let _ = on_exit.send(code);
             }
         })
+        .inspect(|id| watch_foreground(&sessions, &app, *id))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The bottom terminal panel's shell: the person's own login shell (`sessions::shell_argv`, decided by the shell,
+/// never by the page) in `cwd` when that is an existing folder, else home. The page sends a folder and a size only;
+/// the session is then written, acknowledged, resized and closed with the `session_*` commands like any other.
+#[tauri::command]
+async fn shell_start(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    cwd: Option<String>,
+    shell_id: Option<String>,
+    cols: u16,
+    rows: u16,
+    on_data: Channel<InvokeResponseBody>,
+    on_exit: Channel<Option<u32>>,
+) -> Result<ShellStarted, String> {
+    let sessions = shell.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = user_home()?;
+        let (id, at, missing) = sessions.start_shell(cwd.as_deref(), shell_id.as_deref(), &home, cols, rows, move |ev| match ev {
+            Output::Data(b) => {
+                let _ = on_data.send(InvokeResponseBody::Raw(b));
+            }
+            Output::Exit(code) => {
+                let _ = on_exit.send(code);
+            }
+        })?;
+        watch_foreground(&sessions, &app, id);
+        Ok(ShellStarted { id, cwd: at.to_string_lossy().into_owned(), missing })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The shells a TERMINALS Shell row may run (`sessions::shells_available`: fixed candidates whose files exist, the
+/// default first). The page shows them and sends back an id only (`shell_start`'s `shell_id`).
+#[tauri::command]
+async fn shells_available(shell: State<'_, Shell>) -> Result<Vec<sessions::ShellEntry>, String> {
+    let sessions = shell.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || sessions.shells()).await.map_err(|e| e.to_string())
+}
+
+/// How often the foreground watcher wakes: a terminal session that had output or input since its foreground program
+/// was last looked at is looked at on the next wake, an idle one every `sessions::FG_IDLE_TICKS` wakes (5 s).
+const FOREGROUND_EVERY: Duration = Duration::from_secs(1);
+
+/// The page hears `session-fg` `{id, agent}` when the agent CLI in the foreground of terminal session `id` changes:
+/// its id (`claude`, `codex`, … the ids of src/ui/AgentIcon.tsx) or null (a shell or any other program). Nothing is
+/// sent while it stays the same; a session starts at null, and one that ends goes back to null (`fg.rs`).
+fn watch_foreground(sessions: &Arc<Sessions>, app: &AppHandle, id: u32) {
+    let app = app.clone();
+    sessions.watch_foreground(id, FOREGROUND_EVERY, move |agent| {
+        let _ = app.emit("session-fg", SessionFg { id, agent });
+    });
+}
+
+/// The `session-fg` event's payload.
+#[derive(Clone, serde::Serialize)]
+struct SessionFg {
+    id: u32,
+    agent: Option<&'static str>,
+}
+
+/// A started terminal-panel shell: its session id and the folder it started in.
+#[derive(serde::Serialize)]
+struct ShellStarted {
+    id: u32,
+    cwd: String,
+    /// the shell asked for was not on this machine's list: its name (the default shell started instead)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing: Option<String>,
+}
+
+/// This computer's name (empty when the system gives none), asked once when the page starts: the page uses it only to
+/// accept a terminal's OSC 7 folder from this computer.
+#[tauri::command]
+fn host_name() -> String {
+    this_host::name()
 }
 
 /// Keystrokes (and pastes) from the terminal view into session `id`.
@@ -455,6 +550,38 @@ async fn session_file_read(path: String) -> Result<tauri::ipc::Response, String>
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Tasks: whether `source`'s CLI (`gh` / `glab`) is on this computer and signed in, by `auth status`'s exit code
+/// only (rule 33). `fresh` asks again instead of the last minute's answer.
+#[tauri::command]
+async fn tasks_status(tasks: State<'_, Arc<tasks::Tasks>>, source: String, fresh: Option<bool>) -> Result<tasks::Status, String> {
+    let src = tasks::Source::parse(&source)?;
+    let t = Arc::clone(&tasks);
+    tauri::async_runtime::spawn_blocking(move || t.status(src, fresh.unwrap_or(false))).await.map_err(|e| e.to_string())
+}
+
+/// Tasks: one page of open issues or pull / merge requests of `repo`, through the person's own CLI with a fixed,
+/// read-only argv (rule 33). The page sends only these words and numbers.
+#[tauri::command]
+async fn tasks_list(tasks: State<'_, Arc<tasks::Tasks>>, source: String, repo: String, kind: String, filter: String, page: u32) -> Result<tasks::Page, String> {
+    let (src, kind, filter) = (tasks::Source::parse(&source)?, tasks::Kind::parse(&kind)?, tasks::Filter::parse(&filter)?);
+    let t = Arc::clone(&tasks);
+    tauri::async_runtime::spawn_blocking(move || t.list(src, kind, &repo, filter, page)).await.map_err(|e| e.to_string())?
+}
+
+/// Tasks: one item's description, comments and checks, read-only (rule 33).
+#[tauri::command]
+async fn tasks_view(tasks: State<'_, Arc<tasks::Tasks>>, source: String, repo: String, kind: String, number: u64) -> Result<tasks::Detail, String> {
+    let (src, kind) = (tasks::Source::parse(&source)?, tasks::Kind::parse(&kind)?);
+    let t = Arc::clone(&tasks);
+    tauri::async_runtime::spawn_blocking(move || t.view(src, kind, &repo, number)).await.map_err(|e| e.to_string())?
+}
+
+/// Tasks: the GitHub / GitLab repository folder `cwd` is in, from its `.git/config` (no program runs); null when none.
+#[tauri::command]
+async fn tasks_remote(cwd: String) -> Result<Option<tasks::Remote>, String> {
+    Ok(tasks::folder_remote(std::path::Path::new(&cwd)))
+}
+
 /// The git branch of a session's folder, from its `.git/HEAD` only (no program runs); "" outside a repository.
 #[tauri::command]
 async fn session_branch(cwd: String) -> Result<String, String> {
@@ -471,6 +598,82 @@ async fn session_files_remove(session: String) -> Result<(), String> {
 #[tauri::command]
 async fn session_files_prune(keep: Vec<String>) -> Result<(), String> {
     session_files::prune(&user_home()?, &keep)
+}
+
+/// Keep what terminal `key` (a SESSIONS id or `panel-<n>`) shows, for after a restart:
+/// `~/.omher/term-history/<key>.txt`, owner-only, its newest 2000 lines / 1 MB (`term_history`). `since`: when history
+/// was last turned on in the page (ms); a write from before the last clear is refused.
+#[tauri::command]
+async fn term_history_save(key: String, text: String, since: f64) -> Result<(), String> {
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || term_history::save(&home, &key, &text, since)).await.map_err(|e| e.to_string())?
+}
+
+/// What terminal `key` showed before omher restarted, and when it was kept (seconds); null when nothing was.
+#[tauri::command]
+async fn term_history_read(key: String) -> Result<Option<(String, f64)>, String> {
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || term_history::read(&home, &key)).await.map_err(|e| e.to_string())?
+}
+
+/// Remove terminal `key`'s kept text (it was closed).
+#[tauri::command]
+async fn term_history_remove(key: String) -> Result<(), String> {
+    term_history::remove(&user_home()?, &key)
+}
+
+/// Remove the kept text of every terminal not in `keep` (omher started; the others are gone).
+#[tauri::command]
+async fn term_history_prune(keep: Vec<String>) -> Result<(), String> {
+    term_history::prune(&user_home()?, &keep)
+}
+
+/// Remove every terminal's kept text (Settings › Terminal turned history off).
+#[tauri::command]
+async fn term_history_clear() -> Result<(), String> {
+    term_history::clear(&user_home()?)
+}
+
+/// Settings › Terminal › Import from… (macOS): which of iTerm2 / Apple Terminal have a prefs file to read.
+#[tauri::command]
+async fn term_import_list() -> Result<Vec<&'static str>, String> {
+    Ok(term_import::list(&user_home()?))
+}
+
+/// The profiles (names, colours, font) of `app` (`iterm2` | `terminal`), read once from its fixed prefs file.
+#[tauri::command]
+async fn term_import_read(app: String) -> Result<Vec<term_import::Profile>, String> {
+    let app = term_import::App::parse(&app).ok_or("unknown app")?;
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || term_import::read(&home, app)).await.map_err(|e| e.to_string())?
+}
+
+/// A TERMINALS session's status file for bots holding its link (`~/.omher/terminals/<link>.json`, owner-only) and its
+/// inbox folder (`term_share`). `status`: what the page shows of it (title, CLI, folder, state, last line).
+#[tauri::command]
+async fn term_share_write(link: String, status: term_share::Status) -> Result<(), String> {
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || term_share::write(&home, &link, &status)).await.map_err(|e| e.to_string())?
+}
+
+/// Remove session `link`'s status file and inbox (it was closed).
+#[tauri::command]
+async fn term_share_remove(link: String) -> Result<(), String> {
+    term_share::remove(&user_home()?, &link)
+}
+
+/// Remove the status files of every session not in `keep` (omher started; the others are gone).
+#[tauri::command]
+async fn term_share_prune(keep: Vec<String>) -> Result<(), String> {
+    term_share::prune(&user_home()?, &keep)
+}
+
+/// Bots' requests to type into sessions `links`, each inbox file taken once (removed); refused files are removed
+/// unread. The page shows each as a card: nothing is typed here.
+#[tauri::command]
+async fn term_share_take(links: Vec<String>) -> Result<Vec<term_share::Request>, String> {
+    let home = user_home()?;
+    tauri::async_runtime::spawn_blocking(move || term_share::take(&home, &links).0).await.map_err(|e| e.to_string())
 }
 
 /// Stop the chat's program and forget the session.
@@ -563,6 +766,17 @@ async fn past_chats_list(agent: String, cwds: Vec<String>) -> Result<Vec<past_ch
     tauri::async_runtime::spawn_blocking(move || past_chats::list(&past_home(&agent)?, &agent, &cwds)).await.map_err(|e| e.to_string())?
 }
 
+/// The conversation the Codex in the foreground of TERMINALS session `id` holds open, for the session to continue
+/// after a restart (rule 11): only the id, checked as a UUID, from a rollout path inside the session's Codex home
+/// (rule 30's checks). The page sends only the session id.
+#[tauri::command]
+async fn codex_conversation(shell: State<'_, Shell>, id: u32) -> Result<Option<String>, String> {
+    let sessions = shell.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(sessions.codex_conversation(id, &user_home()?).filter(|c| sessions::is_uuid(c))))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// The last messages of one of those conversations, shown before the agent continues it (rule 30).
 #[tauri::command]
 async fn past_chat_messages(agent: String, id: String, cwd: String) -> Result<Vec<past_chats::PastMsg>, String> {
@@ -586,6 +800,33 @@ async fn asks_badge(window: tauri::WebviewWindow, count: u32) -> Result<(), Stri
     #[cfg(not(windows))]
     {
         window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None }).map_err(|e| e.to_string())
+    }
+}
+
+/// Close the window: the page's answer to Close Window (⌘W) when no split pane has the keyboard (app_menu.rs).
+#[tauri::command]
+fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.close().map_err(|e| e.to_string())
+}
+
+/// Settings › General "Keep the computer awake while agents work": the page's busy/idle edge (never one per output).
+/// `now`: the setting was turned off, so an idle edge lets go at once instead of a minute later (power.rs).
+#[tauri::command]
+fn power_busy(power: State<'_, power::Power>, busy: bool, now: Option<bool>) {
+    power.busy(busy, now.unwrap_or(false));
+}
+
+/// Settings › General "When the window closes": whether the close hides the window to the tray (the tray icon shows
+/// only then), and the tray menu's two labels in the page's language (tray.rs).
+#[tauri::command]
+fn window_prefs(app: AppHandle, hide: bool, open: Option<String>, quit: Option<String>) {
+    let tray = app.try_state::<tray::TrayMenu<tauri::Wry>>();
+    // no tray icon (it could not be made): the close keeps quitting, or the window could not come back
+    if let Some(s) = app.try_state::<tray::TrayState>() {
+        s.set_hides(hide && tray.is_some());
+    }
+    if let Some(t) = tray {
+        t.apply(hide, open.as_deref().unwrap_or(""), quit.as_deref().unwrap_or(""));
     }
 }
 
@@ -657,7 +898,22 @@ async fn bridge_retry(shell: State<'_, Shell>) -> Result<(), String> {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS: Close Window (⌘W) asks the page first, so a split pane closes instead of the window (app_menu.rs). Other
+    // systems keep no menu, as before.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(|app| app_menu::build(app));
+    // Windows and Linux: first, so a second launch carrying an omher:// link hands it over and quits
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }));
+    let app = builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -665,6 +921,13 @@ pub fn run() {
         // build signed with the key whose public half is pinned there; process restarts into it.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .on_menu_event(|app, event| {
+            if app_menu::is_close(event.id().as_ref()) {
+                let _ = app.emit(app_menu::CLOSE_EVENT, ());
+            }
+        })
+        // the window's close hides it while Settings › General says so (tray.rs)
+        .on_window_event(tray::window_event)
         .invoke_handler(tauri::generate_handler![
             bridge_url,
             bridge_status,
@@ -685,6 +948,8 @@ pub fn run() {
             custom_agent_confirm,
             custom_agent_remove,
             session_start,
+            shell_start,
+            shells_available,
             session_write,
             session_ack,
             session_resize,
@@ -697,6 +962,17 @@ pub fn run() {
             session_file_read,
             session_files_remove,
             session_files_prune,
+            term_history_save,
+            term_history_read,
+            term_history_remove,
+            term_history_prune,
+            term_history_clear,
+            term_import_list,
+            term_import_read,
+            term_share_write,
+            term_share_remove,
+            term_share_prune,
+            term_share_take,
             session_branch,
             chat_close_all,
             open_media,
@@ -706,6 +982,8 @@ pub fn run() {
             session_open_terminal,
             past_chats_list,
             past_chat_messages,
+            codex_conversation,
+            host_name,
             asks_badge,
             peers_list,
             peers_watch,
@@ -714,7 +992,16 @@ pub fn run() {
             peers_check_close,
             peers_add,
             peers_remove,
-            peers_retry
+            peers_retry,
+            tasks_status,
+            tasks_list,
+            tasks_view,
+            tasks_remote,
+            window_close,
+            power_busy,
+            window_prefs,
+            term_link::term_link_take,
+            disk::disk_watch
         ])
         .setup(|app| {
             let bridge = Bridge::new();
@@ -726,6 +1013,34 @@ pub fn run() {
                 peers.set_script(script);
             }
             peers.start_all();
+            app.manage(Arc::new(tasks::Tasks::default()));
+            // free space on the home folder's volume, read once a minute (disk.rs)
+            app.manage(disk::Disk::start(app.handle().clone(), user_home().ok()));
+            // close = hide to the tray / menu bar, and the keep-awake assertion's worker (tray.rs, power.rs)
+            app.manage(tray::TrayState::default());
+            app.manage(power::Power::start());
+            if let Err(e) = tray::build(app.handle()) {
+                // no tray (a Linux desktop without one): the close quits, as before
+                app.state::<tray::TrayState>().set_hides(false);
+                eprintln!("omher: no tray icon: {e}");
+            }
+            // omher://terminal/<id> links: the one omher was opened with, and each one after
+            app.manage(term_link::TermLinks::default());
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                // Windows and Linux: an installed build registers the scheme itself; a portable run (AppImage) does it here
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
+                let _ = app.deep_link().register_all();
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    let urls: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+                    term_link::arrived(app.handle(), &urls);
+                }
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    let urls: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
+                    term_link::arrived(&handle, &urls);
+                });
+            }
             app.manage(Shell {
                 bridge,
                 peers,
@@ -741,13 +1056,25 @@ pub fn run() {
         .expect("error while building omher");
 
     app.run(|handle, event| {
+        // macOS: the Dock icon of a hidden omher shows the window again
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            tray::show_main(handle);
+        }
         if let RunEvent::Exit = event {
+            if let Some(power) = handle.try_state::<power::Power>() {
+                power.quit();
+            }
             if let Some(shell) = handle.try_state::<Shell>() {
                 shell.sessions.close_all();
                 shell.chats.close_all();
                 shell.logins.cancel_all();
                 shell.peers.stop_all();
                 shell.bridge.stop();
+            }
+            // the sessions are gone: so are the status files bots read
+            if let Ok(home) = user_home() {
+                let _ = term_share::prune(&home, &[]);
             }
         }
     });

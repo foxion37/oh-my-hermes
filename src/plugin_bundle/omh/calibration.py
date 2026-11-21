@@ -74,7 +74,10 @@ HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
         "reasoning context across tool results only on a reasoning-capable route; otherwise use the "
         "same explicit goal, boundaries, and completion criteria without thinking tags. Edit by exact "
         "literal strings — a unique match with exact whitespace — as this family's edit training "
-        "expects. Make the smallest correct change, verify once, and stop."
+        "expects. Make the smallest correct change, verify once, and stop. Write the answer file in "
+        "the exact shape the task names: one JSON object whose top-level keys are the field names the "
+        "task uses (for example `locations`, `changed_paths`, `facts`), not a bare list and not a "
+        "wrapper key of your own."
     ),
     "mistral": (
         "High-effort calibration: instructions are followed literally here, so the stated criteria "
@@ -247,6 +250,33 @@ MODEL_HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
         "assumption and proceed. Size tests to the change: a reversible, low-impact edit that mirrors "
         "its implementation needs no new test, and a green check is re-run only when its inputs changed."
     ),
+    # GPT-6.2 Astra and GPT-6.2 Sol: Astra's wording, byte for byte (owner
+    # decision, 2026-11-18: no new sentence). The latest-model guide's 6.2
+    # traits are that writing is more concise by default, that the model may
+    # propose a next step and wait for confirmation when intent is unclear,
+    # that it writes efficient code, and that it can carry reasoning
+    # shorthand into a final answer. The second is what Astra's "state the
+    # assumption and proceed" clause already counters; the first and third
+    # need no counter, and the fourth meets the structured return every unit
+    # already ends on. The guide's "persist until you've completed the task"
+    # and "verify that it has completed the requested work" prompts push the
+    # model to keep working and are not imported. Editorial and unmeasured
+    # for 6.2; the Codex client gives both ids a new base prompt rather than
+    # Astra's, so a `family` vs `optimized` pair is the named follow-up.
+    "gpt-6.2-astra": (
+        "High-effort calibration: the user's instructions outrank any skill or guideline text, and "
+        "the numbered criteria are the complete task — nothing outside them is owed. Ask one focused "
+        "question only when a missing input would materially change the result; otherwise state the "
+        "assumption and proceed. Size tests to the change: a reversible, low-impact edit that mirrors "
+        "its implementation needs no new test, and a green check is re-run only when its inputs changed."
+    ),
+    "gpt-6.2-sol": (
+        "High-effort calibration: the user's instructions outrank any skill or guideline text, and "
+        "the numbered criteria are the complete task — nothing outside them is owed. Ask one focused "
+        "question only when a missing input would materially change the result; otherwise state the "
+        "assumption and proceed. Size tests to the change: a reversible, low-impact edit that mirrors "
+        "its implementation needs no new test, and a green check is re-run only when its inputs changed."
+    ),
     # DeepSeek V4.1 Flash, per the vendor's API guides and model card
     # (2026-09-10): thinking on by default, reasoning_content returned on
     # every tool-calling turn, post-trained on synthesized long-horizon agent
@@ -270,7 +300,31 @@ MODEL_HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
         "reasoning. Edit by exact literal strings — a unique match with exact whitespace — as this "
         "family's edit training expects. When the evidence already in hand cannot satisfy a "
         "criterion, report the blocker from that evidence rather than widening the search, and leave "
-        "a passed criterion closed. Make the smallest correct change, verify once, and stop."
+        "a passed criterion closed. Make the smallest correct change, verify once, and stop. Write "
+        "the answer file in the exact shape the task names: one JSON object whose top-level keys are "
+        "the field names the task uses (for example `locations`, `changed_paths`, `facts`), not a "
+        "bare list and not a wrapper key of your own."
+    ),
+    # Qwen4-Max (QwenCloud latest-model page and thinking guide, read
+    # 2026-11-19): hybrid thinking, on by default at `high`, on a documented
+    # `low`/`high`/`xhigh` ladder, and `preserve_thinking` on by default, so
+    # earlier thinking travels in `reasoning_content`, never in `content`. The
+    # `qwen` family block describes the 2025 Qwen3-Coder as non-thinking and
+    # tells the reader not to ask for reasoning, which is wrong for this model;
+    # the family block stays byte-stable for Qwen3-Coder and this override
+    # carries the generation's own contract. The family block's working rules
+    # (exact goal and boundaries, one explicit plan, observed-output recovery,
+    # stop after one passing verification run) are kept verbatim in meaning; the
+    # two new sentences counter documented traits only and ask for no extra
+    # work. Editorial and unmeasured (MODEL_OPTI.md).
+    "qwen4-max": (
+        "High-effort calibration: this is Qwen4-Max with hybrid thinking on by default, so reasoning "
+        "depth is the routed effort rung, never a request to turn thinking off or to write reasoning "
+        "into the reply. Your earlier thinking belongs in the reasoning channel, never in the visible "
+        "text, so the visible reply carries the change and the stop rather than a restatement of "
+        "reasoning the context already holds. Work from the exact goal, repository state, allowed "
+        "boundaries, tool schemas, and completion criteria along one explicit plan; recover from "
+        "failures using observed tool output and stop after one passing verification run."
     ),
 }
 MODEL_COMPOSITION_CALIBRATIONS: Final[dict[str, str]] = {
@@ -308,6 +362,28 @@ MODEL_COMPOSITION_CALIBRATIONS: Final[dict[str, str]] = {
         "evidence, and a change of effort lands on the next prepared unit rather than on a claimed "
         "mid-conversation switch."
     ),
+    # GPT-6.2 Astra and GPT-6.2 Sol: Astra's composer wording, byte for byte,
+    # on the evidence above; the documented floor of both is `low`.
+    "gpt-6.2-astra": (
+        "Composition calibration: write the user's intent into each unit prompt above any skill "
+        "text, so a delegate that meets conflicting guidance follows the unit contract rather than "
+        "pausing. Delegate every unit that is independent of the work you keep — this model "
+        "delegates less than a fanout expects, and an undelegated independent unit is latency you "
+        "chose. Set each unit's effort from its task state: the documented floor for routine "
+        "follow-ups, deeper only while a criterion holds unresolved hard reasoning or contradictory "
+        "evidence, and a change of effort lands on the next prepared unit rather than on a claimed "
+        "mid-conversation switch."
+    ),
+    "gpt-6.2-sol": (
+        "Composition calibration: write the user's intent into each unit prompt above any skill "
+        "text, so a delegate that meets conflicting guidance follows the unit contract rather than "
+        "pausing. Delegate every unit that is independent of the work you keep — this model "
+        "delegates less than a fanout expects, and an undelegated independent unit is latency you "
+        "chose. Set each unit's effort from its task state: the documented floor for routine "
+        "follow-ups, deeper only while a criterion holds unresolved hard reasoning or contradictory "
+        "evidence, and a change of effort lands on the next prepared unit rather than on a claimed "
+        "mid-conversation switch."
+    ),
     "deepseek-v4.1-flash": (
         "Composition calibration: the composer runs on DeepSeek V4.1 Flash with thinking on by "
         "default and its reasoning returned on every tool turn, so the visible composition is the "
@@ -316,6 +392,18 @@ MODEL_COMPOSITION_CALIBRATIONS: Final[dict[str, str]] = {
         "routed to this model takes low, high, or max — its documented ladder; the vendor's own table "
         "turns medium and xhigh into high, so an undocumented rung is a rung you did not choose. "
         "Validate once and stop."
+    ),
+    # Qwen4-Max, on the evidence above; the ladder sentence follows DeepSeek
+    # V4.1 Flash's composer wording because the vendor publishes the same
+    # kind of mapping table (`medium` to `high`, `max` to `xhigh`).
+    "qwen4-max": (
+        "Composition calibration: the composer runs on Qwen4-Max with hybrid thinking on by default "
+        "and its earlier thinking kept in the reasoning channel, so the visible composition is the "
+        "ordered split — exact owners, boundaries, tool contracts, dependencies, roles, and "
+        "verification commands — not a replay of planning already in context, and it carries no "
+        "synthetic thinking instructions. A unit routed to this model takes low, high, or xhigh — its "
+        "documented ladder; the vendor's own table turns medium into high and max into xhigh, so an "
+        "undocumented rung is a rung you did not choose. Validate once and move to dispatch."
     ),
 }
 
@@ -331,7 +419,8 @@ def _calibration_family(model: str) -> str:
     if key.startswith("openai-gpt-image-"):
         return "generic"
     for prefix, family in (("openai-gpt-", "gpt"), ("anthropic-claude-", "claude"),
-                           ("qwen3-", "qwen"), ("qwen3.", "qwen")):
+                           ("qwen3-", "qwen"), ("qwen3.", "qwen"),
+                           ("qwen4-", "qwen"), ("qwen4.", "qwen")):
         if key.startswith(prefix):
             return family
     for family in HIGH_EFFORT_CALIBRATIONS:

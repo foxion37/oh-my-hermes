@@ -209,11 +209,13 @@ from .setup import (
 from .state import _add_state_commands, cmd_state_clear, cmd_state_finish, cmd_state_start, cmd_state_status
 from .theme import _add_theme_commands
 from .update_check import _add_update_check_commands
+from .auto_resume import _add_auto_resume_commands
 from .use_cases import _add_cases_commands, cmd_cases_inspect, cmd_cases_list, cmd_cases_recommend
 from .visual import _add_visual_commands, cmd_visual_observe, cmd_visual_prompt_card
 from .adapter_quality import _add_adapter_quality_commands
 from .cross_harness_benchmark import _add_benchmark_commands
 from .quality_evidence import _add_quality_evidence_commands
+from .skill_eval import _add_skill_eval_commands
 from .web_qa import _add_web_qa_commands, cmd_web_qa_observe_capture, cmd_web_qa_package, cmd_web_qa_record_verdict
 from .worktree import cmd_worktree_bind, cmd_worktree_list, _add_worktree_commands
 
@@ -326,6 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_adapter_quality_commands(sub)
     _add_benchmark_commands(sub)
     _add_quality_evidence_commands(sub)
+    _add_skill_eval_commands(sub)
     _add_web_qa_commands(sub)
     _add_worktree_commands(sub)
     _add_runtime_commands(sub)
@@ -333,6 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state_commands(sub)
     _add_theme_commands(sub)
     _add_update_check_commands(sub)
+    _add_auto_resume_commands(sub)
     return parser
 
 

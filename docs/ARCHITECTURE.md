@@ -224,7 +224,11 @@ against OMH's own routing corpora with `omh chat route-questions score`. The
 `pre_llm_call` hook can also add
 `omh_context_brief/v1` plus `omh_route_hint/v1` for messages that look like
 planning, research, ops, materials, visual summary, automation,
-workflow-learning, or coding-handoff work. That hook payload carries only
+workflow-learning, or coding-handoff work. On a request to fix a code defect
+(`defect_fix_method.asks_to_fix_code`: a change verb with a code object), it
+also adds a short debugging method block once per session, condensed from
+`omh-app-debugging` and `omh-verification-gate`, because Hermes' skills index
+tells the model not to open process skills; no other turn gets it. That hook payload carries only
 hash/length metadata, matched cue labels, candidate workflow names, next
 actions, generic-tool checkpoint rules, and boundaries; it does not include the
 raw user message or prove a workflow executed. For capability/catalog questions,
@@ -293,7 +297,20 @@ the child's own turn by `pre_llm_call`, since Hermes reads only `action` from a
 `pre_tool_call` result. A `[omh-identity:name]` marker in the person's request
 or a delegated child's goal adds that user-defined identity's prompt to the
 turn's fenced OMH context (an unknown name warns); host-written text never
-selects one. The hook does not inject generic-tool checkpoint
+selects one. `omh_role` also exposes a common bounded directory of qualified
+`builtin:name` and `custom:name` definitions. DAG nodes may select either with
+`identity`; calls group by identity and retry count as well as category.
+The existing attempt freezes the definition fingerprint and the direct-child
+ledger binding names that attempt. The hook resolves this binding before text
+markers and vetoes missing, disabled or drifting selections. Compaction
+continuations keep their child's selection; grandchildren never inherit it.
+Configured chains, independent of origin, supply default routes and matching
+model_map options. No-chain definitions use category routes; local nodes
+intersect configured chains with local options. Unsupported identity routing
+under profile/unknown backends, DAG external-owner exports or a spent child
+budget's parent fallback refuses explicitly.
+No new identity store or delivery receipt is introduced.
+The hook does not inject generic-tool checkpoint
 metadata or raw tool input.
 `omh hud`
 exposes the same status-line payload for local operator smoke tests. The HUD
@@ -303,7 +320,9 @@ remains available in the machine-readable payload but is not shown in the
 Hermes-facing status line.
 It intentionally omits install inventory such as managed skill counts. Its
 evidence probe is allowlisted, shell-free, bounded to a project root inside the
-host working directory (with `-m unittest` limited to reporting flags, every
+host working directory (with `-m unittest` limited to reporting flags and a
+selection of `test*.py` modules inside the working directory that default
+discovery would also run, a run that ran no test reported as not passed, every
 path a compileall argument or an omh option names kept inside the working
 directory, and `git diff` unable to leave the repository, though a `:/`
 pathspec or `<rev>:<path>` reaches all of it, which may extend above the
@@ -615,7 +634,11 @@ any of the three handoff schemas then carries it. The declaration holds typed
 `inputs[]` (`name`, `input_type`, `requirement`, `default`),
 `postconditions[]` (an `id` plus a command, compiled through the same
 `verification_plan/v1` compiler the fanout dispatcher uses), an optional
-`output_shape`, and `forbidden_actions[]`. The handoff is refused, with the
+`output_shape`, `forbidden_actions[]`, and optional `parts[]` (`id`, `title`,
+`depends_on`; validated as an acyclic graph). When two or more parts depend
+on nothing, the Codex prompt lists them and adds OpenAI's documented "Use
+subagents as needed" line; other executors' prompts do not carry it. The
+handoff is refused, with the
 offender named, when a declared input appears in no template or when a
 template variable (the builder declares `{message}` itself) has no
 declaration. Forbidden actions and postcondition commands are rendered in the
@@ -915,7 +938,8 @@ or wrapper can record runtime observation. Maestro never writes Hermes aliases
 or owns provider credentials.
 
 The pi-family runtime's host CLIs (`CAPABILITY_HOST_VARIANT_KEYS` in
-`src/coding/executor_capabilities.py`) have allowlisted session metadata that
+`src/coding/executor_capabilities.py`: pi, its distribution and fork hosts, and
+opencode) have allowlisted session metadata that
 can contribute discovery observations, but they are not independent
 executor/model owners and do not authorize promotion into the Hermes-native
 lane.
@@ -940,7 +964,7 @@ cannot define the new slot. Overrides cannot extend the vocabularies or contain
 secret/provider configuration. Resolution filters order against
 caller-confirmed active models. A missing head falls through to the next
 eligible candidate, then the shared final order tries Claude Opus 5.5 followed by
-GPT-6.1 Sol. No eligible candidate anywhere returns `owner_default` without
+GPT-6.2 Sol. No eligible candidate anywhere returns `owner_default` without
 blocking setup or preparing a model-config write. An unavailable explicit model
 instead returns `choice_required` and freezes fallthrough.
 

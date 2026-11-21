@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -146,6 +146,49 @@ pub fn dsh_turn_args(patch: &Path, session: Option<&str>) -> Result<Vec<OsString
     }
     a.push("-".into());
     Ok(a)
+}
+
+/// The arguments a TERMINALS session of agent `id` starts with, besides none: `--session-id <uuid>` for a new Claude
+/// Code conversation whose id omher made (`new_session`), so the same conversation can be continued after omher
+/// restarts; `--resume <uuid>` (Claude Code) or `resume <uuid>` (Codex, a thread id it wrote) to continue one; and
+/// the chat-era `--session <uuid>` for OmO ([`resume_args`]). Never both; every id must be a UUID; any other agent
+/// or shape is refused.
+pub fn terminal_args(id: &str, new_session: Option<&str>, resume: Option<&str>) -> Result<Vec<OsString>, String> {
+    match (new_session, resume) {
+        (None, None) => Ok(Vec::new()),
+        (Some(_), Some(_)) => Err("a new conversation or one to continue, not both".into()),
+        (Some(s), None) => {
+            if id != "claude" {
+                return Err(format!("{id} sessions are not given a conversation id"));
+            }
+            if !is_uuid(s) {
+                return Err("not a conversation id".into());
+            }
+            Ok(vec!["--session-id".into(), s.into()])
+        }
+        (None, Some(r)) if id == "codex" => {
+            if !is_uuid(r) {
+                return Err("not a conversation id".into());
+            }
+            Ok(vec!["resume".into(), r.into()])
+        }
+        (None, Some(r)) => resume_args(id, r),
+    }
+}
+
+/// The one variable a TERMINALS session gets besides the terminal's own and the account's: an oh-my-hermes (`omh`)
+/// terminal is told its omher row's link id as `OMHER_TERMINAL_LINK=<link id>`, so the OMH TUI it runs can name this
+/// terminal and reopen the session it dropped here after omher restarts. No other agent gets it, and an id that is
+/// not 10 lowercase base32 characters is refused.
+pub fn terminal_env(id: &str, link: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    let Some(link) = link else { return Ok(Vec::new()) };
+    if id != "omh" {
+        return Err(format!("{id} sessions are not given a terminal link"));
+    }
+    if !crate::term_link::is_link_id(link) {
+        return Err("not a terminal link id".into());
+    }
+    Ok(vec![("OMHER_TERMINAL_LINK".into(), link.into())])
 }
 
 /// `8-4-4-4-12` hex digits, nothing else.
@@ -385,12 +428,12 @@ pub fn layout(id: &str) -> Option<&'static Layout> {
 }
 
 /// A path's folder names, split on both separators so a Windows path reads the same on any host.
-fn parts_of(p: &Path) -> Vec<String> {
+pub(crate) fn parts_of(p: &Path) -> Vec<String> {
     // (the `?` of a Windows `\\?\` canonical path is no folder)
     p.to_string_lossy().split(['/', '\\']).filter(|c| !c.is_empty() && *c != "?").map(str::to_string).collect()
 }
 
-fn holds(parts: &[String], seq: &[&str]) -> bool {
+pub(crate) fn holds(parts: &[String], seq: &[&str]) -> bool {
     !seq.is_empty() && parts.windows(seq.len()).any(|w| w.iter().zip(seq).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
@@ -593,6 +636,191 @@ pub fn launch_for(id: &str) -> Result<(Vec<OsString>, OsString), String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The bottom terminal panel: the person's own login shell, nothing else
+// ---------------------------------------------------------------------------------------------
+
+/// The shells tried, in order, when `$SHELL` is not a usable login shell (macOS, Linux).
+pub const SHELL_FALLBACKS: [&str; 2] = ["/bin/zsh", "/bin/bash"];
+
+/// Windows PowerShell's fixed place under `%SystemRoot%`.
+const POWERSHELL_UNDER_ROOT: &str = r"System32\WindowsPowerShell\v1.0\powershell.exe";
+
+/// Does `/etc/shells` (its text) list `shell`? One absolute path per line; `#` starts a comment.
+pub fn listed_in_etc_shells(etc_shells: &str, shell: &str) -> bool {
+    etc_shells.lines().map(|l| l.split('#').next().unwrap_or("").trim()).any(|l| !l.is_empty() && l == shell)
+}
+
+/// The one program the terminal panel runs, as argv, decided here and never by the page:
+/// - macOS / Linux: `[$SHELL, "-l"]` when `$SHELL` is an absolute path to an executable file that `/etc/shells`
+///   lists; else `/bin/zsh -l`, else `/bin/bash -l`.
+/// - Windows: `powershell.exe -NoLogo` (Windows PowerShell at its fixed place under `%SystemRoot%`); when it is
+///   missing, `%COMSPEC%` (an absolute path to an existing file) with no arguments.
+///
+/// Pure: the environment, `/etc/shells`' text, the file check and the OS are passed in.
+pub fn shell_argv<E, X>(env: &E, etc_shells: &str, is_program: X, os: Os) -> Result<Vec<OsString>, String>
+where
+    E: Fn(&str) -> Option<String>,
+    X: Fn(&Path) -> bool,
+{
+    let set = |k: &str| env(k).filter(|v| !v.trim().is_empty());
+    match os {
+        Os::Unix => {
+            if let Some(sh) = set("SHELL") {
+                let p = Path::new(&sh);
+                // absolute by Unix rules (a leading `/`), whatever OS the check runs on: `Path::is_absolute` on
+                // Windows wants a drive letter
+                if sh.starts_with('/') && listed_in_etc_shells(etc_shells, &sh) && is_program(p) {
+                    return Ok(vec![OsString::from(sh), OsString::from("-l")]);
+                }
+            }
+            SHELL_FALLBACKS
+                .iter()
+                .find(|s| is_program(Path::new(s)))
+                .map(|s| vec![OsString::from(*s), OsString::from("-l")])
+                .ok_or_else(|| "no login shell found (no usable $SHELL, /bin/zsh or /bin/bash)".to_string())
+        }
+        Os::Windows => {
+            let root = set("SystemRoot").or_else(|| set("windir")).unwrap_or_else(|| r"C:\Windows".to_string());
+            let ps = PathBuf::from(format!(r"{}\{POWERSHELL_UNDER_ROOT}", root.trim_end_matches('\\')));
+            if is_program(&ps) {
+                return Ok(vec![ps.into_os_string(), OsString::from("-NoLogo")]);
+            }
+            match set("COMSPEC") {
+                Some(c) if is_windows_absolute(&c) && is_program(Path::new(&c)) => Ok(vec![OsString::from(c)]),
+                _ => Err("no shell found (no Windows PowerShell and no %COMSPEC%)".to_string()),
+            }
+        }
+    }
+}
+
+/// One shell a new Shell terminal may run: a stable id (the only thing the page sends back), the name shown, the
+/// program's absolute path, and whether it is the one [`shell_argv`] picks. Its arguments are fixed here and never
+/// leave Rust.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShellEntry {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    pub default: bool,
+    #[serde(skip)]
+    pub args: Vec<&'static str>,
+}
+
+impl ShellEntry {
+    fn argv(&self) -> Vec<OsString> {
+        std::iter::once(OsString::from(&self.path)).chain(self.args.iter().map(OsString::from)).collect()
+    }
+}
+
+/// The shells a Shell terminal may run on this machine, the default ([`shell_argv`]) first. Fixed candidates only,
+/// each listed when its file is there:
+/// - Windows: Windows PowerShell (`powershell`, `-NoLogo`), PowerShell 7 (`pwsh`, `%ProgramFiles%\PowerShell\7`,
+///   `-NoLogo`), Command Prompt (`cmd`, `%COMSPEC%`), Git Bash (`gitbash`, `%ProgramFiles%\Git\bin\bash.exe --login -i`),
+///   WSL (`wsl`, `%SystemRoot%\System32\wsl.exe`).
+/// - macOS / Linux: the login shell, then every absolute path `/etc/shells` lists that is an executable file
+///   (`unix:<path>`, each with `-l`).
+///
+/// Pure: the environment, `/etc/shells`' text, the file check and the OS are passed in.
+pub fn shells_available<E, X>(env: &E, etc_shells: &str, is_program: X, os: Os) -> Vec<ShellEntry>
+where
+    E: Fn(&str) -> Option<String>,
+    X: Fn(&Path) -> bool,
+{
+    let set = |k: &str| env(k).filter(|v| !v.trim().is_empty());
+    let entry = |id: String, label: String, path: String, args: Vec<&'static str>| ShellEntry { id, label, path, default: false, args };
+    let mut list: Vec<ShellEntry> = Vec::new();
+    match os {
+        Os::Unix => {
+            let lines = etc_shells.lines().map(|l| l.split('#').next().unwrap_or("").trim()).filter(|l| l.starts_with('/'));
+            let login = shell_argv(env, etc_shells, &is_program, os).ok().and_then(|a| a.first().map(|p| p.to_string_lossy().into_owned()));
+            for p in login.into_iter().chain(lines.map(str::to_string)) {
+                if list.iter().any(|e| e.path == p) || !is_program(Path::new(&p)) {
+                    continue;
+                }
+                let label = p.rsplit('/').next().unwrap_or(&p).to_string();
+                list.push(entry(format!("unix:{p}"), label, p, vec!["-l"]));
+            }
+        }
+        Os::Windows => {
+            let root = set("SystemRoot").or_else(|| set("windir")).unwrap_or_else(|| r"C:\Windows".to_string());
+            let root = root.trim_end_matches('\\').to_string();
+            let pf = set("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".to_string());
+            let pf = pf.trim_end_matches('\\').to_string();
+            let comspec = set("COMSPEC").filter(|c| is_windows_absolute(c));
+            let candidates: [(&str, &str, Option<String>, Vec<&'static str>); 5] = [
+                ("powershell", "Windows PowerShell", Some(format!(r"{root}\{POWERSHELL_UNDER_ROOT}")), vec!["-NoLogo"]),
+                ("pwsh", "PowerShell 7", Some(format!(r"{pf}\PowerShell\7\pwsh.exe")), vec!["-NoLogo"]),
+                ("cmd", "Command Prompt", comspec, vec![]),
+                ("gitbash", "Git Bash", Some(format!(r"{pf}\Git\bin\bash.exe")), vec!["--login", "-i"]),
+                ("wsl", "WSL", Some(format!(r"{root}\System32\wsl.exe")), vec![]),
+            ];
+            for (id, label, path, args) in candidates {
+                if let Some(p) = path.filter(|p| is_program(Path::new(p))) {
+                    list.push(entry(id.to_string(), label.to_string(), p, args));
+                }
+            }
+        }
+    }
+    // the default shell first, marked
+    if let Ok(def) = shell_argv(env, etc_shells, &is_program, os) {
+        if let Some(i) = list.iter().position(|e| e.argv() == def) {
+            let mut d = list.remove(i);
+            d.default = true;
+            list.insert(0, d);
+        }
+    }
+    list
+}
+
+/// What a Shell terminal runs for `id` (the page's choice, an id from [`shells_available`]): that entry's argv,
+/// looked up again here. No id: the default shell ([`shell_argv`]). An id that is not on this machine's list (a
+/// shell uninstalled since, or anything else) also gets the default, with the id's name back for the row's note.
+pub fn shell_argv_for<E, X>(id: Option<&str>, env: &E, etc_shells: &str, is_program: X, os: Os) -> Result<(Vec<OsString>, Option<String>), String>
+where
+    E: Fn(&str) -> Option<String>,
+    X: Fn(&Path) -> bool,
+{
+    let id = id.map(str::trim).filter(|i| !i.is_empty());
+    if let Some(id) = id {
+        if let Some(e) = shells_available(env, etc_shells, &is_program, os).into_iter().find(|e| e.id == id) {
+            return Ok((e.argv(), None));
+        }
+    }
+    let missing = id.map(shell_name_of_id);
+    Ok((shell_argv(env, etc_shells, &is_program, os)?, missing))
+}
+
+/// The name a shell id reads as when its shell is gone: the Windows names, a Unix path's file name, else the id
+/// itself (cut to 60 characters).
+fn shell_name_of_id(id: &str) -> String {
+    match id {
+        "powershell" => "Windows PowerShell".to_string(),
+        "pwsh" => "PowerShell 7".to_string(),
+        "cmd" => "Command Prompt".to_string(),
+        "gitbash" => "Git Bash".to_string(),
+        "wsl" => "WSL".to_string(),
+        _ => {
+            let name = id.strip_prefix("unix:").map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or(id);
+            name.chars().filter(|c| !c.is_control()).take(60).collect()
+        }
+    }
+}
+
+/// `C:\…` or `\\server\…`: an absolute Windows path, whatever OS the check runs on.
+fn is_windows_absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')) || p.starts_with(r"\\")
+}
+
+/// Where a terminal-panel shell starts: `wanted` when it is an absolute path to an existing folder, else `home`.
+pub fn shell_cwd(wanted: Option<&str>, home: &Path) -> PathBuf {
+    match wanted.map(Path::new) {
+        Some(p) if p.is_absolute() && p.is_dir() => p.to_path_buf(),
+        _ => home.to_path_buf(),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Live sessions
 // ---------------------------------------------------------------------------------------------
 
@@ -617,6 +845,20 @@ struct Live {
     exited: Arc<AtomicBool>,
     /// Its output on the way to the page.
     out: Arc<Out>,
+    /// The account home variable it was started with (`account_env`): its Codex home, for
+    /// [`Sessions::codex_conversation`].
+    account_env: Vec<(String, String)>,
+}
+
+impl Live {
+    /// The process [`crate::fg::Probe`] reads: the terminal's foreground process group leader (unix: the program a
+    /// shell runs now, else the shell), or on Windows the session's program (its tree is searched).
+    fn foreground(&self) -> Option<u32> {
+        #[cfg(unix)]
+        return self.master.process_group_leader().map(|p| p as u32);
+        #[cfg(not(unix))]
+        return self.pid;
+    }
 }
 
 /// Pending writes per session (keystrokes or whole pastes). A program that stops reading fills it, and
@@ -650,12 +892,60 @@ pub struct Sessions {
     next: AtomicU32,
     /// (high, low) of each new session's output credit
     marks: (u64, u64),
+    /// The one foreground watcher's inbox ([`Sessions::watch_foreground`]).
+    fg: Mutex<FgInbox>,
+    #[cfg(test)]
+    fg_stats: FgStats,
 }
 
 impl Default for Sessions {
     fn default() -> Sessions {
-        Sessions { live: Mutex::default(), next: AtomicU32::new(0), marks: (FLOW_HIGH, FLOW_LOW) }
+        Sessions {
+            live: Mutex::default(),
+            next: AtomicU32::new(0),
+            marks: (FLOW_HIGH, FLOW_LOW),
+            fg: Mutex::default(),
+            #[cfg(test)]
+            fg_stats: FgStats::default(),
+        }
     }
+}
+
+/// Spawn a thread named `name` (they show by name in a profiler and in `ps -M`). Fails only as `thread::spawn` does.
+fn named<F: FnOnce() + Send + 'static>(name: String, f: F) -> thread::JoinHandle<()> {
+    thread::Builder::new().name(name).spawn(f).expect("failed to spawn thread")
+}
+
+/// Sessions handed to [`Sessions::watch_foreground`] that its thread has not taken yet, and whether that thread runs.
+#[derive(Default)]
+struct FgInbox {
+    pending: Vec<FgWatch>,
+    running: bool,
+}
+
+/// One watched session, owned by the foreground watcher thread.
+struct FgWatch {
+    id: u32,
+    /// probed on the next tick of this length after its terminal had I/O...
+    every: Duration,
+    /// ...and at least this often without
+    idle: Duration,
+    on_change: Box<dyn FnMut(Option<&'static str>) + Send>,
+    probe: crate::fg::Probe,
+    last: Option<&'static str>,
+    /// [`Out::io`] at the last probe, and when that was (`None`: not probed yet)
+    io: u64,
+    probed: Option<Instant>,
+}
+
+/// What the watcher did, for the tests.
+#[cfg(test)]
+#[derive(Default)]
+struct FgStats {
+    threads: AtomicU32,
+    watched: AtomicU32,
+    wakes: AtomicU64,
+    probes: AtomicU64,
 }
 
 fn clamp_size(cols: u16, rows: u16) -> PtySize {
@@ -704,16 +994,17 @@ impl Sessions {
 
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let out = Out::new(self.marks);
-        spawn_reader(reader, sink.clone(), out.clone());
+        spawn_reader(id, reader, sink.clone(), out.clone());
         let (input, queued) = mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE);
         let writer_done = Arc::new(AtomicBool::new(false));
         {
-            let done = writer_done.clone();
-            thread::spawn(move || {
+            let (done, out) = (writer_done.clone(), out.clone());
+            named(format!("omher-pty-{id}-writer"), move || {
                 for chunk in queued {
                     if writer.write_all(&chunk).and_then(|_| writer.flush()).is_err() {
                         break;
                     }
+                    out.io.fetch_add(1, Ordering::Relaxed);
                 }
                 drop(writer);
                 done.store(true, Ordering::SeqCst);
@@ -721,7 +1012,7 @@ impl Sessions {
         }
         {
             let (exited, out) = (exited.clone(), out.clone());
-            thread::spawn(move || {
+            named(format!("omher-pty-{id}-wait"), move || {
                 let code = match child.wait() {
                     Ok(st) if st.signal().is_none() => Some(st.exit_code()),
                     _ => None,
@@ -734,18 +1025,22 @@ impl Sessions {
                 }
             });
         }
-        self.live.lock().unwrap().insert(id, Live { master: pair.master, input, writer_done, killer, pid, exited, out });
+        self.live.lock().unwrap().insert(id, Live { master: pair.master, input, writer_done, killer, pid, exited, out, account_env: account_env.to_vec() });
         Ok(id)
     }
 
     /// Start allow-listed agent `agent` in `cwd`. Anything not in [`AGENTS`] is refused before a process
     /// exists. `account_env` is `accounts::session_env` for that agent: the chosen account's home variable,
-    /// or nothing. `resume` (Claude Code) continues that conversation in the agent's own terminal UI.
+    /// or nothing. `new_session` (Claude Code) names the new conversation, `resume` (Claude Code, Codex) continues
+    /// one in the agent's own terminal UI ([`terminal_args`]); `link` (oh-my-hermes only) is the row's link id,
+    /// passed as `OMHER_TERMINAL_LINK` ([`terminal_env`]).
     pub fn start_agent<F>(
         &self,
         agent_id: &str,
         cwd: &Path,
+        new_session: Option<&str>,
         resume: Option<&str>,
+        link: Option<&str>,
         account_env: &[(String, String)],
         cols: u16,
         rows: u16,
@@ -758,11 +1053,47 @@ impl Sessions {
         if agent_id == "dsh" {
             return Err("DeepSeek Harness has no terminal view here".into());
         }
+        let extra = terminal_args(agent_id, new_session, resume)?;
+        let mut env = account_env.to_vec();
+        env.extend(terminal_env(agent_id, link)?);
         let (mut argv, path_env) = launch_for(agent_id)?;
-        if let Some(r) = resume {
-            argv.extend(resume_args(agent_id, r)?);
-        }
-        self.spawn(argv, cwd, Some(path_env), account_env, cols, rows, sink)
+        argv.extend(extra);
+        self.spawn(argv, cwd, Some(path_env), &env, cols, rows, sink)
+    }
+
+    /// The conversation the Codex in the foreground of session `id` holds open ([`crate::fg::codex_conversation`]), in
+    /// the Codex home the session started with (its account's, else the CLI's own: rule 30's
+    /// [`crate::past_chats::cli_home`]); `None` while it holds none, or once the session ended. Only the id comes back.
+    pub fn codex_conversation(&self, id: u32, user_home: &Path) -> Option<String> {
+        let (fg, env) = {
+            let g = self.live.lock().unwrap();
+            let l = g.get(&id).filter(|l| !l.exited.load(Ordering::SeqCst))?;
+            (l.foreground()?, l.account_env.clone())
+        };
+        let root = crate::past_chats::cli_home(user_home, "codex", &env, &|k| std::env::var(k).ok())?;
+        crate::fg::codex_conversation(fg, &root)
+    }
+
+    /// Start the terminal panel's shell ([`shell_argv`]: the person's login shell, never a program the page names)
+    /// in `cwd` when that is an existing folder, else in `home` ([`shell_cwd`]). Nothing is typed into it, and it
+    /// gets no account variable. The session is an ordinary PTY session: write, ack, resize and close as any other.
+    /// Returns the session id and the folder it started in (the tab names it).
+    /// `shell`: an id from [`shells_available`] (none: the default); one that is not on the list starts the default
+    /// and its name comes back third, for the row's note.
+    pub fn start_shell<F>(&self, cwd: Option<&str>, shell: Option<&str>, home: &Path, cols: u16, rows: u16, sink: F) -> Result<(u32, PathBuf, Option<String>), String>
+    where
+        F: FnMut(Output) + Send + 'static,
+    {
+        let etc_shells = std::fs::read_to_string("/etc/shells").unwrap_or_default();
+        let (argv, missing) = shell_argv_for(shell, &host_env, &etc_shells, is_program_file, Os::current())?;
+        let at = shell_cwd(cwd, home);
+        Ok((self.spawn(argv, &at, None, &[], cols, rows, sink)?, at, missing))
+    }
+
+    /// The shells a Shell terminal may run here ([`shells_available`] on this machine).
+    pub fn shells(&self) -> Vec<ShellEntry> {
+        let etc_shells = std::fs::read_to_string("/etc/shells").unwrap_or_default();
+        shells_available(&host_env, &etc_shells, is_program_file, Os::current())
     }
 
     /// Queue `data` for session `id`'s writer thread. Never blocks: a program that is not reading its
@@ -794,16 +1125,40 @@ impl Sessions {
     pub fn close(&self, id: u32) {
         let live = self.live.lock().unwrap().remove(&id);
         if let Some(s) = live {
-            thread::spawn(move || stop(s, Duration::from_millis(1500)));
+            named(format!("omher-pty-{id}-close"), move || stop(s, Duration::from_millis(1500)));
         }
     }
 
     /// Stop every session now (the app is quitting).
     pub fn close_all(&self) {
-        let all: Vec<Live> = self.live.lock().unwrap().drain().map(|(_, s)| s).collect();
-        let handles: Vec<_> = all.into_iter().map(|s| thread::spawn(move || stop(s, Duration::from_millis(400)))).collect();
+        let all: Vec<(u32, Live)> = self.live.lock().unwrap().drain().collect();
+        let handles: Vec<_> = all.into_iter().map(|(id, s)| named(format!("omher-pty-{id}-close"), move || stop(s, Duration::from_millis(400)))).collect();
         for h in handles {
             let _ = h.join();
+        }
+    }
+
+    /// Watch which agent CLI runs in session `id`'s foreground ([`crate::fg`]): `on_change` gets the agent id (or
+    /// `None`: a shell, any other program) only when it differs from the last one it got; it starts from `None`. The
+    /// watch ends when the session ends or is closed, handing on `None` then if an agent was shown.
+    ///
+    /// One thread (`omher-fg`) watches every session; it starts with the first watch and ends when none is left. It
+    /// wakes every `every` and looks at a session's foreground process only when its terminal had output or input since
+    /// the last look, else every [`FG_IDLE_TICKS`] wakes: starting a CLI is typing its name and it prints as it starts,
+    /// so the mark still shows within about `every`, while idle terminals cost no process reads. Whether a session
+    /// ended is checked on every wake. Each wake takes the sessions lock once, to read the terminals' foreground
+    /// process groups (unix) or the programs' pids (Windows); processes are read outside it.
+    pub fn watch_foreground<F>(self: &Arc<Self>, id: u32, every: Duration, on_change: F)
+    where
+        F: FnMut(Option<&'static str>) + Send + 'static,
+    {
+        let w = FgWatch { id, every, idle: every * FG_IDLE_TICKS, on_change: Box::new(on_change), probe: crate::fg::Probe::default(), last: None, io: 0, probed: None };
+        let mut inbox = self.fg.lock().unwrap();
+        inbox.pending.push(w);
+        if !inbox.running {
+            inbox.running = true;
+            let sessions = Arc::downgrade(self);
+            named("omher-fg".into(), move || fg_watcher(sessions));
         }
     }
 
@@ -816,6 +1171,89 @@ impl Sessions {
     #[cfg(all(test, unix))]
     pub(crate) fn unacked(&self, id: u32) -> Option<u64> {
         self.live.lock().unwrap().get(&id).map(|s| s.out.flow.state.lock().unwrap().unacked)
+    }
+}
+
+/// A session with no terminal I/O since its foreground was last read is read again after this many watcher wakes.
+pub(crate) const FG_IDLE_TICKS: u32 = 5;
+
+/// The `omher-fg` thread ([`Sessions::watch_foreground`]).
+fn fg_watcher(sessions: std::sync::Weak<Sessions>) {
+    #[cfg(test)]
+    if let Some(s) = sessions.upgrade() {
+        s.fg_stats.threads.fetch_add(1, Ordering::SeqCst);
+    }
+    let mut watches: Vec<FgWatch> = Vec::new();
+    // (the session ended or is gone, else its foreground pid and its I/O count), per watch, read under the lock
+    let mut seen: Vec<Option<(Option<u32>, u64)>> = Vec::new();
+    loop {
+        let Some(s) = sessions.upgrade() else { break };
+        {
+            let mut inbox = s.fg.lock().unwrap();
+            watches.append(&mut inbox.pending);
+            if watches.is_empty() {
+                inbox.running = false;
+                break;
+            }
+        }
+        #[cfg(test)]
+        s.fg_stats.watched.store(watches.len() as u32, Ordering::SeqCst);
+        drop(s);
+        let tick = watches.iter().map(|w| w.every).min().unwrap_or(Duration::from_secs(1));
+        thread::sleep(tick);
+        let Some(s) = sessions.upgrade() else { break };
+        #[cfg(test)]
+        s.fg_stats.wakes.fetch_add(1, Ordering::SeqCst);
+        seen.clear();
+        {
+            let g = s.live.lock().unwrap();
+            seen.extend(watches.iter().map(|w| match g.get(&w.id) {
+                Some(l) if !l.exited.load(Ordering::SeqCst) => Some((l.foreground(), l.out.io.load(Ordering::Relaxed))),
+                _ => None,
+            }));
+        }
+        let now = Instant::now();
+        let mut i = 0;
+        for at in seen.iter() {
+            let Some((pid, io)) = *at else {
+                let mut gone = watches.remove(i);
+                if gone.last.is_some() {
+                    (gone.on_change)(None);
+                }
+                continue;
+            };
+            let w = &mut watches[i];
+            i += 1;
+            // a little slack: a wake that comes a hair early still counts as the idle look
+            let due = match w.probed {
+                None => true,
+                Some(t) => io != w.io || now.duration_since(t) + w.every / 2 >= w.idle,
+            };
+            if !due {
+                continue;
+            }
+            w.io = io;
+            w.probed = Some(now);
+            #[cfg(test)]
+            s.fg_stats.probes.fetch_add(1, Ordering::SeqCst);
+            let agent = pid.and_then(|p| w.probe.agent(p));
+            if agent != w.last {
+                w.last = agent;
+                (w.on_change)(agent);
+            }
+        }
+        drop(s);
+    }
+    // the app is gone: every watch ends
+    for mut w in watches {
+        if w.last.is_some() {
+            (w.on_change)(None);
+        }
+    }
+    #[cfg(test)]
+    if let Some(s) = sessions.upgrade() {
+        s.fg_stats.watched.store(0, Ordering::SeqCst);
+        s.fg_stats.threads.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -850,10 +1288,10 @@ pub(crate) static PTY_READ_BYTES: std::sync::atomic::AtomicU64 = std::sync::atom
 /// One thread reads the PTY (macOS hands out at most 1 KB per read) into the session's [`Pipe`]; another takes one
 /// message per [`COALESCE_WINDOW`] / [`COALESCE_BYTES`] out of it and hands it to the sink, so a big dump is a few
 /// dozen Channel sends instead of one per KB. The reader holds off while the page is behind ([`Flow`]).
-fn spawn_reader(mut reader: Box<dyn Read + Send>, sink: Sink, out: Arc<Out>) {
+fn spawn_reader(id: u32, mut reader: Box<dyn Read + Send>, sink: Sink, out: Arc<Out>) {
     {
         let out = out.clone();
-        thread::spawn(move || {
+        named(format!("omher-pty-{id}-reader"), move || {
             let mut buf = [0u8; 16 * 1024];
             // Once the session is closed, what is left is read and dropped instead of handed on: closing a
             // pseudo-terminal can wait until its output has been read (ConPTY, documented for ClosePseudoConsole).
@@ -865,6 +1303,7 @@ fn spawn_reader(mut reader: Box<dyn Read + Send>, sink: Sink, out: Arc<Out>) {
                     Ok(n) => {
                         #[cfg(all(test, unix))]
                         PTY_READ_BYTES.fetch_add(n as u64, Ordering::SeqCst);
+                        out.io.fetch_add(1, Ordering::Relaxed);
                         forward = forward && out.pipe.push(&buf[..n]);
                     }
                 }
@@ -872,7 +1311,7 @@ fn spawn_reader(mut reader: Box<dyn Read + Send>, sink: Sink, out: Arc<Out>) {
             out.pipe.end();
         });
     }
-    thread::spawn(move || {
+    named(format!("omher-pty-{id}-coalesce"), move || {
         while let Some(b) = out.pipe.take(COALESCE_WINDOW) {
             // counted before the sink has it: the acknowledgement may come back while the sink still runs
             out.flow.sent(b.len());
@@ -889,11 +1328,13 @@ fn spawn_reader(mut reader: Box<dyn Read + Send>, sink: Sink, out: Arc<Out>) {
 struct Out {
     pipe: Pipe,
     flow: Flow,
+    /// Bumped by every PTY read and every write: the foreground watcher looks again soon after a change.
+    io: AtomicU64,
 }
 
 impl Out {
     fn new(marks: (u64, u64)) -> Arc<Out> {
-        Arc::new(Out { pipe: Pipe::new(COALESCE_BYTES), flow: Flow::new(marks) })
+        Arc::new(Out { pipe: Pipe::new(COALESCE_BYTES), flow: Flow::new(marks), io: AtomicU64::new(0) })
     }
 
     /// The session is closed: nothing more is handed on, and nothing holds the reader back.
@@ -1398,7 +1839,7 @@ mod tests {
             assert!(resume_args(agent, id).is_err(), "{agent}");
         }
         let s = Sessions::default();
-        assert!(s.start_agent("claude", &std::env::temp_dir(), Some("--yolo"), &[], 80, 24, |_| {}).is_err());
+        assert!(s.start_agent("claude", &std::env::temp_dir(), None, Some("--yolo"), None, &[], 80, 24, |_| {}).is_err());
         assert_eq!(s.count(), 0);
     }
 
@@ -1455,7 +1896,7 @@ mod tests {
         assert_eq!(dsh_harness(&env, &dirs, fs_of(&[&bot, &shim]), same, Os::Windows), None);
         // and DeepSeek Harness never opens in a terminal session
         let s = Sessions::default();
-        assert!(s.start_agent("dsh", &std::env::temp_dir(), None, &[], 80, 24, |_| {}).is_err());
+        assert!(s.start_agent("dsh", &std::env::temp_dir(), None, None, None, &[], 80, 24, |_| {}).is_err());
         assert_eq!(s.count(), 0);
     }
 
@@ -1469,13 +1910,78 @@ mod tests {
     }
 
     /// A New session may open any agent as its terminal (the person picks Chat or Terminal), so `start_agent` takes
+    #[test]
+    fn terminal_args_take_only_a_new_claude_id_or_a_claude_or_codex_one_to_continue() {
+        let id = "0e2c5a8e-6c1b-4f7e-9a3d-2b1c4d5e6f70";
+        let x = "01a1d060-4ab7-72b2-b02b-1dbee1d5f52c";
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(terminal_args("claude", None, None).unwrap(), Vec::<OsString>::new());
+        assert_eq!(terminal_args("claude", Some(id), None).unwrap(), os(&["--session-id", id]));
+        assert_eq!(terminal_args("claude", None, Some(id)).unwrap(), os(&["--resume", id]));
+        assert_eq!(terminal_args("codex", None, Some(x)).unwrap(), os(&["resume", x]));
+        // never both, and a new id only for Claude Code
+        assert!(terminal_args("claude", Some(id), Some(id)).is_err());
+        for agent in ["codex", "grok", "pi", "omp", "omh", "opencode", "shell", "gemini"] {
+            assert!(terminal_args(agent, Some(id), None).is_err(), "{agent}");
+        }
+        for agent in ["grok", "pi", "omp", "omh", "opencode", "shell", "gemini"] {
+            assert!(terminal_args(agent, None, Some(id)).is_err(), "{agent}");
+        }
+        for bad in ["", "--yolo", "x", "0e2c5a8e-6c1b-4f7e-9a3d-2b1c4d5e6f7", "0e2c5a8e-6c1b-4f7e-9a3d-2b1c4d5e6f70 --yolo", "../0e2c5a8e-6c1b-4f7e-9a3d-2b1c4d5e6f70", "0e2c5a8e6c1b4f7e9a3d2b1c4d5e6f70"] {
+            assert!(terminal_args("claude", Some(bad), None).is_err(), "{bad:?}");
+            assert!(terminal_args("claude", None, Some(bad)).is_err(), "{bad:?}");
+            assert!(terminal_args("codex", None, Some(bad)).is_err(), "{bad:?}");
+        }
+        let s = Sessions::default();
+        assert!(s.start_agent("claude", &std::env::temp_dir(), Some("--dangerously-skip-permissions"), None, None, &[], 80, 24, |_| {}).is_err());
+        assert!(s.start_agent("codex", &std::env::temp_dir(), None, Some("--yolo"), None, &[], 80, 24, |_| {}).is_err());
+        assert_eq!(s.count(), 0);
+    }
+
+    /// An oh-my-hermes terminal gets its row's link id as `OMHER_TERMINAL_LINK` (OMH reopens the session it dropped in
+    /// this terminal); no other agent gets it, and a link that is not 10 lowercase base32 characters is refused.
+    #[test]
+    fn terminal_env_gives_only_omh_its_checked_link_id() {
+        assert_eq!(terminal_env("omh", None).unwrap(), Vec::<(String, String)>::new());
+        assert_eq!(terminal_env("claude", None).unwrap(), Vec::<(String, String)>::new());
+        assert_eq!(terminal_env("omh", Some("abcdefgh23")).unwrap(), vec![("OMHER_TERMINAL_LINK".to_string(), "abcdefgh23".to_string())]);
+        for agent in ["claude", "codex", "omo", "dsh", "pi", "omp", "grok", "opencode", "gemini", "shell"] {
+            assert!(terminal_env(agent, Some("abcdefgh23")).is_err(), "{agent}");
+        }
+        for bad in ["", "abcdefgh2", "abcdefgh234", "ABCDEFGH23", "abcdefgh18", "abcdefgh2 ", "abc/efgh23", "abcdefgh2\n", "abcdéfgh23"] {
+            assert!(terminal_env("omh", Some(bad)).is_err(), "{bad:?}");
+        }
+        // refused before a program is looked up or a process exists
+        let s = Sessions::default();
+        let tmp = std::env::temp_dir();
+        assert_eq!(s.start_agent("claude", &tmp, None, None, Some("abcdefgh23"), &[], 80, 24, |_| {}).unwrap_err(), "claude sessions are not given a terminal link");
+        assert_eq!(s.start_agent("omh", &tmp, None, None, Some("NOT-A-LINK"), &[], 80, 24, |_| {}).unwrap_err(), "not a terminal link id");
+        assert_eq!(s.count(), 0);
+    }
+
+    /// The link variable is added beside the account's and the terminal's own, and nothing else changes.
+    #[test]
+    fn the_link_is_the_one_variable_an_omh_terminal_adds() {
+        let cwd = std::env::temp_dir();
+        let argv = || vec![OsString::from("/x/omh")];
+        let extra = |cmd: &CommandBuilder| -> Vec<(String, String)> {
+            cmd.iter_extra_env_as_str().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let base = extra(&command_for(argv(), &cwd, None, &[]));
+        let cmd = command_for(argv(), &cwd, None, &terminal_env("omh", Some("q2w3e4r5t6")).unwrap());
+        let mut added: Vec<_> = extra(&cmd).into_iter().filter(|p| !base.contains(p)).collect();
+        added.sort();
+        assert_eq!(added, vec![("OMHER_TERMINAL_LINK".to_string(), "q2w3e4r5t6".to_string())]);
+        assert_eq!(cmd.get_argv(), &argv(), "the link changes no argument");
+    }
+
     /// every allow-listed id except `dsh` (DeepSeek Harness ships no terminal profile). The folder is relative, so
     /// `spawn` refuses it after the program is resolved and no process ever starts, installed or not.
     #[test]
     fn start_agent_accepts_every_allow_listed_agent_for_a_terminal_except_dsh() {
         let s = Sessions::default();
         for a in AGENTS.iter().chain(crate::acp_agents::ACP_LIST.iter().map(|e| &e.agent)) {
-            let err = s.start_agent(a.id, Path::new("relative/dir"), None, &[], 80, 24, |_| {}).unwrap_err();
+            let err = s.start_agent(a.id, Path::new("relative/dir"), None, None, None, &[], 80, 24, |_| {}).unwrap_err();
             if a.id == "dsh" {
                 assert!(err.contains("no terminal view"), "{err}");
             } else {
@@ -1491,7 +1997,7 @@ mod tests {
         let s = Sessions::default();
         let tmp = std::env::temp_dir();
         for bad in ["/bin/sh", "kilo"] {
-            let err = s.start_agent(bad, &tmp, None, &[], 80, 24, |_| {}).unwrap_err();
+            let err = s.start_agent(bad, &tmp, None, None, None, &[], 80, 24, |_| {}).unwrap_err();
             assert_eq!(err, format!("unknown agent \"{bad}\""));
         }
         assert_eq!(s.count(), 0);
@@ -1891,6 +2397,183 @@ mod tests {
         assert!(s.write(id, b"x").is_err());
     }
 
+    /// A folder with a fake `claude` (`#!/bin/sh` running `body`) for a session's PATH.
+    #[cfg(unix)]
+    fn fake_claude(tag: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("omher-fg-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("claude");
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    /// What a foreground watch handed on, in order.
+    #[cfg(unix)]
+    type FgSeen = Arc<Mutex<Vec<Option<&'static str>>>>;
+
+    /// Start `sh -c <script>` with `dir` first on PATH and record what the foreground watch hands on.
+    #[cfg(unix)]
+    fn watch(s: &Arc<Sessions>, dir: Option<&Path>, script: &str) -> (u32, FgSeen, Arc<AtomicBool>) {
+        let path = dir.map(|d| OsString::from(format!("{}:/usr/bin:/bin", d.display())));
+        let exited = Arc::new(AtomicBool::new(false));
+        let x = exited.clone();
+        let argv = vec!["/bin/sh".into(), "-c".into(), script.into()];
+        let id = s
+            .spawn(argv, &std::env::temp_dir().canonicalize().unwrap(), path, &[], 80, 24, move |ev| {
+                if let Output::Exit(_) = ev {
+                    x.store(true, Ordering::SeqCst);
+                }
+            })
+            .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let o = seen.clone();
+        s.watch_foreground(id, Duration::from_millis(50), move |a| o.lock().unwrap().push(a));
+        (id, seen, exited)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_plain_program_in_the_foreground_is_no_agent() {
+        let s = Sessions::new();
+        let (id, seen, _) = watch(&s, None, "exec sleep 3");
+        thread::sleep(Duration::from_millis(800));
+        s.close(id);
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(*seen.lock().unwrap(), Vec::<Option<&str>>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_claude_on_path_in_the_foreground_is_claude() {
+        // the script stays the foreground process (it waits for its own `sleep`): /bin/sh running …/claude
+        let dir = fake_claude("on", "sleep 3");
+        let s = Sessions::new();
+        let (id, seen, _) = watch(&s, Some(&dir), "exec claude");
+        assert!(wait_for(|| seen.lock().unwrap().contains(&Some("claude"))), "{:?}", seen.lock().unwrap());
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(*seen.lock().unwrap(), vec![Some("claude")], "sent once, not once a tick");
+        // closing the session hands on null
+        s.close(id);
+        assert!(wait_for(|| seen.lock().unwrap().len() == 2), "{:?}", seen.lock().unwrap());
+        assert_eq!(*seen.lock().unwrap(), vec![Some("claude"), None]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_watch_sends_each_change_once() {
+        // shell (none) -> claude -> claude execs sleep (none) -> the program ends
+        let dir = fake_claude("seq", "sleep 1; exec sleep 1");
+        let s = Sessions::new();
+        let (_id, seen, exited) = watch(&s, Some(&dir), "sleep 0.5; exec claude");
+        assert!(wait_for(|| exited.load(Ordering::SeqCst)), "the program did not end");
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(*seen.lock().unwrap(), vec![Some("claude"), None]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Every watched session shares the one `omher-fg` thread.
+    #[cfg(unix)]
+    #[test]
+    fn sessions_share_one_foreground_watcher() {
+        let s = Sessions::new();
+        let ids: Vec<u32> = (0..6).map(|_| watch(&s, None, "exec sleep 5").0).collect();
+        assert!(wait_for(|| s.fg_stats.watched.load(Ordering::SeqCst) == 6), "watched {}", s.fg_stats.watched.load(Ordering::SeqCst));
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(s.fg_stats.threads.load(Ordering::SeqCst), 1);
+        s.close_all();
+        assert!(wait_for(|| s.fg_stats.threads.load(Ordering::SeqCst) == 0));
+        assert_eq!(ids.len(), 6);
+    }
+
+    /// A terminal with no I/O is looked at once per FG_IDLE_TICKS wakes' worth of time; output brings it back to every
+    /// wake. Counted against the wakes and the time that really passed, so a loaded machine's late wakes do not fail it.
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_session_is_probed_less_often_until_it_has_output() {
+        let s = Sessions::new();
+        let (id, _, _) = watch(&s, None, "stty -echo; read x; while :; do echo .; sleep 0.01; done");
+        let probes = || s.fg_stats.probes.load(Ordering::SeqCst);
+        let wakes = || s.fg_stats.wakes.load(Ordering::SeqCst);
+        assert!(wait_for(|| probes() >= 1));
+        thread::sleep(Duration::from_millis(300));
+        // the shell prints nothing: one look per 250 ms (5 wakes of 50 ms) at most, however late the wakes come
+        let (p0, w0, t0) = (probes(), wakes(), Instant::now());
+        thread::sleep(Duration::from_millis(2000));
+        let (idle, idle_wakes) = (probes() - p0, wakes() - w0);
+        let most = (t0.elapsed().as_millis() / 200) as u64 + 1;
+        assert!(idle >= 1 && idle <= most, "{idle} looks in {:?} idle ({idle_wakes} wakes)", t0.elapsed());
+        // late wakes on a loaded machine each cover more time, so each is more often due: fewer looks than wakes,
+        // not a fixed ratio (CI saw 7 looks in 13 wakes over 2 s, inside the time bound above)
+        assert!(idle < idle_wakes, "{idle} looks for {idle_wakes} wakes while idle");
+        // it prints every 10 ms: a look on (almost) every wake
+        s.write(id, b"go\r").unwrap();
+        thread::sleep(Duration::from_millis(300));
+        let (p1, w1) = (probes(), wakes());
+        thread::sleep(Duration::from_millis(2000));
+        let (busy, busy_wakes) = (probes() - p1, wakes() - w1);
+        assert!(busy_wakes >= 5 && busy * 10 >= busy_wakes * 7, "{busy} looks for {busy_wakes} wakes with output");
+        s.close(id);
+    }
+
+    /// The watcher ends with the last watched session and starts again with the next one.
+    #[cfg(unix)]
+    #[test]
+    fn the_watcher_ends_with_the_last_session() {
+        let s = Sessions::new();
+        let (a, _, _) = watch(&s, None, "exec sleep 5");
+        let (b, _, _) = watch(&s, None, "exec sleep 5");
+        assert!(wait_for(|| s.fg_stats.watched.load(Ordering::SeqCst) == 2));
+        s.close(a);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(s.fg_stats.threads.load(Ordering::SeqCst), 1, "one session is still watched");
+        s.close(b);
+        assert!(wait_for(|| s.fg_stats.threads.load(Ordering::SeqCst) == 0), "the watcher outlived its sessions");
+        let (c, _, _) = watch(&s, None, "exec sleep 5");
+        assert!(wait_for(|| s.fg_stats.threads.load(Ordering::SeqCst) == 1 && s.fg_stats.watched.load(Ordering::SeqCst) == 1));
+        s.close(c);
+        assert!(wait_for(|| s.fg_stats.threads.load(Ordering::SeqCst) == 0));
+    }
+
+    /// This process's thread count (`ps -M`, macOS) or `/proc/self/task` (Linux).
+    #[cfg(unix)]
+    fn thread_count() -> usize {
+        if let Ok(rd) = std::fs::read_dir("/proc/self/task") {
+            return rd.count();
+        }
+        let out = std::process::Command::new("ps").args(["-M", "-p", &std::process::id().to_string()]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).lines().count().saturating_sub(1)
+    }
+
+    /// The numbers for the handoff: 20 idle login shells watched at the app's 1 s for 10 s; the threads they add and
+    /// the foreground looks they cost (`FG_BENCH_SECS`, default 10). `cargo test --lib fg_bench_20_idle_shells -- --ignored --nocapture --test-threads=1`
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn fg_bench_20_idle_shells() {
+        let s = Sessions::new();
+        let before = thread_count();
+        let argv = || vec![OsString::from("/bin/sh")];
+        let ids: Vec<u32> = (0..20)
+            .map(|_| {
+                let id = s.spawn(argv(), &std::env::temp_dir().canonicalize().unwrap(), None, &[], 80, 24, |_| {}).unwrap();
+                s.watch_foreground(id, Duration::from_secs(1), |_| {});
+                id
+            })
+            .collect();
+        thread::sleep(Duration::from_secs(2)); // the prompts are printed and looked at once
+        let threads = thread_count() - before;
+        let (p0, w0) = (s.fg_stats.probes.load(Ordering::SeqCst), s.fg_stats.wakes.load(Ordering::SeqCst));
+        let secs: u64 = std::env::var("FG_BENCH_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        thread::sleep(Duration::from_secs(secs));
+        let looks = s.fg_stats.probes.load(Ordering::SeqCst) - p0;
+        let wakes = s.fg_stats.wakes.load(Ordering::SeqCst) - w0;
+        println!("FG_BENCH sessions={} threads_added={threads} secs={secs} watcher_wakes={wakes} probes={looks}", ids.len());
+        s.close_all();
+    }
+
     #[cfg(unix)]
     #[test]
     fn close_all_kills_a_program_that_ignores_hangup() {
@@ -2277,5 +2960,204 @@ mod tests {
             ran += 1;
         }
         assert!(ran > 0, "neither claude nor codex is installed");
+    }
+
+    // ---- the terminal panel's shell -------------------------------------------------------------
+
+    const ETC_SHELLS: &str = "# List of acceptable shells\n/bin/bash\n/bin/csh\n/bin/zsh   # the default\n/opt/homebrew/bin/fish\n";
+
+    #[test]
+    fn shell_argv_is_the_login_shell_from_shell_when_etc_shells_lists_it() {
+        let all = fs_of(&[Path::new("/opt/homebrew/bin/fish"), Path::new("/bin/zsh"), Path::new("/bin/bash")]);
+        let argv = shell_argv(&env_of(&[("SHELL", "/opt/homebrew/bin/fish")]), ETC_SHELLS, &all, Os::Unix).unwrap();
+        assert_eq!(argv, vec![OsString::from("/opt/homebrew/bin/fish"), OsString::from("-l")]);
+        let argv = shell_argv(&env_of(&[("SHELL", "/bin/bash")]), ETC_SHELLS, &all, Os::Unix).unwrap();
+        assert_eq!(argv, vec![OsString::from("/bin/bash"), OsString::from("-l")]);
+    }
+
+    #[test]
+    fn shell_argv_falls_back_to_zsh_then_bash_when_shell_is_not_usable() {
+        let zsh_bash = fs_of(&[Path::new("/bin/zsh"), Path::new("/bin/bash"), Path::new("/tmp/evil"), Path::new("/usr/local/bin/nu")]);
+        let zsh = vec![OsString::from("/bin/zsh"), OsString::from("-l")];
+        // not listed in /etc/shells, relative, a command line, empty, unset, listed but missing
+        for bad in [Some("/tmp/evil"), Some("zsh"), Some("bin/zsh"), Some("/bin/zsh -c id"), Some("/bin/zsh;id"), Some(""), None, Some("/usr/local/bin/nu")] {
+            let env = env_of(&bad.map(|v| vec![("SHELL", v)]).unwrap_or_default());
+            assert_eq!(shell_argv(&env, ETC_SHELLS, &zsh_bash, Os::Unix).unwrap(), zsh, "{bad:?}");
+        }
+        // listed in /etc/shells but not an executable file here
+        assert_eq!(shell_argv(&env_of(&[("SHELL", "/bin/csh")]), ETC_SHELLS, &zsh_bash, Os::Unix).unwrap(), zsh);
+        // no zsh: bash; neither: an error, no program
+        let bash_only = fs_of(&[Path::new("/bin/bash")]);
+        assert_eq!(shell_argv(&env_of(&[]), ETC_SHELLS, &bash_only, Os::Unix).unwrap(), vec![OsString::from("/bin/bash"), OsString::from("-l")]);
+        assert!(shell_argv(&env_of(&[]), ETC_SHELLS, fs_of(&[]), Os::Unix).is_err());
+        // an /etc/shells that cannot be read lists nothing
+        assert_eq!(shell_argv(&env_of(&[("SHELL", "/bin/bash")]), "", &zsh_bash, Os::Unix).unwrap(), zsh);
+    }
+
+    #[test]
+    fn etc_shells_matches_whole_lines_only() {
+        assert!(listed_in_etc_shells(ETC_SHELLS, "/bin/zsh"));
+        assert!(listed_in_etc_shells(ETC_SHELLS, "/opt/homebrew/bin/fish"));
+        for no in ["", "/bin", "/bin/zs", "# List of acceptable shells", "the default", "/bin/zsh   # the default"] {
+            assert!(!listed_in_etc_shells(ETC_SHELLS, no), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn shell_argv_on_windows_is_powershell_nologo_else_comspec() {
+        let ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        let env = env_of(&[("SystemRoot", r"C:\Windows"), ("COMSPEC", r"C:\Windows\system32\cmd.exe"), ("SHELL", "/bin/zsh")]);
+        let argv = shell_argv(&env, "", fs_of(&[Path::new(ps), Path::new(r"C:\Windows\system32\cmd.exe")]), Os::Windows).unwrap();
+        assert_eq!(argv, vec![OsString::from(ps), OsString::from("-NoLogo")]);
+        // no PowerShell: %COMSPEC% alone, no arguments
+        let argv = shell_argv(&env, "", fs_of(&[Path::new(r"C:\Windows\system32\cmd.exe")]), Os::Windows).unwrap();
+        assert_eq!(argv, vec![OsString::from(r"C:\Windows\system32\cmd.exe")]);
+        // %COMSPEC% must be an absolute path to an existing file
+        for bad in ["cmd.exe", r"cmd.exe /c calc", r"C:\nope\cmd.exe"] {
+            let env = env_of(&[("SystemRoot", r"C:\Windows"), ("COMSPEC", bad)]);
+            assert!(shell_argv(&env, "", fs_of(&[Path::new("cmd.exe")]), Os::Windows).is_err(), "{bad}");
+        }
+    }
+
+    const WIN_PS: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+    const WIN_PWSH: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
+    const WIN_CMD: &str = r"C:\Windows\system32\cmd.exe";
+    const WIN_GITBASH: &str = r"C:\Program Files\Git\bin\bash.exe";
+    const WIN_WSL: &str = r"C:\Windows\System32\wsl.exe";
+
+    fn win_env() -> impl Fn(&str) -> Option<String> {
+        env_of(&[("SystemRoot", r"C:\Windows"), ("ProgramFiles", r"C:\Program Files"), ("COMSPEC", WIN_CMD), ("SHELL", "/bin/zsh")])
+    }
+
+    fn ids(list: &[ShellEntry]) -> Vec<&str> {
+        list.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn windows_shells_are_the_fixed_candidates_whose_files_exist_in_order() {
+        let every = [WIN_PS, WIN_PWSH, WIN_CMD, WIN_GITBASH, WIN_WSL].map(Path::new);
+        let list = shells_available(&win_env(), "", fs_of(&every), Os::Windows);
+        assert_eq!(ids(&list), ["powershell", "pwsh", "cmd", "gitbash", "wsl"]);
+        assert_eq!(list.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Windows PowerShell", "PowerShell 7", "Command Prompt", "Git Bash", "WSL"]);
+        assert_eq!(list.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [WIN_PS, WIN_PWSH, WIN_CMD, WIN_GITBASH, WIN_WSL]);
+        assert_eq!(list.iter().map(|e| e.default).collect::<Vec<_>>(), [true, false, false, false, false]);
+        // the argv each id maps to at spawn
+        let fs = fs_of(&every);
+        let argv = |id: &str| shell_argv_for(Some(id), &win_env(), "", &fs, Os::Windows).unwrap();
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(argv("powershell"), (os(&[WIN_PS, "-NoLogo"]), None));
+        assert_eq!(argv("pwsh"), (os(&[WIN_PWSH, "-NoLogo"]), None));
+        assert_eq!(argv("cmd"), (os(&[WIN_CMD]), None));
+        assert_eq!(argv("gitbash"), (os(&[WIN_GITBASH, "--login", "-i"]), None));
+        assert_eq!(argv("wsl"), (os(&[WIN_WSL]), None));
+        // only the files that exist; without Windows PowerShell the default is %COMSPEC%, listed first
+        let list = shells_available(&win_env(), "", fs_of(&[Path::new(WIN_GITBASH), Path::new(WIN_CMD)]), Os::Windows);
+        assert_eq!(ids(&list), ["cmd", "gitbash"]);
+        assert!(list[0].default && !list[1].default);
+        // a relative %COMSPEC% is never listed
+        let env = env_of(&[("SystemRoot", r"C:\Windows"), ("COMSPEC", "cmd.exe")]);
+        assert_eq!(ids(&shells_available(&env, "", fs_of(&[Path::new("cmd.exe"), Path::new(WIN_WSL)]), Os::Windows)), ["wsl"]);
+        // the arguments never go to the page
+        let json = serde_json::to_value(&shells_available(&win_env(), "", fs_of(&every), Os::Windows)[3]).unwrap();
+        assert_eq!(json, serde_json::json!({"id": "gitbash", "label": "Git Bash", "path": WIN_GITBASH, "default": false}));
+    }
+
+    #[test]
+    fn unix_shells_are_the_login_shell_then_etc_shells_that_exist() {
+        let etc = "# List of acceptable shells\n\n/bin/bash\n/bin/csh # gone here\n/bin/zsh   # the default\nnot/absolute\n/opt/homebrew/bin/fish\n/bin/zsh\n";
+        let fs = fs_of(&[Path::new("/bin/bash"), Path::new("/bin/zsh"), Path::new("/opt/homebrew/bin/fish"), Path::new("not/absolute")]);
+        let list = shells_available(&env_of(&[("SHELL", "/bin/zsh")]), etc, &fs, Os::Unix);
+        assert_eq!(ids(&list), ["unix:/bin/zsh", "unix:/bin/bash", "unix:/opt/homebrew/bin/fish"]);
+        assert_eq!(list.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["zsh", "bash", "fish"]);
+        assert!(list[0].default && list[1..].iter().all(|e| !e.default));
+        assert_eq!(
+            shell_argv_for(Some("unix:/opt/homebrew/bin/fish"), &env_of(&[("SHELL", "/bin/zsh")]), etc, &fs, Os::Unix).unwrap(),
+            (vec![OsString::from("/opt/homebrew/bin/fish"), OsString::from("-l")], None)
+        );
+        // $SHELL not usable: the fallback (/bin/zsh) is the default, still first
+        let list = shells_available(&env_of(&[("SHELL", "/usr/local/bin/nope")]), "/bin/bash\n/bin/zsh\n", &fs, Os::Unix);
+        assert_eq!(ids(&list), ["unix:/bin/zsh", "unix:/bin/bash"]);
+        // no /etc/shells: the login shell alone
+        assert_eq!(ids(&shells_available(&env_of(&[]), "", &fs, Os::Unix)), ["unix:/bin/zsh"]);
+    }
+
+    #[test]
+    fn an_unknown_or_missing_shell_id_opens_the_default_and_says_which() {
+        let fs = fs_of(&[Path::new("/bin/zsh"), Path::new("/bin/bash")]);
+        let env = env_of(&[("SHELL", "/bin/zsh")]);
+        let zsh = vec![OsString::from("/bin/zsh"), OsString::from("-l")];
+        assert_eq!(shell_argv_for(None, &env, ETC_SHELLS, &fs, Os::Unix).unwrap(), (zsh.clone(), None));
+        assert_eq!(shell_argv_for(Some(" "), &env, ETC_SHELLS, &fs, Os::Unix).unwrap(), (zsh.clone(), None));
+        // fish is listed in /etc/shells but not installed here
+        assert_eq!(shell_argv_for(Some("unix:/opt/homebrew/bin/fish"), &env, ETC_SHELLS, &fs, Os::Unix).unwrap(), (zsh.clone(), Some("fish".into())));
+        // a command line, a path that is not on the list, a Windows id on Unix: never run, the default instead
+        for bad in ["/bin/zsh -c 'rm -rf ~'", "unix:/tmp/evil", "unix:/bin/zsh -c x", "pwsh", "/bin/bash"] {
+            let (argv, missing) = shell_argv_for(Some(bad), &env, ETC_SHELLS, &fs, Os::Unix).unwrap();
+            assert_eq!(argv, zsh, "{bad}");
+            assert!(missing.is_some(), "{bad}");
+        }
+        // Windows: Git Bash uninstalled since the row was made
+        let fs = fs_of(&[Path::new(WIN_PS), Path::new(WIN_CMD)]);
+        assert_eq!(
+            shell_argv_for(Some("gitbash"), &win_env(), "", &fs, Os::Windows).unwrap(),
+            (vec![OsString::from(WIN_PS), OsString::from("-NoLogo")], Some("Git Bash".into()))
+        );
+    }
+
+    #[test]
+    fn shell_cwd_is_the_folder_when_it_exists_else_home() {
+        let home = std::env::temp_dir().join(format!("omher-shell-home-{}", std::process::id()));
+        let dir = home.join("project");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = home.join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(shell_cwd(Some(dir.to_str().unwrap()), &home), dir);
+        for bad in [None, Some(""), Some("relative/dir"), Some(file.to_str().unwrap()), Some("/omher-no-such-dir-x9/deeper")] {
+            assert_eq!(shell_cwd(bad, &home), home, "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_shell_is_not_an_agent_id_and_no_other_program_is_launchable() {
+        // the panel's shell has its own start (`start_shell`) and is not on the agent allow-list
+        let s = Sessions::default();
+        for bad in ["shell", "zsh", "/bin/zsh", "bash -l", "powershell.exe", "cmd"] {
+            assert!(agent(bad).is_none(), "{bad}");
+            assert!(launch_for(bad).is_err(), "{bad}");
+            assert!(s.start_agent(bad, &std::env::temp_dir(), None, None, None, &[], 80, 24, |_| {}).unwrap_err().contains("unknown agent"));
+        }
+        assert_eq!(s.count(), 0);
+    }
+
+    /// The real start: a login shell in the folder (else home), echoing what is typed, stopped by close.
+    #[cfg(unix)]
+    #[test]
+    fn start_shell_runs_a_login_shell_in_the_folder_or_home() {
+        let base = std::env::temp_dir().join(format!("omher-shell-run-{}", std::process::id()));
+        let (home, dir) = (base.join("home"), base.join("work"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        for (wanted, expect) in [(dir.to_str().unwrap().to_string(), &dir), (base.join("gone").to_str().unwrap().to_string(), &home)] {
+            let s = Sessions::default();
+            let out = Arc::new(Mutex::new(Vec::<u8>::new()));
+            let o = out.clone();
+            let (id, at, missing) = s
+                .start_shell(Some(&wanted), None, &home, 120, 24, move |ev| {
+                    if let Output::Data(b) = ev {
+                        o.lock().unwrap().extend(b);
+                    }
+                })
+                .unwrap();
+            assert_eq!(&at, expect);
+            assert_eq!(missing, None);
+            assert_eq!(s.count(), 1);
+            s.write(id, b"echo \"at:$(pwd -P)\"\r").unwrap();
+            let want = format!("at:{}", std::fs::canonicalize(expect).unwrap().display());
+            assert!(wait_for(|| String::from_utf8_lossy(&out.lock().unwrap()).contains(&want)), "{want}: {:?}", String::from_utf8_lossy(&out.lock().unwrap()));
+            s.close(id);
+            assert_eq!(s.count(), 0);
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

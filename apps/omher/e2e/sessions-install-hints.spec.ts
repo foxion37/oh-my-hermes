@@ -5,6 +5,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+test.skip(true, "chat-mode CLI sessions replaced by bot threads (2026-11-16: terminals kept)");
+
 /** Where the PR shots go (unset: none are taken). */
 const SHOTS = process.env.OMHER_SHOTS || "";
 /** `before` or `after`, in the shot file names. */
@@ -13,7 +15,7 @@ const PHASE = process.env.OMHER_SHOTS_PHASE || "after";
 async function open(page: Page, theme: string) {
   await page.addInitScript((t) => {
     localStorage.setItem("omher.theme", t);
-    localStorage.setItem("omher.sessions.recent", JSON.stringify([{ agent: "claude", cwd: "/Users/you/code/web-app", at: 1 }]));
+    localStorage.setItem("omher.sessions.recent", JSON.stringify([{ agent: "claude", cwd: "/home/you/code/web-app", at: 1 }]));
     (window as unknown as Record<string, unknown>).__omherMockAgents = ["claude", "codex", "omo", "omh"];
   }, theme);
   await page.goto("/");

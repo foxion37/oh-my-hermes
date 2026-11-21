@@ -4,6 +4,7 @@
 // the node. The demo plan (mock.demo): Color tokens merged #2353, Theme toggle merged #2352, Page styles open
 // #2359, Code block colors draft #2360, the rest none.
 import { expect, test, type Page } from "@playwright/test";
+import { motionDone } from "./motion";
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 const DEMO = "dag:20261110_091904_d4a1c7e2/docs-dark-mode";
@@ -54,6 +55,8 @@ async function openDemo(page: Page, theme: "dark" | "light" = "dark") {
   await page.goto("/");
   await expect(page.getByTestId("bot-kami")).toHaveAttribute("aria-current", "true");
   await page.getByTestId("places").click();
+  // the tabs slide in with the panel: press one once it has stopped
+  await motionDone(page);
   await page.getByTestId("panel-tab-runs").click();
   const box = page.getByTestId("run-graph-box");
   await expect(box).toHaveAttribute("data-run", DEMO);
@@ -187,7 +190,7 @@ test("a click on the number opens the PR's page and does not select the node; a 
 test("in the full view (⌘⇧G) a click on the number neither selects nor drags the node", async ({ page }) => {
   const { opened } = await openDemo(page);
   await page.getByTestId("graph-expand").click();
-  const full = page.getByTestId("runs-full");
+  const full = page.locator('[data-testid="run-graph-box"].max');
   await expect(full.getByTestId("run-node")).toHaveCount(6);
   await page.waitForTimeout(1300);
   const node = nodeOf(full, "page-styles");

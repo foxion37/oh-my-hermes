@@ -284,19 +284,20 @@ environment the wheel cannot be installed into. With nothing suitable found and
 versions it did find. `OMH_PYTHON=/path/to/python3.12` overrides the search
 entirely.
 
-### Hermes, OMH and the omher desktop app in one command (beta)
+### Hermes, OMH and the omher desktop app in one command
 
 ```sh
 curl -fsSL https://omher.app/omher | sh
-# same as: curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh -s -- omher@beta
+# same as: curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh -s -- omher
 ```
 
 ```powershell
 irm https://omher.app/omher.ps1 | iex
-# same as: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher@beta
+# same as: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1))) omher
 ```
 
-The `omher@beta` argument adds three things to the plain install, and only with it:
+The `omher` argument adds three things to the plain install, and only with it
+(`omher@beta`, its name before omher 1.0, is still accepted):
 
 | Starting point | What runs |
 | --- | --- |
@@ -315,8 +316,8 @@ shell (`HERMES_HOME=<root>/profiles/<name>`), the installer looks for Hermes und
 
 The release lookup reads GitHub's API ten releases at a time and stops at the first omher one. Without a token
 GitHub allows 60 API requests an hour per network; when that runs out the installer stops with exit 1 and says so
-(set `GITHUB_TOKEN` to raise the limit). A Hermes installed this way skipped its setup wizard: open omher and pick a
-model from the model menu at the top of the chat (without the app, run `hermes setup`). `irm ... | iex` cannot
+(set `GITHUB_TOKEN` to raise the limit). A Hermes installed this way skipped its setup wizard: open omher and sign it in
+to an AI account from the line above the chat box (without the app, run `hermes setup`). `irm ... | iex` cannot
 pass an argument, which is why the PowerShell form runs the downloaded script as a script block; a failed run
 leaves its exit code in `$LASTEXITCODE`.
 
@@ -373,6 +374,23 @@ Hermes:
 ```sh
 omh setup
 ```
+
+On a terminal, setup's last question is **Set up your models now?** (default
+Yes). Yes opens the OMH TUI in a new session and sends OMH's fixed onboarding
+prompt as its first turn; Hermes then walks you through your providers, keys and
+model choices by conversation (the `model-setup` skill), one question at a time,
+and keeps at most one fallback model. Setup waits while the TUI is open and
+returns the TUI's exit code. If Hermes has no main model yet, Yes first runs
+your own `hermes model` in the same terminal and opens the conversation only when
+a main model exists afterwards; if none was set it says so and stops. No prints
+how to come back: run `omh` later and say "set up my models".
+
+The question needs both a terminal on stdin and stdout, a platform other than
+Windows, `hermes` on PATH, and a terminal the OMH TUI can open on. Without
+them, and under `--yes`, `--json`, `--dry-run` or `--no-interactive` (even
+beside `--interactive`), setup does not ask and does not open anything. Where
+the offer cannot be made, the wizard keeps its per-category model-chains
+question instead.
 
 ### Workflows in Claude Code, Codex, Cursor, opencode, OpenClaw, or pi
 
@@ -444,6 +462,18 @@ the working directory and whether the session is already open somewhere else,
 and then starts the OMH frontend in place of its own. Every model call, tool
 run and approval decision stays Hermes'; the screen is OMH's.
 
+On native Windows (no WSL) the OMH TUI runs in Windows Terminal or another
+console that takes virtual terminal input and output: it sets the console to
+VT input and output with UTF-8 code pages, reads keys as the same escape
+sequences a POSIX terminal sends, polls the window size in place of SIGWINCH,
+and puts every console mode back on exit. An old conhost that refuses virtual
+terminal input gets one line saying so, and bare `omh` opens Hermes' own
+terminal. Ctrl+Z does nothing there (no job control), and the TUI's own
+runtime home is not built on Windows (it is a tree of symbolic links, which
+needs Developer Mode), so sessions open on the shared gateway. No real Windows
+console run backs this yet: CI proves the console layer against a fake and the
+wake pipe on real Windows pipes.
+
 - Finished replies, tool summaries and notices go to your terminal's own
   scrollback, so selecting, copying and scrolling back work as they do in any
   shell. Only the region under the last line printed repaints, each repaint
@@ -461,11 +491,7 @@ run and approval decision stays Hermes'; the screen is OMH's.
   streaming (a prompt you sent, a steer included, stays in the transcript
   above it and scrolls off with it; scroll up to read it), one slot for the
   OMH plan (or a question Hermes asked, or the slash-command
-  menu when it does not open under the composer), the prompts queued behind
-  the running turn (`⧗`, up to three named and the rest counted; while the
-  turn runs, a muted row under them names the key that sends the oldest one
-  into the turn now, as Claude Code does: `ctrl+enter to send now · ↑ to
-  edit`, below), the
+  menu when it does not open under the composer), the
   composer between two full-width rules as Claude Code draws it (`───`,
   then `❯ …` rows, then `───`, with no side edges or corners),
   one dim info line under it, and, while there are subagents, the agent view
@@ -677,7 +703,7 @@ run and approval decision stays Hermes'; the screen is OMH's.
   was.
 - A notice Hermes sends outside the transcript (the agent still starting, a
   credit warning, a provider that could not be reached) takes one row above
-  the queued prompts, in its level's colour with a glyph. The next one
+  the composer, in its level's colour with a glyph. The next one
   replaces it, Hermes withdraws it, a timed one leaves when its time is up,
   and switching sessions drops it. A call Hermes refuses is said in words:
   under a command's echo, Hermes' own reason (`/undo` on an empty session:
@@ -1136,7 +1162,19 @@ run and approval decision stays Hermes'; the screen is OMH's.
   ends the run. A failed one keeps a row of its own with its error, and
   Ctrl+O unfolds the run, each load saying what it loaded (`loaded skill
   omh-docs`, `loaded references/api.md from skill omh-docs` for a file in
-  it). A shell call whose heredoc feeds an interpreter its script
+  it). Consecutive calls of any other one tool fold the same way, each
+  call's command on its own row under the first, its time after it:
+
+  ```text
+  ┃ ● terminal · 3 calls  0.9s
+  ┃   ⎿  rg DBGM src  0.2s
+  ┃      sed -n 1,9p app.py  0.3s
+  ┃      pnpm test  0.4s
+  ```
+
+  What each printed is left out until Ctrl+O unfolds the run. A call with an
+  answer under it, a diff, recalled records, or a failure keeps a row of its
+  own. A shell call whose heredoc feeds an interpreter its script
   (`python3 - <<'PY'`, `uv run python - <<'PY'`, `bash <<EOF`) names the
   interpreter and counts the script's lines and the commands around it
   (`terminal(python3 script · 23 lines)`), one a line: another heredoc's
@@ -1146,7 +1184,11 @@ run and approval decision stays Hermes'; the screen is OMH's.
   or, when it failed by its exit code alone (a test
   run, say), the last three lines it printed, under the
   count of the lines above them. An edit's diff hangs under the same `⎿`, and a long diff counts
-  its rest the same way. A resumed session's earlier calls (`omh --resume`,
+  its rest the same way. Its code lines take the same syntax colour as fenced
+  code, named by the file's extension (keywords, strings, numbers and comments
+  each in their own colour, over the line's green or red band); a colour that
+  would not read on a band is brightened there, and a file with no syntax
+  table keeps one colour per line. A resumed session's earlier calls (`omh --resume`,
   `/resume`, a switch) are drawn the same way, two blank rows between two,
   with a grey `●` on a grey rail, since Hermes' record of them keeps no
   outcome, and an edit's diff under it where Hermes kept the one it showed.
@@ -1182,7 +1224,9 @@ run and approval decision stays Hermes'; the screen is OMH's.
   `✻ 34s · 3 tools · ↓1.2k`, under the reply's words (a line too narrow for
   it drops the tokens, then the tools, then the wait, each whole, and keeps
   the time). While a question Hermes asked
-  waits on you, the working row reads `? waiting on you (11s)` instead, its
+  waits on you, the working row reads `? waiting for your approval (11s)`
+  for an approval, `? waiting for your answer (11s)` for a clarify question
+  and `? waiting on you (11s)` for anything else (a sudo password, a secret), its
   one clock counting that wait (the info line's OMH count of running tool
   calls, `1 tool · 9s`, drops its seconds meanwhile and leaves once the
   turn ends), and a tool's time on its row leaves the wait
@@ -1194,6 +1238,33 @@ run and approval decision stays Hermes'; the screen is OMH's.
   titles it after its first turn) and whether it is idle, running or waiting
   on you; on exit the title you had comes back where the terminal keeps a
   title stack.
+- Between turns, while the session waits on something that will wake it (a
+  background process Hermes will tell it about, a delegated child or dag-ulw
+  node), the working row's place says what the longest of those waits is:
+  `✻ Waiting for CI… (38m 0s · #2975 · +1 test run · 1 agent)`. It is named
+  from structure only, never from what the model said: a process by the words
+  in command position of its command (after `cd`, `export`, `VAR=value` and
+  wrappers such as `uv run`, `npx` or `time`), so `gh pr checks`,
+  `merge_when_green.sh` read `Waiting for CI` (with the PR number when one is
+  an argument), deploy commands `Deploying`, test runners `Testing`, builds
+  `Building`, installs `Installing`, `ffmpeg` and renderers `Rendering`,
+  `git push` `Pushing`, clones, fetches and downloads `Downloading`, and a
+  bare `sleep 240` `Sleeping` with the time left; a process woken on a
+  matching line reads `Watching for "<its first pattern>"`; a dag-ulw run
+  reads `Running <run name>` with its nodes done of all and any that failed;
+  a single child reads `Reviewing`, `Researching` or `Writing` by its
+  category or role, with its model, else `Running agent`. A command nothing
+  names (`echo pytest` names nothing: the word is an argument) keeps
+  `Waiting…`. The other waits are counted after it, and a narrow terminal
+  drops their kind words first, then the detail, then shows the plain
+  `Waiting… (38m 0s · 1 agent · 2 terminals)`. As the wait ends with nothing
+  else waiting, one muted row says so for 3 seconds: `✓ Review finished (5m 0s)`,
+  `✗ … failed` for a child or run whose graph says it failed, and
+  `· Tests ended (10m 0s)` for a process, whose record carries no exit code,
+  so it is never called passed or failed. A process this machine cannot ask
+  about (another pid namespace, or not POSIX) gets no end line, and a dag-ulw
+  run is said to have finished only once every node has settled. Nothing of
+  this shows during a turn or in another session.
 - Motion and colour follow one rule set, so scrollback reads at a glance:
   - Each block hangs on a continuous thin `┃` rail with no fill behind it
     (with `NO_COLOR` set your prompt's is the light `│`, so it is told apart
@@ -1229,9 +1300,15 @@ run and approval decision stays Hermes'; the screen is OMH's.
   - The working row's glyph turns (`· ✢ ✳ ✶ ✻ ✽`) and a highlight sweeps
     across its verb, beside the elapsed time and the tokens written.
   - Your prompt reads as in Claude Code, the composer's dim `❯` and dim text with no
-    band behind it, on a grey rail; a prompt the queue sent says `⧗ from queue`. A command
+    band behind it, on a grey rail. A command
     you run is echoed the same way, on the same rail (`┃ ❯ /model`), so a
     bare `❯` on the left edge is only ever the composer.
+  - A prompt queued behind the running turn shows in the chat as Claude Code
+    shows one: right above the working row, on the prompt band, dim, with its
+    images' labels and previews under it, never as a row over the composer.
+    Under the oldest a dim `⎿ Queued · ctrl+enter to send now · ↑ to edit`
+    names the key that sends it now (or `Queued · ↑ to edit`, `Held · ↑ to
+    edit`); up to three are drawn and the rest counted.
   - A steer shows as the prompt it is, dim under what is running until the
     turn takes it in, then as any prompt you sent; a refused one is the amber
     refusal (see below).
@@ -1396,8 +1473,8 @@ Esc closes it):
 | --- | --- |
 | Enter | Sends the composer; while a turn runs, typed text goes into it now as a steer (shown as your prompt above the working row, read at the next tool call); a slash command, a `!` line, a prompt with images, one sent in plan mode or behind queued lines queues for the turn's end instead (`/stop`, `/steer`, `/queue`, `/btw`, `/bg`, `/yolo`, `/effort`, `/reasoning <level>` and the commands about this terminal run at once), whatever Hermes' `busy_input_mode` says |
 | `\` then Enter, Alt+Enter, Shift+Enter, Ctrl+J | Adds a line; with a list or menu focused, Ctrl+J moves down instead. Alt+Enter and Shift+Enter still add a line in an open menu; backslash then Enter may accept a completion |
-| Ctrl+Enter | While a turn runs, sends the composer's text into it now as a steer (`/steer <text>` too); idle, sends as Enter does |
-| Ctrl+Enter, Ctrl+J | While a turn runs, on an empty composer, send the oldest queued prompt into it now as a steer; the row under the queue names the key (Ctrl+J where the terminal has not shown it tells Ctrl+Enter from Enter). A queued `!` line, slash command, skill prompt or plan prompt waits its turn |
+| Ctrl+Enter | While a turn runs, sends the composer's text into it now as a steer (`/steer <text>` too); with images, stops the turn and sends the prompt with them as soon as it ends; idle, sends as Enter does |
+| Ctrl+Enter, Ctrl+J | While a turn runs, on an empty composer, send the oldest queued prompt into it now as a steer, or, with images, stop the turn and send it with them as soon as it ends; the row under the queue names the key (Ctrl+J where the terminal has not shown it tells Ctrl+Enter from Enter). A queued `!` line, slash command, skill prompt or plan prompt waits its turn |
 | Tab | Completes a slash command, or the `@` reference being typed; on an open menu, Enter takes the highlighted row too, and sends a command already typed in full |
 | Shift+Tab | Cycles the input mode: normal, accept all (Hermes asks no approvals in this session), plan (prompts go as /plan); while Hermes itself has approvals off, turns plan on and off |
 | Ctrl+T | Steps the reasoning effort: low, medium, high, xhigh, max; the info line shows it as effort medium |
@@ -1408,6 +1485,7 @@ Esc closes it):
 | Ctrl+N / Ctrl+P | Move down / up in lists, menus, pickers and prompts; scroll one line in pagers, including /dag. Also work in CLI theme, model-chain and setup pickers |
 | Ctrl+R | Searches the input history; Ctrl+R again finds an older match, Enter puts it in the composer, Esc leaves the composer as it was |
 | Ctrl+X | Opens the `/sessions` picker |
+| Alt+P | Opens correction or dictionary actions at cursor; Cancel/Esc closes; never sends |
 | Ctrl+S | Opens the bot board, as `/bots` does: this machine's Hermes profiles, their gateways and sessions, read-only |
 | Ctrl+P | Folds the plan above the composer to its header and the item it is on, or expands it again, while a turn runs or between turns; the header says which on its right; on an open menu, Ctrl+P and Ctrl+N move the menu instead |
 | ↑ | On an empty composer with prompts queued, takes them back into the composer to edit; a queued shell line comes back on its own |
@@ -1462,7 +1540,7 @@ integration rather than claiming exhaustive Vim parity.
 
 Ctrl+Enter and Shift+Enter reach the OMH TUI as keys of their own only where
 the terminal reports them. On start it asks iTerm2, kitty, WezTerm, tmux, VS
-Code's terminal and Windows Terminal (under WSL) for the kitty keyboard
+Code's terminal and Windows Terminal (native or under WSL) for the kitty keyboard
 protocol and xterm modifyOtherKeys, and Ghostty for modifyOtherKeys only: the
 terminals Hermes' own TUI asks, recognised as Hermes recognises them, from
 `TERM_PROGRAM`, `TERM`, `TMUX`, `KITTY_WINDOW_ID` or `WT_SESSION`. The
@@ -1720,7 +1798,17 @@ A steer adds what you typed to the turn that is running, without interrupting
 it, as Claude Code does with text you send mid-turn: Enter sends one while a
 turn runs (so do Ctrl+Enter and `/steer <text>`), unless what you typed is a
 slash command, a `!` line, a prompt with images, a prompt in plan mode, or
-lines are already queued, which queue as before. Hermes reads it after its
+lines are already queued, which queue as before. Ctrl+Enter on a prompt with
+images stops the turn instead (Hermes takes text alone into a running turn):
+the prompt shows above the working row as a dim prompt and goes, with its
+images, as soon as that turn ends; Esc again gives it back to the composer.
+Its images show under it there, as under any prompt. A steer you sent before
+it that the stopped turn had not read yet goes with it, ahead of its text, as
+one prompt, so nothing you sent is dropped or goes out of order.
+A prompt with images that Enter queued gets the same offer: its queue row
+names the send-now key, and that key on an empty composer stops the turn and
+sends it the same way.
+Hermes reads a steer after its
 next tool call, or, while it is compressing the
 context, queues it and sends it as the next prompt once compression is done.
 Hermes gives the same answer for both. The steer shows as a dim prompt row
@@ -1978,7 +2066,8 @@ unchanged.
 
 When the OMH TUI cannot start, `omh` says why in one line on stderr and opens
 Hermes instead, so you lose the OMH screen, never the session. For a reason
-that is the OMH TUI's own — Windows or another terminal without `termios`,
+that is the OMH TUI's own — a Windows console that cannot take virtual
+terminal input (an old conhost), a non-Windows platform without `termios`,
 its frontend missing, or a Hermes whose gateway no longer speaks what the TUI
 was built for — that is Hermes' own TUI (`hermes --tui`). A gateway that is
 there but not answering is not such a reason, since Hermes' own TUI would ask
@@ -2003,8 +2092,8 @@ effort its config sets and Vim mode), reading the command list and the
 the gateway itself exits mid-session with a failure, the TUI starts it again
 the way Hermes' launcher set it up and resumes the same session, saying so
 (`The Hermes gateway exited (code 1): starting it again and resuming session
-<id> (1 of 3 in 60 s); what you type waits until it is back, and ctrl+c
-leaves.`), as Hermes' own
+<id> (1 of 3 in 60 s); you can keep typing, Enter waits until it is back, and
+ctrl+c leaves.`), as Hermes' own
 TUI does; each attempt waits up to 15 s for the new gateway, the time Hermes'
 own TUI gives one before it reports a slow start (or what
 `HERMES_TUI_STARTUP_TIMEOUT_MS` sets, at least 5 s, as there). A question it had asked closes
@@ -2017,8 +2106,17 @@ before it resumed the session counts as one of them; after that, or when the
 new gateway refuses the resume or does not answer it, it leaves with the command that reopens
 the session, `omh --resume <id>` (`hermes --tui` when something other than `omh` opened the TUI),
 and Ctrl+C or Ctrl+D while it waits leaves the
-same way, the new gateway stopped. A gateway that exits normally, or after you
-quit, is not started again. A
+same way, the new gateway stopped. While it waits, or reattaches after a
+restart, what you type shows in the composer at once; Enter, a paste and the
+keys after them wait until it is back, in order. If it leaves instead, what
+you typed and never sent is printed under its last line, so nothing typed
+during a restart is lost. When the gateway's record
+says it was stopped with no restart asked, the TUI tries nothing (a try would
+start a gateway you stopped) and watches the record for up to 30 s, because
+Hermes' own `hermes gateway restart` without a service stops the gateway the
+same way and starts the new one seconds later: a new live record reattaches
+the session, and a record still stopped then leaves with the resume command.
+A gateway that exits normally, or after you quit, is not started again. A
 turn that brings no event the TUI shows, only types it does not know (Hermes
 renamed its turn events), gets one notice pointing at `omh doctor`, which
 prints the installed Hermes commit next to the one the TUI was declared
@@ -2049,7 +2147,8 @@ The OMH TUI opens with the theme `omh theme use` saved under the OMH home
 
 A fresh session's launch draws the block logo, the banner's title and a
 launch card in one of nine launch looks: `spectrum` (the logo swept through
-the tool kind hues, a box per section, the default), `violet` (one box),
+the tool kind hues, a box per section, soft violet labels and rails, the
+default), `violet` (one box),
 `gold` (one box in two columns), `graphite` (grey and white with turquoise
 hyphens, a rule above and below), `sakura` (pastel pink, sky blue and cream,
 one box), `moonlit` (moonlight yellow and silver over navy, a rule above and
@@ -2148,10 +2247,10 @@ default to no:
   you pick Restart the TUI, it leaves after the running turn, once the work
   the session waits on has ended and what you typed is sent or cleared, then
   opens again on the new version and resumes the same session, as
-  `omh --resume <id>` would. If the gateway it attaches
-  to still runs the old plugin code, the reopened TUI then offers
-  `/gateway restart` once, with Cancel first. If you pick Not now, only the
-  info line hint stays.
+  `omh --resume <id>` would. That is the update's only question: if the
+  gateway it attaches to still runs the old plugin code, the reopened TUI
+  says so in one line and names `/gateway restart`, without asking. If you
+  pick Not now, only the info line hint stays.
 
 On a machine that never completed `omh setup`, `omh update` bootstraps OMH
 instead of skipping it: it installs the plugin bundle (which carries the
@@ -2621,11 +2720,31 @@ The guided flow is deliberately staged:
    configuration, not entitlement, credential validity, quota, or execution.
 3. **Preview.** Repeated `--model-alias ALIAS=MODEL` values produce exact Hermes
    `model.aliases` changes and a digest-bound preview. Existing aliases remain
-   user-owned; collisions fail closed unless separately allowed.
+   user-owned; collisions fail closed unless separately allowed. One
+   `--fallback-model PROVIDER/MODEL` (it needs `--model-setup`, and onboarding
+   keeps one) previews Hermes' fallback chain in the same preview and digest:
+   the effective chain before (`fallback_providers`, then legacy
+   `fallback_model` entries) and the one entry after. Apply is one write:
+   `fallback_providers` set to that one entry. When your fallback still lives
+   in Hermes' older `fallback_model` setting, the preview says so and apply is
+   refused before any write; run `hermes fallback clear` (Hermes then uses its
+   current format) and set the fallback again. It is also refused when OMH
+   cannot read either fallback setting from Hermes, when the provider has no
+   credential in Hermes, when it is the main model, or when an existing entry
+   carries a field OMH cannot show faithfully (a key, for example; change that
+   chain with `hermes fallback` instead). A chain Hermes already holds is
+   replaced only after the preview shows that. If Hermes refuses the write and
+   the config file is unchanged, nothing was changed; if the file did change,
+   or the result cannot be read back as exactly that one entry, OMH says so
+   and points you to `hermes fallback list`. OMH never rewrites your earlier
+   entries to undo a fallback write; aliases written in the same apply are
+   still rolled back.
 4. **Apply.** No preview writes. An apply requires both
-   `--apply-model-config` and the preview's `--model-config-digest`; an
-   interactive flow asks after showing the preview. Hermes' own `config set`
-   command owns the mutation.
+   `--apply-model-config` and `--model-config-digest` set to the preview's
+   `approval_digest`, which names the Hermes config file and the exact change
+   shown (every alias and fallback write), so approving one preview never
+   applies a different change; an interactive flow asks after showing the
+   preview. Hermes' own `config set` command owns the mutation.
 5. **Verify.** The adapter re-inspects the native Hermes alias and reports a
    verified receipt. Preview, apply, and verification remain separate states.
 
@@ -2633,19 +2752,23 @@ Agent/maintainer preview example:
 
 ```sh
 omh setup --model-setup \
-  --confirm-model openai-codex/gpt-6.1-sol \
+  --confirm-model openai-codex/gpt-6.2-sol \
   --confirm-model google/gemini-4-argon \
-  --model-alias main=openai-codex/gpt-6.1-sol \
+  --model-alias main=openai-codex/gpt-6.2-sol \
+  --fallback-model google/gemini-4-argon \
   --no-interactive --json
 ```
 
 Show the resulting `steps.model_activation.preview.changes` and
-`config_digest` to the user. Apply only after approval by repeating the same
+`fallback_model` to the user. Apply only after approval by repeating the same
 arguments with:
 
 ```sh
---apply-model-config --model-config-digest <preview-digest>
+--apply-model-config --model-config-digest <preview approval_digest>
 ```
+
+An approval from a preview of a different plan, another config file, or a changed
+starting state is refused before any write.
 
 An explicit unavailable model returns `choice_required` and never silently
 falls through. A missing recommended model is different: setup remains usable
@@ -2653,7 +2776,7 @@ and ordered recommendation chains skip missing entries in favor of a confirmed
 compatible alternative, so a model that heads no chain stays a valid
 user-selected alternative. If no candidate is
 confirmed for the selected category, role-slot, and domain chains, the resolver
-consults one shared final order: Claude Opus 5.5, then GPT-6.1 Sol. These names
+consults one shared final order: Claude Opus 5.5, then GPT-6.2 Sol. These names
 remain editorial candidates filtered through caller-confirmed metadata; they
 do not prove subscription, entitlement, authentication, or runtime readiness.
 If no candidate is confirmed anywhere, the resolver records `owner_default`;
@@ -2668,27 +2791,27 @@ The shipped catalog is editorial policy, not benchmark output:
 <!-- omh:model-chain-table:begin (generated: uv run python -m omh.cli docs chain-table; source: src/coding/model_recommendations.py) -->
 | Surface | What it is for | Shipped editable order |
 | --- | --- | --- |
-| Hermes `main` suggestion | The session's own model | GPT-6.1 Sol (`high`), Claude Opus 5.5, Claude Fable 5.2, GPT-6 Astra (`xhigh`), Kimi K3.1 Pro |
-| `ultrabrain` | Deepest reasoning | Claude Fable 5.2 (`xhigh`), GPT-6 Astra (`xhigh`), Claude Opus 5.5 (`xhigh`) |
-| `deep` | Strong default tier | Claude Opus 5.5 (`high`), GPT-6.1 Sol (`high`), Kimi K3.1 Pro (`high`) |
-| `architect` | Architecture and system design | Claude Opus 5.5 (`xhigh`), GPT-6 Astra (`xhigh`), Claude Fable 5.2 (`xhigh`), Kimi K3.1 Pro (`xhigh`) |
-| `unspecified-high` | Default working model | GPT-6.1 Sol (`medium`), Claude Opus 5.5 (`medium`), Kimi K3.1 Pro (`medium`) |
-| `unspecified-low` | Cheaper fallback | GLM 5.3 (`low`), DeepSeek V4.1 Flash (`low`), GPT-6.1 Sol (`low`), Claude Sonnet 5.5 (`low`) |
+| Hermes `main` suggestion | The session's own model | GPT-6.2 Sol (`high`), Claude Opus 5.5, Claude Fable 5.2, GPT-6.2 Astra (`xhigh`), Kimi K3.1 Pro |
+| `ultrabrain` | Deepest reasoning | Claude Fable 5.2 (`xhigh`), GPT-6.2 Astra (`xhigh`), Claude Opus 5.5 (`xhigh`) |
+| `deep` | Strong default tier | Claude Opus 5.5 (`high`), GPT-6.2 Sol (`high`), Kimi K3.1 Pro (`high`) |
+| `architect` | Architecture and system design | Claude Opus 5.5 (`xhigh`), GPT-6.2 Astra (`xhigh`), Claude Fable 5.2 (`xhigh`), Kimi K3.1 Pro (`xhigh`) |
+| `unspecified-high` | Default working model | GPT-6.2 Sol (`medium`), Claude Opus 5.5 (`medium`), Kimi K3.1 Pro (`medium`) |
+| `unspecified-low` | Cheaper fallback | GLM 5.3 (`low`), DeepSeek V4.1 Flash (`low`), GPT-6.2 Sol (`low`), Claude Sonnet 5.5 (`low`) |
 | `quick` | Short tasks | GLM 5.3 Flash (`low`), GPT-6 Luna (`low`), Claude Haiku 5.5 (`low`), Kimi K3.1 Pro (`low`) |
 | `writing` | Prose and docs | Claude Opus 5.5 (`medium`), Claude Sonnet 5.5 (`medium`), Kimi K3.1 Pro (`medium`), Gemini 4 Argon (`medium`) |
 | `visual-engineering` | Frontend and visual | Claude Fable 5.2 (`high`), Claude Opus 5.5 (`high`), Gemini 4 Argon (`high`), Kimi K3.1 Pro (`high`) |
 | `artistry` | Unconventional work | Gemini 4 Argon (`high`), Claude Opus 5.5 (`high`), Claude Fable 5.2 (`high`), Kimi K3.1 Pro (`high`) |
-| `capable` | Strong general work | Claude Opus 5.5 (`medium`), GPT-6.1 Sol (`medium`), Claude Fable 5.2 (`medium`), Kimi K3.1 Pro (`medium`) |
+| `capable` | Strong general work | Claude Opus 5.5 (`medium`), GPT-6.2 Sol (`medium`), Claude Fable 5.2 (`medium`), Kimi K3.1 Pro (`medium`) |
 | `simple-work` | Small everyday tasks | GPT-6 Luna (`low`), Claude Haiku 5.5 (`low`), DeepSeek V4.1 Flash (`low`) |
-| `deep-work` | Long tasks at frontier depth | Claude Opus 5.5 (`max`), GPT-6.1 Sol (`max`) |
-| `google-search` | Research grounded in Google Search | Gemini 4 Argon (`medium`), GPT-6.1 Sol (`medium`), Claude Opus 5.5 (`medium`) |
+| `deep-work` | Long tasks at frontier depth | Claude Opus 5.5 (`max`), GPT-6.2 Sol (`max`) |
+| `google-search` | Research grounded in Google Search | Gemini 4 Argon (`medium`), GPT-6.2 Sol (`medium`), Claude Opus 5.5 (`medium`) |
 | `x-search` | Live search on X | Grok 4.7 (`high`), Kimi K3.1 Pro (`high`), Gemini 4 Argon (`high`) |
-| `review` | A different model tries to break the diff | GPT-6.1 Sol (`xhigh`), Claude Opus 5.5 (`xhigh`), Kimi K3.1 Pro (`xhigh`) |
+| `review` | A different model tries to break the diff | GPT-6.2 Sol (`xhigh`), Claude Opus 5.5 (`xhigh`), Kimi K3.1 Pro (`xhigh`) |
 | `swarm` | Many parallel workers on separate slices | DeepSeek V4.1 Flash (`low`), GLM 5.3 Flash (`low`), GPT-6 Luna (`low`) |
-| `forensics` | Root-causing a live symptom or a captured trace | GPT-6 Astra (`xhigh`), Claude Opus 5.5 (`xhigh`), Kimi K3.1 Pro (`xhigh`) |
-| `synthesize` | Merging many results into one answer | Claude Opus 5.5 (`xhigh`), GPT-6.1 Sol (`xhigh`), Gemini 4 Argon (`high`) |
+| `forensics` | Root-causing a live symptom or a captured trace | GPT-6.2 Astra (`xhigh`), Claude Opus 5.5 (`xhigh`), Kimi K3.1 Pro (`xhigh`) |
+| `synthesize` | Merging many results into one answer | Claude Opus 5.5 (`xhigh`), GPT-6.2 Sol (`xhigh`), Gemini 4 Argon (`high`) |
 | `x_platform_data` affinity | X-platform data affinity | Grok Build 0.1, Kimi K3.1 Pro, Gemini 4 Argon |
-| Shared final order (`last_resort.any`) | Last resort when a chain is exhausted | Claude Opus 5.5 (`medium`), GPT-6.1 Sol (`medium`) |
+| Shared final order (`last_resort.any`) | Last resort when a chain is exhausted | Claude Opus 5.5 (`medium`), GPT-6.2 Sol (`medium`) |
 <!-- omh:model-chain-table:end -->
 
 Chain customization is a config edit, not a source edit — bare
@@ -2708,13 +2831,18 @@ state, `omh model-chains interview` walks every built-in category with numbered
 choices, and `omh model-chains set <category> "model[:effort], ..."` remains the
 scriptable category write (agents included).
 
-The custom-identity discovery catalog is main-agent-only and is frozen when
-Hermes builds the session system prompt. Start a new session after editing
-identities to refresh discovery. It contains complete bounded entries; overflow
-is explicitly counted, and `routing/identities.json` under the active OMH home
-is the full directory (readable with `read_file`). Route explicitly with
-`omh_delegate_route(identity=NAME)` before `delegate_task`; the GOAL marker
-selects prompt guidance, not the model chain. No automatic routing hook runs.
+The common identity discovery catalog is main-agent-only and is frozen when
+Hermes builds the session system prompt. It presents built-in and custom
+responsibilities equally, with omissions disclosed. For agents and operators,
+`omh_role action=list` reads the current directory and `action=read
+identity=builtin:builder` (or `custom:<name>`) reads a full definition.
+Start a new session after edits to refresh the system snapshot. DAG guidance
+compares responsibilities, honors user instructions and project ownership, and
+records a suitable qualified `identity` on each node; no match leaves it absent.
+Run the complete returned route and tasks unchanged. Outside DAG, route
+explicitly with `omh_delegate_route(identity=REFERENCE, category=...)` before
+`delegate_task`; `[omh-identity:REFERENCE]` selects prompt guidance. A configured
+chain supplies models; a definition without one uses the category route.
 
 Picker saves validate both documents before writing. Each file replacement is
 atomic, but the pair is not a transaction: if identity I/O fails after category
@@ -2748,7 +2876,7 @@ $ cat ~/.omh/routing/model-chains.json
   "categories": {
     "architect": [
       {"model": "claude-fable-5-2", "reasoning_effort": "xhigh"},
-      {"model": "gpt-6.1-sol", "reasoning_effort": "xhigh"}
+      {"model": "gpt-6.2-sol", "reasoning_effort": "xhigh"}
     ],
     "quick": [
       {"model": "deepseek-v4.1-flash-ultrafast", "reasoning_effort": "low"},
@@ -2967,10 +3095,25 @@ fields are rejected. Each identity is validated on its own: a broken one is
 dropped (and named on stderr by `omh coding` commands) while the valid ones
 keep working.
 
-Select an identity explicitly, one of three ways:
+For agents and operators, DAG nodes select a built-in or custom definition with
+`identity: builtin:name` or `identity: custom:name`. Define, repair and extend
+use the same field. `role` still means build/baseline/verify/review, while
+`category` describes work. Calls group by identity and each node's retry count;
+default routes carry `action=set` and a zero-based `attempt`, while model_map
+tasks carry matching options. A chain never falls back to an unrelated local
+option on a `local: true` node. Missing, disabled or drifting selections fail
+closed. The direct child's verified node/attempt binding wins over quoted
+markers; its continuations retain it and grandchildren do not inherit it.
+Selected identities require default or model_map routing; profile/unknown
+backends, DAG external-owner exports and parent fallback after the child budget
+is spent refuse the unsupported capability.
+No-identity DAGs and external exports preserve their existing behavior.
+
+Existing explicit selection adapters remain:
 
 - **Prompt:** put `[omh-identity:script-coding]` in the request (or in a
-  delegated child's goal). The first marker wins. OMH adds the identity's
+  delegated child's goal). Without a structured DAG binding the first marker wins;
+  the legacy unqualified marker names a custom identity. OMH adds the identity's
   prompt to that turn's OMH context. A marker quoted, relayed, or written by
   the host rather than typed by the person selects nothing, and an unknown
   name adds a warning that lists the available identities instead of
@@ -2997,16 +3140,19 @@ names, the same way `omh_delegate_route` answers `choice_required`; it never
 falls back to the executor's default model. The
 vocabulary stays separate: a *role* (`[omh-role:name]`, `docs/ROLES.md`) is a
 shipped specialist stance, a *category* is a work type with a model table,
-and an *identity* is your own prompt plus chain.
+and an *identity* is the common prompt definition, with model policy determined
+by whether that definition configures a chain. CLI custom-identity adapters
+continue to read the user's existing file.
 
 This is prepared routing and prompt guidance, not observed execution: an
 identity does not prove the named model ran, and a fallback is a candidate,
-not a record of one used. Compatibility is additive: with no
-`identities.json`, routes and prompts are byte-identical to before, and
+not a record of one used. With no structured selection or marker, routes and
+prompts retain their legacy behavior. Built-in discovery does not require an
+`identities.json` file. In CLI custom-identity contracts,
 changing the file between `fanout prepare` and dispatch shows up as a
 `config_fingerprint` mismatch rather than silently re-routing. Not included
-in this version: a command to manage identities, picking an identity
-automatically, or carrying one from a session to the next; name it again
+in this version: an automatic identity selector or carrying one from an
+unrelated session to the next; name it again
 when you want it.
 
 ### Per-model reasoning efforts
@@ -3462,7 +3608,7 @@ implicit default.
 3. **Optional: route per work category.** The Maestro lane resolves each
    unit's model from a category → model table (`ultrabrain`, `deep`, `quick`,
    `writing`, ...). Override it per profile with
-   `omh coding category-maestro set codex ultrabrain gpt-6.1-sol:xhigh`, walk
+   `omh coding category-maestro set codex ultrabrain gpt-6.2-sol:xhigh`, walk
    it guided with `omh coding category-maestro interview` (the interactive
    `omh setup` offers this walk too), and inspect the effective table with
    `omh coding category-maestro show`. A unit declares its category
@@ -3611,7 +3757,6 @@ exist to make a safety claim that Windows cannot back:
 | Cross-harness benchmark sandbox | Linux `bwrap` process confinement | Reports `unsupported`; no real runs |
 | `0600` / `0700` artifact permissions | POSIX mode bits | `chmod` is close to a no-op on NTFS; private artifacts are not enforced private |
 | macOS menu bar helper | Darwin + `swiftc` | Skipped, and says so |
-| OMH TUI (bare `omh`) | `termios` raw mode | Not attempted; bare `omh` opens Hermes' own terminal |
 
 Generic record locking is **not** on that list: `local_store` uses
 `msvcrt.locking` on Windows, so shared-record updates get a real OS lock with
@@ -6415,7 +6560,7 @@ curl -fsSL https://omher.app/install | sh -s -- --uninstall --purge     # omh un
 ```
 
 `--purge` and `--dry-run` are accepted only with `--uninstall`, and `--uninstall`
-cannot be combined with `omher@beta`; any other argument prints the usage and
+cannot be combined with `omher`; any other argument prints the usage and
 exits 2 without writing anything. `OMH_LANG` is passed on as `--language`.
 
 What it does not do: it downloads and installs nothing, deletes no file itself,
@@ -6561,3 +6706,32 @@ default full cleanup. Add `--force` only when you intentionally want to remove
 an unmanaged `~/.hermes/plugins/omh` directory. Add `--keep-command` when you
 want to keep the install.sh-managed command venv/link while removing Hermes
 state.
+**Local proofreader (optional external dependency):** on macOS with Homebrew:
+
+```sh
+brew install languagetool
+brew services start languagetool
+```
+
+The formula is singular `languagetool`; its service listens on port 8081 and
+Homebrew installs Java transitively (`openjdk@17` in the current formula).
+On other platforms, run your own local LanguageTool server, for example
+`java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081`.
+Keep it bound to loopback; do not enable public access. OMH does not install or
+start Java or LanguageTool. Launch OMH with
+`OMH_PROOFREAD_URL=http://127.0.0.1:8081/v2/check` (the default) and optionally
+`OMH_PROOFREAD_LANGUAGE=en-US` (default `auto`). Press Alt+P to check the
+draft. Automatic checks are off by default; set `OMH_PROOFREAD=1` and main and
+clarify free-text fields also check after 600 ms quiet and underline issues
+without interrupting typing. Move the cursor onto an
+underlined issue and press Alt+P, then pick a replacement with arrows and Enter,
+or Cancel/Esc to close. With an OMH home, a spelling issue on one word of
+letters (not one with an apostrophe or hyphen, such as `don't` or `e-mail`)
+also offers Add to dictionary, which hides that word's spelling marks in every
+OMH TUI on that home; grammar corrections stay. Press Alt+P on the saved word
+and choose Remove from dictionary to restore them. Alt+P checks immediately if results are missing,
+and never opens an unrelated issue elsewhere in the draft. Corrections use normal Ctrl+_
+undo and never send. Missing servers leave the draft unchanged and show a quiet
+inline status, with bounded retry/backoff (Alt+P retries immediately).
+Masked fields, command lines, code, images and paste-chip contents are
+excluded. See [proofreading boundary](OMH-TUI-BOUNDARY.md#proofreading).

@@ -4,6 +4,8 @@ import {
   folderName,
   INSTALL,
   isAgentId,
+  lastPrintedLine,
+  LAST_LINE_MAX,
   missingNote,
   parentPath,
   parseRecent,
@@ -11,6 +13,8 @@ import {
   RECENT_MAX,
   recentFolders,
   rowModel,
+  splitPaneName,
+  termActivity,
   terminalNote,
   tildePath,
   type Recent,
@@ -50,14 +54,14 @@ describe("session agents", () => {
   });
 
   it("names folders on macOS and Windows", () => {
-    expect(folderName("/Users/k/code/oh-my-hermes")).toBe("oh-my-hermes");
-    expect(folderName("/Users/k/code/x/")).toBe("x");
+    expect(folderName("/home/k/code/oh-my-hermes")).toBe("oh-my-hermes");
+    expect(folderName("/home/k/code/x/")).toBe("x");
     expect(folderName("C:\\Users\\k\\proj")).toBe("proj");
     expect(folderName("C:\\")).toBe("C:\\");
     expect(folderName("/")).toBe("/");
-    expect(tildePath("/Users/k/code", "/Users/k")).toBe("~/code");
-    expect(tildePath("/Users/kim/code", "/Users/k")).toBe("/Users/kim/code");
-    expect(tildePath("/Users/k", "/Users/k/")).toBe("~");
+    expect(tildePath("/home/k/code", "/home/k")).toBe("~/code");
+    expect(tildePath("/home/kim/code", "/home/k")).toBe("/home/kim/code");
+    expect(tildePath("/home/k", "/home/k/")).toBe("~");
     expect(parentPath("~/code/x")).toBe("~/code");
     expect(parentPath("/x")).toBe("/");
     expect(parentPath("C:\\Users\\k\\proj")).toBe("C:\\Users\\k");
@@ -65,7 +69,7 @@ describe("session agents", () => {
   });
 
   it("row model: folder as the title, agent and state below, live while running", () => {
-    const base: SessionRec = { id: "s1", agent: "claude", cwd: "/Users/k/app", startedAt: 1_700_000_000_000, status: "running", view: "terminal" };
+    const base: SessionRec = { id: "s1", agent: "claude", cwd: "/home/k/app", startedAt: 1_700_000_000_000, status: "running", view: "terminal" };
     expect(rowModel(base)).toEqual({ title: "app", titleSource: "folder", folder: "app", sub: "Claude Code", live: true, needsYou: false, mark: null, over: false, ts: 1_700_000_000 });
     expect(rowModel({ ...base, status: "starting" })).toMatchObject({ sub: "Claude Code · Starting…", live: true });
     expect(rowModel({ ...base, status: "exited", exitCode: 0 })).toMatchObject({ sub: "Claude Code · Ended", live: false });
@@ -76,19 +80,19 @@ describe("session agents", () => {
 
   it("row model: two folders of the same name show their parent, a unique name stays alone", () => {
     const at = (id: string, cwd: string): SessionRec => ({ id, agent: "claude", cwd, startedAt: 1, status: "running", view: "chat" });
-    const cwds = ["/Users/k/work/web-app", "/Users/k/oss/web-app", "/Users/k/notes", "/Users/k/work/web-app"];
-    const ctx = { cwds, home: "/Users/k" };
+    const cwds = ["/home/k/work/web-app", "/home/k/oss/web-app", "/home/k/notes", "/home/k/work/web-app"];
+    const ctx = { cwds, home: "/home/k" };
     expect(rowModel(at("a", cwds[0]), undefined, ctx)).toMatchObject({ title: "web-app", where: "~/work" });
     expect(rowModel(at("b", cwds[1]), undefined, ctx)).toMatchObject({ title: "web-app", where: "~/oss" });
     expect(rowModel(at("c", cwds[2]), undefined, ctx).where).toBeUndefined();
     // two sessions in the very same folder are not a clash of names
-    expect(rowModel(at("d", "/Users/k/notes"), undefined, { cwds: ["/Users/k/notes", "/Users/k/notes"], home: "/Users/k" }).where).toBeUndefined();
+    expect(rowModel(at("d", "/home/k/notes"), undefined, { cwds: ["/home/k/notes", "/home/k/notes"], home: "/home/k" }).where).toBeUndefined();
     expect(rowModel(at("e", "C:\\a\\api"), undefined, { cwds: ["C:\\a\\api", "C:\\b\\api"], home: null }).where).toBe("C:\\a");
     expect(rowModel(at("f", cwds[0])).where).toBeUndefined();
   });
 
   it("row model: a named session shows its name on line 1 and the folder before the agent on line 2", () => {
-    const base: SessionRec = { id: "s1", agent: "claude", cwd: "/Users/k/web-app", startedAt: 1, status: "running", view: "chat" };
+    const base: SessionRec = { id: "s1", agent: "claude", cwd: "/home/k/web-app", startedAt: 1, status: "running", view: "chat" };
     // first message summary
     expect(rowModel({ ...base, promptTitle: "Fix the login redirect" })).toMatchObject({
       title: "Fix the login redirect",
@@ -105,12 +109,12 @@ describe("session agents", () => {
     expect(rowModel({ ...base, promptTitle: "Fix it", status: "exited", exitCode: 0 }).sub).toBe("web-app · Claude Code · Ended");
     expect(rowModel({ ...base, agentTitle: "t", status: "starting" }).sub).toBe("web-app · Claude Code · Starting…");
     // a clash of folder names: the parent goes with the folder on line 2, not after the name
-    const ctx = { cwds: ["/Users/k/work/web-app", "/Users/k/oss/web-app"], home: "/Users/k" };
-    const named = rowModel({ ...base, cwd: "/Users/k/work/web-app", agentTitle: "OAuth fix" }, undefined, ctx);
+    const ctx = { cwds: ["/home/k/work/web-app", "/home/k/oss/web-app"], home: "/home/k" };
+    const named = rowModel({ ...base, cwd: "/home/k/work/web-app", agentTitle: "OAuth fix" }, undefined, ctx);
     expect(named).toMatchObject({ title: "OAuth fix", sub: "web-app · ~/work · Claude Code" });
     expect(named.where).toBeUndefined();
     // while the name is still the folder, the parent stays after it and line 2 is the agent alone
-    expect(rowModel({ ...base, cwd: "/Users/k/oss/web-app" }, undefined, ctx)).toMatchObject({ title: "web-app", where: "~/oss", sub: "Claude Code" });
+    expect(rowModel({ ...base, cwd: "/home/k/oss/web-app" }, undefined, ctx)).toMatchObject({ title: "web-app", where: "~/oss", sub: "Claude Code" });
   });
 
   it("a missing agent's tooltip carries its install line, as text", () => {
@@ -169,7 +173,7 @@ describe("mock session host", () => {
     const host = new MockHost(g);
     let out = "";
     let code: number | null | undefined;
-    const id = await host.start("claude", "/Users/you/app", 80, 24, (d) => (out += d), (c) => (code = c));
+    const id = await host.start("claude", "/home/you/app", 80, 24, (d) => (out += d), (c) => (code = c));
     await new Promise((r) => setTimeout(r, 60));
     expect(out).toContain("Claude Code");
     expect(out).toContain("(mock)");
@@ -223,5 +227,44 @@ describe("mock session host", () => {
     // the generic ACP agents come as the shell's rows, with nothing of theirs kept in this app
     expect(list.filter((a) => a.acp).map((a) => a.acp!.id)).toEqual(["gemini", "qwen", "kimi", "copilot", "cline"]);
     expect(list.map((a) => a.mode)).toEqual(["chat", "chat", "chat", "chat", "hermes", "chat", "chat", "terminal", "chat", "chat", "chat", "chat", "chat", "chat"]);
+  });
+});
+
+describe("TERMINALS card second line", () => {
+  it("takes the last line that says something, skipping blank lines, frames and bare prompts", () => {
+    expect(lastPrintedLine(["╭────╮", "│ hi │", "╰────╯", "", "Running tests… (12s · esc to interrupt)", "", "  "])).toBe("Running tests… (12s · esc to interrupt)");
+    expect(lastPrintedLine(["Wrote docs/RELEASE.md", "╰──────────╯", "▌ "])).toBe("Wrote docs/RELEASE.md");
+    expect(lastPrintedLine(["a   b\tc"])).toBe("a b c");
+    expect(lastPrintedLine(["› Read 142 lines", "❯ "])).toBe("Read 142 lines");
+    expect(lastPrintedLine(["❯ fix the flaky test"])).toBe("fix the flaky test");
+    expect(lastPrintedLine(["• Ran pnpm test payments", "›"])).toBe("Ran pnpm test payments");
+    expect(lastPrintedLine(["⏺ Read 3 files", "", "›  "])).toBe("Read 3 files");
+    expect(lastPrintedLine(["✻ Running tests… (12s · esc to interrupt)"])).toBe("Running tests… (12s · esc to interrupt)");
+    expect(lastPrintedLine(["", "   ", "────"])).toBe("");
+  });
+  it("cuts a very long line with an ellipsis", () => {
+    const l = lastPrintedLine(["x".repeat(400)]);
+    expect(l.length).toBe(LAST_LINE_MAX);
+    expect(l.endsWith("…")).toBe(true);
+  });
+  it("is the CLI, then the last line, else the title the program set", () => {
+    expect(termActivity({ agent: "shell", fgAgent: "claude", lastLine: "Running tests…" })).toEqual({ cli: "claude", line: "Running tests…" });
+    expect(termActivity({ agent: "codex", oscTitle: "codex: webhook retry" })).toEqual({ cli: "codex", line: "codex: webhook retry" });
+    expect(termActivity({ agent: "codex" })).toEqual({ cli: "codex", line: "" });
+  });
+});
+
+describe("splitPaneName", () => {
+  const shell = (cwd: string, extra: Partial<SessionRec> = {}) => ({ agent: "shell" as const, cwd, ...extra });
+  it("names a bare shell by its folder, so three shells in a split read apart", () => {
+    expect(["/home/you/code/web-app", "/home/you/code/api-server", "/home/you/code/docs/"].map((c) => splitPaneName(shell(c), null))).toEqual(["web-app", "api-server", "docs"]);
+  });
+  it("keeps a name the person, the agent or the first prompt gave", () => {
+    expect(splitPaneName(shell("/w/a", { title: "deploy" }), null)).toBe("deploy");
+    expect(splitPaneName(shell("/w/a", { agentTitle: "Fix login" }), null)).toBe("Fix login");
+    expect(splitPaneName(shell("/w/a", { promptTitle: "add tests" }), null)).toBe("add tests");
+  });
+  it("falls back to the agent's name when the folder has none", () => {
+    expect(splitPaneName(shell(""), null)).toBe("Shell");
   });
 });

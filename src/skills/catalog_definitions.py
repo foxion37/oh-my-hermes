@@ -56,6 +56,7 @@ from ..source_finder import (
 from .repro_audit_skill import DEFINITION as REPRO_AUDIT_DEFINITION
 from .systematic_review_skill import DEFINITION as SYSTEMATIC_REVIEW_DEFINITION
 from .model_compression_skill import DEFINITION as MODEL_COMPRESSION_DEFINITION
+from .skill_eval_skill import DEFINITION as SKILL_EVAL_DEFINITION
 from .dag_ulw_skill import DEFINITION as DAG_ULW_DEFINITION
 from .decision_prototype_skill import DEFINITION as DECISION_PROTOTYPE_DEFINITION
 from .jev_skills import JEV_DEFINITIONS
@@ -127,6 +128,17 @@ _MODEL_SETUP_FIVE_STEP_BAR = (
     "user explicitly approves it; never edit dotenv files or credential material.",
     "Verify: re-inspect the allowlisted Hermes config metadata and report a completion checklist covering every "
     "applicable item.",
+)
+
+# Shared by code-review, production-audit and verification-gate (Hermes Bug
+# Hunter): a report that lists only findings must not read as "everything else
+# is clean", so each result ends with what was not examined. Placed after each
+# bar's first four items so the capability rows do not move.
+_NOT_CHECKED_BAR = (
+    "End the result with a `Not checked` list: every file, path, behavior, or environment in scope that was not examined or could not run, each with a one-line reason. Write `Not checked: none` only when coverage was complete; never leave the list out, because a report that lists only findings reads as if everything else were clean."
+)
+_NOT_CHECKED_CHECKLIST = (
+    "The result ends with a `Not checked` list, one reason per entry, or `Not checked: none` when coverage was complete."
 )
 
 # Shared by ralplan's Hermes quality_bar and its portable override, which
@@ -596,6 +608,7 @@ _DEFINITIONS = [
             "Keep the practical small-loop recipe visible: test as stop signal, plan -> execute -> verify, one task at a time.",
             "Surface verification_gap, comprehension_debt, and cognitive_surrender as warnings before a loop starts looking self-steering.",
             "Before a loop launches, or when asked whether one will hold, load `references/loop-design-review.md`: a finish line written beside the fence of files the loop may not edit, a judge other than the builder, and the pre-launch failure check.",
+            "When a measured loop compares variants of code or config on branches (training runs, evals, sweeps), load `references/experiment-tree.md`: one fixed run command for every node, results freeze a node, a small fan of siblings per decision, then descend onto the winner.",
             "Session-bound host_observed resumable_goal plus explicit coding ownership prepares one executor goal. Otherwise use native `/goal` and `/goal gate add`. Never prepare two controllers.",
             "Ingest bounded snapshots via `omh loop goal-driver-observe`. External state guides recovery, not checkpoint decisions; native turns still require activation and contiguous same-session evidence.",
             "Treat ticks as preparation only. Advance one legal role phase through loop_phase_transition/v1 only after its named gate has observed evidence.",
@@ -680,6 +693,7 @@ _DEFINITIONS = [
                 "Keep the practical small-loop recipe visible: test as stop signal, plan -> execute -> verify, one task at a time.",
                 "Surface verification_gap, comprehension_debt, and cognitive_surrender as warnings before a loop starts looking self-steering.",
                 "Before a loop launches, or when asked whether one will hold, load `references/loop-design-review.md`: a finish line written beside the fence of files the loop may not edit, a judge other than the builder, and the pre-launch failure check.",
+                "When a measured loop compares variants of code or config on branches (training runs, evals, sweeps), load `references/experiment-tree.md`: one fixed run command for every node, results freeze a node, a small fan of siblings per decision, then descend onto the winner.",
                 "Use `omh loop assess`, `start`, `status`, `tick`, and `feedback` as local metadata control-plane commands. Execute authorized work through the current host. The default hermes_goal driver label is prepared metadata, not an available host goal controller. Do not invoke native /goal controls on another host.",
                 "Only an explicitly selected coding owner with a session-bound host_observed resumable_goal capability may use the external goal-driver CLI path. Otherwise keep a host-owned evidence ledger; report unavailable native goal activation rather than fabricating it.",
                 "Treat ticks as preparation only. Record host phase results separately; never manufacture native phase-transition evidence from a host task declaration.",
@@ -760,7 +774,8 @@ _DEFINITIONS = [
         portable_override_shadows={
             "do_not_use_when": "2ba0707196aad88775b85e179de7daf89d7d869c7ec67550ce4c233d88837318",
             # Re-plan rule added to both copies; shadow was 90edd0de before it.
-            "quality_bar": "05c421837f219879c36ad4d801b4fb0ff007c8530f9e17728498b732a4787658",
+            # experiment-tree pointer added to both copies; shadow was 05c42183 before it.
+            "quality_bar": "b6bbf8288a78912a146c53f02644e465b83b7d59e6db22b5b99a61c48d41084a",
             "expected_outputs": "780eec788fe069700b05a39880a50a3813715f50fcd6401cb6fe486f1750616d",
             "artifact_expectations": "a0b60b9744a8ba2ea968e39cb84e90f2bc7125aaa4f40cee0996c658eeddc7ff",
             "final_checklist": "0e74ac3a35cd511b7db3310dc8040cfd5340bef69e367ee912228348616aa2c4",
@@ -1897,7 +1912,7 @@ _DEFINITIONS = [
     ),
     SkillDefinition(
         "web-research",
-        "Current technical or business fact to cite from web: web lookup lane - settle a current-facts question in one cited retrieval round with retrieval dates and source-quality notes; for pre-spec grounding across reference implementations use `research`.",
+        "Current tech or business fact to cite from web: web lookup lane - settle a current-facts question in one cited retrieval round with retrieval dates and source-quality notes; for pre-spec grounding across reference implementations use `research`.",
         (
             # The lookup half of the pre-split `research` trigger list. Every
             # phrase here names retrieval or citation; the phrases naming depth,
@@ -2224,6 +2239,7 @@ _DEFINITIONS = [
             "Separate candidate preparation, observed link, observed download, file hash, text extraction, license check, verification, and downstream selection.",
             "Attach observation provenance before treating any acquisition state as evidence.",
             "For `paper` candidates, when Hermes' bundled `arxiv` skill is available, search through it - by topic, author, category, or paper id - and record each entry it returns as `link_observed` with `hermes_tool` provenance. A search result is an observed link and nothing more: download, text extraction, and verification stay unclaimed until their own run is observed. Without the skill, a paper candidate stays `candidate_prepared` until a link is observed another way.",
+            "When the candidates are scholarly papers, load `references/literature-retrieval.md`: pick arXiv, OpenAlex, bioRxiv or PubMed by topic, scale follow-up rounds to a stated difficulty within the plan's cap, dedupe by id, DOI, then title, and keep only papers a host result returned.",
             "Vary search angles across official docs, academic work, implementations, datasets, and criticism within the plan's budget (3 queries, 10 external attempts and one follow-up for an explore search), and name the source kinds still without candidates when the budget ends.",
             "Recommend the next downstream workflow without pretending that downstream work already ran.",
         ),
@@ -4106,7 +4122,7 @@ _DEFINITIONS = [
     ),
     SkillDefinition(
         "img-summary",
-        "Infographic card for meeting notes, a report, or PR: image prompt cards - turn meetings, reports, PRs, issues, research, and releases into domain-aware image prompt cards.",
+        "Infographic card for meeting notes, a report or PR: image prompt cards - turn meetings, reports, PRs, issues, research, and releases into domain-aware image prompt cards.",
         (
             "img-summary",
             "img summary",
@@ -4281,7 +4297,7 @@ _DEFINITIONS = [
     ),
     SkillDefinition(
         "apple-design",
-        "Designing or reviewing an iOS, macOS, or Apple-style UI: prepare native Apple UI or Apple marketing product-visual direction, review, and improvement briefs with evidence-backed remediation handoffs.",
+        "Designing or reviewing an iOS, macOS or Apple UI: prepare native Apple UI or Apple marketing product-visual direction, review, and improvement briefs with evidence-backed remediation handoffs.",
         (
             "apple-design",
             "apple design",
@@ -4846,7 +4862,7 @@ _DEFINITIONS = [
             "For first-time UI creation, name the initial generation branch, reference direction, reusable primitives, state coverage, and required visual QA path.",
             "Cover responsive layout, empty/loading/error states, hover/focus/active states, CJK text, accessibility, and performance expectations.",
             "For a new page or a redesign, load `references/editorial-layout.md` before choosing the layout.",
-            "For a surface people use on a phone, load `references/mobile-density-gate.md`; measure with `toolkit/scripts/phone_check.py` when a browser is available, otherwise the measurement is `not_observed`.",
+            "For a surface people use on a phone, load `references/mobile-density-gate.md`; measure with `toolkit/scripts/phone_check.py` (setup in `toolkit/README.md`: `skill_view(name='omh-frontend', file_path='toolkit/README.md')`) when a browser is available, otherwise the measurement is `not_observed`.",
             "When the surface reads or writes remote data, load the `frontend-refactor` skill's `omh-frontend-refactor/references/state-discipline.md` (sections 1 and 4-6) before writing the component: server state lives in a query cache, each mutation names the query keys it invalidates, and an optimistic write ships with its rollback.",
             "When the surface has a form, a text composer, or a dialog, load `references/forms-and-input.md` before writing it: labelled controls, errors shown after the user commits a value, server field errors mapped onto their fields, one submit in flight, an Enter-to-send that waits for IME composition, and focus returned when a dialog closes.",
             "Check the browser-support target before using a newer platform feature: a feature newer than the target (by default, anything only Baseline Newly available) needs feature detection plus a fallback, or a deliberate target change; suggest recording the target in the repository's agent instruction file (`omh-agent-instructions` owns that file).",
@@ -4855,6 +4871,8 @@ _DEFINITIONS = [
             "Keep field and lab apart: a p75 claim needs field data, a lab audit is a diagnostic sample on one device profile, and a lab pass is never a statement about real users.",
             "While building, look at each change that affects what renders: after it, capture the affected surface and read the capture before the next change, for a 3D or canvas scene the default camera and each declared preset; a change not looked at is not done (`references/screenshot-loop.md`, section `During implementation`).",
             "After implementation lands on a web surface, load `references/screenshot-loop.md` and require the screenshot iteration loop live-environment-first: capture the running UI at 1440/768/375px, compare against the supplied target or DESIGN.md, list every difference triaged Blocker/High/Medium/Nit with its capture attached, fix, and recapture until the difference list is empty.",
+            # OpenAI "Prompting GPT-6.2 in Codex" (read 2026-11-20): review at the size people will see it.
+            "Judge each capture against the reference at the size and density people will see it (the real viewport, the real icon size such as a 24 px toolbar slot), not only a large render; exercise an interactive result with the actions it supports before calling it done.",
             "Prefer native UI controls, stable dimensions, and realistic content over decorative cards, blobs, and placeholder-heavy screens.",
             shared_test_authoring_line(
                 "When the handoff asks for component or interaction tests, ",
@@ -5646,6 +5664,8 @@ _DEFINITIONS = [
             "When a product surface is composed into a larger frame (promo, poster, slide, end card), measure it against the frame: a look-alike of a UI that exists, in place of its real renderer's output, is BLOCK, while an unbuilt UI labeled concept or a brief-requested stylised treatment labeled as such is not; with no subtitles a product-led shot is full-bleed, the full frame minus a 46 px edge inset (at least about 988 px tall at 1080p) with platform-UI zones still clear, and with subtitles it fills at least 90% of the width and height of the body safe area with the subtitle band clear; text rows are at least 2% of the frame's shorter side; a logo or identity mark keeps at least one of its own text rows from the frame and window edges, intentional crops excepted; meta text the product does not render (window title, dimension label, invented path) is removed; every count agrees with its noun in each plural category of the content locale. Each miss is one `differences` entry.",
             "Combine objective capture/diff evidence, hotspot review, alpha/transparent-background checks, and human-readable visual findings.",
             "Capture interaction, click-path, and motion states when the UI has transitions or controls that change state.",
+            # OpenAI "Prompting GPT-6.2 in Codex" (read 2026-11-20): review at the size people will see it.
+            "Compare against the reference at the size and density people will see it: the real viewport, the real icon or toolbar size (a 24 px toolbar slot), the real slide or card dimensions, not only an enlarged render, where detail that reads at large size can vanish. An interactive result is exercised with the actions it supports (click, type, scroll, key) before any verdict.",
             "For a 3D or canvas scene, capture the first frame exactly as booted, each camera preset, and every time of day the scene advertises; a claim in its own title or HUD that its first frame does not show, a small animated object that does not read as what it is, and flat light are each one `differences` entry (`omh-frontend/references/rendered-scene-craft.md`).",
             "A game or interactive scene passes only when captures show it boots (first frame neither blank nor one flat colour), answers its declared input (the frame after a key, click or touch differs from the frame before it where the input should move something), keeps running (frames seconds apart differ while idle, background-only animation not counting) and logs zero console errors across boot and input; a missing capture is BLOCK, reading code never passes it, and a run without a WebGL context is recorded as `environment: no_webgl`, not judged blank (`references/playable-check.md`).",
             "Separate design-system consistency, functional integrity, visual fidelity, responsive behavior, accessibility visibility, and CJK/text precision.",
@@ -5712,6 +5732,8 @@ _DEFINITIONS = [
                 "When a product surface is composed into a larger frame (promo, poster, slide, end card), measure it against the frame: a look-alike of a UI that exists, in place of its real renderer's output, is BLOCK, while an unbuilt UI labeled concept or a brief-requested stylised treatment labeled as such is not; with no subtitles a product-led shot is full-bleed, the full frame minus a 46 px edge inset (at least about 988 px tall at 1080p) with platform-UI zones still clear, and with subtitles it fills at least 90% of the width and height of the body safe area with the subtitle band clear; text rows are at least 2% of the frame's shorter side; a logo or identity mark keeps at least one of its own text rows from the frame and window edges, intentional crops excepted; meta text the product does not render (window title, dimension label, invented path) is removed; every count agrees with its noun in each plural category of the content locale. Each miss is one `differences` entry.",
                 "Combine objective capture/diff evidence, hotspot review, alpha/transparent-background checks, and human-readable visual findings.",
                 "Capture interaction, click-path, and motion states when the UI has transitions or controls that change state.",
+                # OpenAI "Prompting GPT-6.2 in Codex" (read 2026-11-20): review at the size people will see it.
+                "Compare against the reference at the size and density people will see it: the real viewport, the real icon or toolbar size (a 24 px toolbar slot), the real slide or card dimensions, not only an enlarged render, where detail that reads at large size can vanish. An interactive result is exercised with the actions it supports (click, type, scroll, key) before any verdict.",
                 "For a 3D or canvas scene, capture the first frame exactly as booted, each camera preset, and every time of day the scene advertises; a claim in its own title or HUD that its first frame does not show, a small animated object that does not read as what it is, and flat light are each one `differences` entry (`omh-frontend/references/rendered-scene-craft.md`).",
                 "A game or interactive scene passes only when captures show it boots (first frame neither blank nor one flat colour), answers its declared input (the frame after a key, click or touch differs from the frame before it where the input should move something), keeps running (frames seconds apart differ while idle, background-only animation not counting) and logs zero console errors across boot and input; a missing capture is BLOCK, reading code never passes it, and a run without a WebGL context is recorded as `environment: no_webgl`, not judged blank (`references/playable-check.md`).",
                 "Separate design-system consistency, functional integrity, visual fidelity, responsive behavior, accessibility visibility, and CJK/text precision.",
@@ -5727,7 +5749,7 @@ _DEFINITIONS = [
             ),
         },
         portable_override_shadows={
-            "quality_bar": "e0d897cd189f1b6915deb7aa67ee170e4e0f39e7858c2c6419a565e28aa75938",
+            "quality_bar": "4ad687fcb0a398946a0971b11a6ed189659de1b0b8bebcca08f7b3be5667f135",
         },
     ),
     SkillDefinition(
@@ -6015,10 +6037,12 @@ _DEFINITIONS = [
             "Convert remediation into explicit follow-up workflows instead of silently patching.",
             "Verdict: GO only when all nine rows are observed, BLOCK when any row failed an observed check, else HOLD naming the rows lacking evidence.",
             "Evidence floor: rollback = command exercised, restore tested, RPO/RTO; performance = load result at peak; observability = alerts to a named on-call with a runbook; security_privacy = secrets store, least privilege, cert expiry.",
+            _NOT_CHECKED_BAR,
         ),
         final_checklist=(
             "Each of the nine matrix rows reads observed, failed, or missing, with its evidence id, and the verdict follows the GO, BLOCK, HOLD rule.",
             "The rollback plan names signals, owner, threshold, and recovery path; OMH deployed and scanned nothing.",
+            _NOT_CHECKED_CHECKLIST,
         ),
         why_this_exists=(
             "`production-audit` gives OMH a preflight release surface so operators can see production risks before launch "
@@ -6131,6 +6155,14 @@ _DEFINITIONS = [
             "Take the required set from the repository, not from what happened to run: branch protection or ruleset required status checks (a repository that uses rulesets has none: `gh api repos/{owner}/{repo}/branches/{base}/protection/required_status_checks` answers 404 there; read `gh api repos/{owner}/{repo}/rules/branches/{base}` and take the contexts of its `required_status_checks` rule), the CI workflow, and the contributor docs; name which source defined required. Then compare those contexts with the results (`gh pr view <n> --json statusCheckRollup`): a required context with no result is missing evidence, not a pass. `gh pr checks --required` lists only checks that already exist, so it can read green while a required check has not started.",
             f"Return PASS only when required checks pass and stale or missing evidence is resolved; PASS never stands beside a failing required check, whatever its origin. A required check that fails `{_PRE_EXISTING}` is HOLD worded as not charged to the change, naming the merge-base run that proves it, and only when the failing run's scope still covered the change: a failure that stopped the check before it exercised the change, such as a collection or import error, leaves that check as missing evidence. `{_UNKNOWN_ORIGIN}` is HOLD with the merge-base run named as the missing evidence (for a failing test, the failure rate at head and at the merge-base).",
             "Keep fixes, reruns, review, CI, and merge as separate observed states.",
+            _NOT_CHECKED_BAR,
+        ),
+        # The verification category's default checklist plus the `Not checked` line.
+        final_checklist=(
+            "The scenario, expected behavior, observed result, and pass/fail basis are named.",
+            "Proposed fixes are separated from observed QA evidence.",
+            "Missing or failed verification routes back to `plan`, fix, or a narrower test.",
+            _NOT_CHECKED_CHECKLIST,
         ),
         why_this_exists=(
             "`verification-gate` gives OMH a deterministic evidence surface before done/merge claims: every claim maps to a check that was "
@@ -7015,7 +7047,7 @@ _DEFINITIONS = [
             "Map overlap, missed-run, retry, backfill, and failure-pause onto what Hermes cron does natively and say which choices it cannot honour, so nobody is asked for a policy the runtime ignores; the map is in `references/recurring-surface-choice.md`.",
             f"After activation, read status from Hermes, not from the blueprint: `{NATIVE_CRON_TOOL}` list (state, last_status, next_run_at), `hermes cron runs`, and open `hermes cron incidents` (detected or alerted).",
             "Expose whether a no-agent watchdog is a candidate without claiming it exists or ran.",
-            "When the person asks to watch a Slack or Discord channel and be told first when a post matches a condition, follow `references/channel-watch.md`: confirm where, what, how often, and where it reports in one line, then install the collector from `toolkit/`, write its config, and create the job yourself.",
+            "When the person asks to watch a Slack or Discord channel and be told first when a post matches a condition, follow `references/channel-watch.md`: confirm where, what, how often, and where it reports in one line, then install the collector from `toolkit/` as `toolkit/README.md` describes (`skill_view(name='omh-automation-blueprint', file_path='toolkit/README.md')`), write its config, and create the job yourself.",
             "List host automation, gateway delivery, source retrieval, and no-agent execution as not evidence until observed.",
         ),
         why_this_exists=(
@@ -8007,6 +8039,7 @@ _DEFINITIONS = [
             "A read, parse, or hash that failed means unknown, never empty, none, or equal: keep what was read before, and a list that guards access fails closed, so a failed read of an allowlist denies instead of allowing.",
             "Judge maintainability findings against the named baseline in `omh-code-review/references/smell-baseline.md`: a baseline smell is a judgement call to argue from evidence, never an automatic finding, and the reviewed repository's own standards override the baseline wherever they conflict.",
             "Close with two lists beside the verdict: what was checked and found clean, and what could not be assessed with the reason. An absent finding is evidence only when the closing says the surface was actually checked.",
+            _NOT_CHECKED_BAR,
             "Require structured `spec_axis`, `could_not_assess` (empty allowed), and unranked `verification_gaps` (empty allowed) under the dispatch schema; gaps carry `path`, `line_range`, and `evidence`, never finding priority or confidence. Check actual reads, revision, bounds, ordered ranges, and claim truth separately from shape.",
             "Select depth by changed risk, not diff size; record selected and omitted checks, reasons, actual coverage, and budget. Deduplicate candidates by root cause and validate before final findings; retain unresolved protected risks separately. Say `independent validation unavailable` when no different reader participated.",
             HermesReferenceLine(
@@ -8019,7 +8052,7 @@ _DEFINITIONS = [
                 "On Hermes, for native `omh_todo` checkpoints, `record` then `recall` this review declaration. Stored declarations are not proof.",
             ),
         ),
-        why_this_exists="`code-review` exists to make review bug-first and evidence-grounded: findings must cite concrete files, diffs, commands, or artifacts before any summary or fix proposal.",
+        why_this_exists="`code-review` exists to make review bug-first and evidence-grounded: findings must cite concrete files, diffs, commands, or artifacts before any summary or fix proposal. Its Hermes Bug Hunter discipline keeps only findings that can be shown step by step, drops intended or unreachable behavior, and ends every review with what was not checked.",
         do_not_use_when=(
             "The user asks to implement the fix rather than review existing code or claims.",
             "There is no diff, file set, claim, artifact, or expected behavior to review.",
@@ -8050,6 +8083,7 @@ _DEFINITIONS = [
             "Both axes appear in the report: correctness/risk findings, and a spec-axis verdict naming its Claim source or the `not_assessed` reason.",
             "No-issue reviews still name residual risk, missing tests, and independent review evidence if unavailable.",
             "The closing carries the checked-and-clean list and the could-not-assess list, each naming its surfaces.",
+            _NOT_CHECKED_CHECKLIST,
             "The dispatch schema matches the return, candidate validation states remain distinct, and selected checks are not reported as observed coverage.",
             "Fix implementation, architecture follow-up, and CI/merge claims stay separate from the review result.",
             "A reply to the person uses plain words: the verdict as whether anything found blocks the change (blocking issues "
@@ -8065,7 +8099,7 @@ _DEFINITIONS = [
             "When findings arrive for work you own, load `omh-code-review/references/review-response.md` before changing anything.",
             "For maintainability judgement calls, load `omh-code-review/references/smell-baseline.md`; it finds the repository's standards files first, then names the twelve baseline smells with their fixes and the repo-standards-override rule.",
             "Load `omh-code-review/references/risk-selection.md` to select depth; when additional lenses are justified, load `omh-code-review/references/review-lenses.md` and run only those selected as separate passes.",
-            "Before final findings, load `omh-code-review/references/finding-validation.md` for candidate confirmation, rejection, and unresolved-risk handling; load `omh-code-review/references/architecture-delta.md` when ownership, contracts, dependencies, or shared-code extraction change.",
+            "Before final findings, load `omh-code-review/references/finding-validation.md` for its drop gate and candidate confirmation, rejection, and unresolved-risk handling; load `omh-code-review/references/architecture-delta.md` when ownership, contracts, dependencies, or shared-code extraction change.",
         ),
         situations=(
             "review my pull request",
@@ -8269,7 +8303,7 @@ _DEFINITIONS = [
     ),
     SkillDefinition(
         "tech-debt-audit",
-        "Accumulated tech debt or architecture deepening to rank: build the severity-by-effort debt ledger from observed repo evidence - orient, audit the named dimensions with file:line citations, rank fixes and quick wins - and reconcile RESOLVED/NEW/CARRIED on rerun.",
+        "Accumulated tech debt or architecture deepening: rank it; build the severity-by-effort debt ledger from observed repo evidence - orient, audit the named dimensions with file:line citations, rank fixes and quick wins - and reconcile RESOLVED/NEW/CARRIED on rerun.",
         (
             "tech-debt-audit",
             "tech debt",
@@ -9510,10 +9544,11 @@ _DEFINITIONS = [
         )
         + (
             "Treat each Hermes model alias, semantic category, and external owner as an independent prerequisite/diagnose/recommend/apply unit instead of one combined change.",
-            "Explain the shipped recommendations as editable editorial defaults, not benchmarks or allowlists: ultrabrain prefers Claude Fable 5.2, GPT-6 Astra, then Claude Opus 5.5 at xhigh; deep prefers Claude Opus 5.5, GPT-6.1 Sol, then Kimi K3.1 Pro at high; architect prefers Claude Opus 5.5, GPT-6 Astra, Claude Fable 5.2, then Kimi K3.1 Pro at xhigh; unspecified-high prefers GPT-6.1 Sol, Claude Opus 5.5, then Kimi K3.1 Pro; unspecified-low prefers GLM-5.3, DeepSeek V4.1 Flash, GPT-6.1 Sol, then Claude Sonnet 5.5 at low; quick prefers GLM-5.3 Flash, GPT-6 Luna, Claude Haiku 5.5, then Kimi K3.1 Pro at low; writing prefers Claude Opus 5.5, Claude Sonnet 5.5, Kimi K3.1 Pro, then Gemini 4 Argon; visual-engineering prefers Claude Fable 5.2, Claude Opus 5.5, Gemini 4 Argon, then Kimi K3.1 Pro; artistry prefers Gemini 4 Argon, Claude Opus 5.5, Claude Fable 5.2, then Kimi K3.1 Pro; capable prefers Claude Opus 5.5, GPT-6.1 Sol, Claude Fable 5.2, then Kimi K3.1 Pro at medium; simple-work prefers GPT-6 Luna, Claude Haiku 5.5, then DeepSeek V4.1 Flash at low; deep-work prefers Claude Opus 5.5 then GPT-6.1 Sol at max; google-search prefers Gemini 4 Argon, GPT-6.1 Sol, then Claude Opus 5.5 at medium; x-search prefers Grok 4.7, Kimi K3.1 Pro, then Gemini 4 Argon at high; review prefers GPT-6.1 Sol, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; swarm prefers DeepSeek V4.1 Flash, GLM-5.3 Flash, then GPT-6 Luna at low; forensics prefers GPT-6 Astra, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; and synthesize prefers Claude Opus 5.5 and GPT-6.1 Sol at xhigh, then Gemini 4 Argon at high. The last six are opt-in: no role or task scale selects them. Each chain names the current generation of a model line; a superseded generation (Fable 5, Fable 5.1, Opus 5, GLM 5.2, DeepSeek V3.2, GPT-5.6 Luna, GPT-5.6 Sol, GPT-5.6 Terra, GPT-6 Sol, Claude Haiku 4.5, Kimi K3, Grok Code Fast, Gemini 3.1 Pro) or a retired line (Qwen3-Coder) is kept only by a machine-level chain override. Chain customization is a config edit: a category written into ~/.omh/routing/model-chains.json (mixture_chain_overrides/v1, seeded by omh setup) replaces that chain for routing, fallback, and HUD labels without touching code. The interactive omh setup (or, in chat, `omh model-chains provider set <id> <kind>` for one provider; the subscription answer comes only from interactive setup) also records which providers the machine holds and whether it has a Claude Code subscription in ~/.omh/routing/providers.json (provider_entitlements/v1); every chain is then reordered so served entries lead, nothing is removed, and the Claude Code subscription only seeds the Maestro lane's --model preference because Hermes cannot spend it.",
+            "Explain the shipped recommendations as editable editorial defaults, not benchmarks or allowlists: ultrabrain prefers Claude Fable 5.2, GPT-6.2 Astra, then Claude Opus 5.5 at xhigh; deep prefers Claude Opus 5.5, GPT-6.2 Sol, then Kimi K3.1 Pro at high; architect prefers Claude Opus 5.5, GPT-6.2 Astra, Claude Fable 5.2, then Kimi K3.1 Pro at xhigh; unspecified-high prefers GPT-6.2 Sol, Claude Opus 5.5, then Kimi K3.1 Pro; unspecified-low prefers GLM-5.3, DeepSeek V4.1 Flash, GPT-6.2 Sol, then Claude Sonnet 5.5 at low; quick prefers GLM-5.3 Flash, GPT-6 Luna, Claude Haiku 5.5, then Kimi K3.1 Pro at low; writing prefers Claude Opus 5.5, Claude Sonnet 5.5, Kimi K3.1 Pro, then Gemini 4 Argon; visual-engineering prefers Claude Fable 5.2, Claude Opus 5.5, Gemini 4 Argon, then Kimi K3.1 Pro; artistry prefers Gemini 4 Argon, Claude Opus 5.5, Claude Fable 5.2, then Kimi K3.1 Pro; capable prefers Claude Opus 5.5, GPT-6.2 Sol, Claude Fable 5.2, then Kimi K3.1 Pro at medium; simple-work prefers GPT-6 Luna, Claude Haiku 5.5, then DeepSeek V4.1 Flash at low; deep-work prefers Claude Opus 5.5 then GPT-6.2 Sol at max; google-search prefers Gemini 4 Argon, GPT-6.2 Sol, then Claude Opus 5.5 at medium; x-search prefers Grok 4.7, Kimi K3.1 Pro, then Gemini 4 Argon at high; review prefers GPT-6.2 Sol, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; swarm prefers DeepSeek V4.1 Flash, GLM-5.3 Flash, then GPT-6 Luna at low; forensics prefers GPT-6.2 Astra, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; and synthesize prefers Claude Opus 5.5 and GPT-6.2 Sol at xhigh, then Gemini 4 Argon at high. The last six are opt-in: no role or task scale selects them. Each chain names the current generation of a model line; a superseded generation (Fable 5, Fable 5.1, Opus 5, GLM 5.2, DeepSeek V3.2, GPT-5.6 Luna, GPT-5.6 Sol, GPT-5.6 Terra, GPT-6 Sol, GPT-6 Astra, GPT-6.1 Sol, Claude Haiku 4.5, Kimi K3, Grok Code Fast, Gemini 3.1 Pro) or a retired line (Qwen3-Coder) is kept only by a machine-level chain override. Chain customization is a config edit: a category written into ~/.omh/routing/model-chains.json (mixture_chain_overrides/v1, seeded by omh setup) replaces that chain for routing, fallback, and HUD labels without touching code. The interactive omh setup (or, in chat, `omh model-chains provider set <id> <kind>` for one provider; the subscription answer comes only from interactive setup) also records which providers the machine holds and whether it has a Claude Code subscription in ~/.omh/routing/providers.json (provider_entitlements/v1); every chain is then reordered so served entries lead, nothing is removed, and the Claude Code subscription only seeds the Maestro lane's --model preference because Hermes cannot spend it.",
             "For X/Twitter scraping or trend analysis, keep x_platform_data as a domain affinity rather than a role alias: prefer confirmed-active Grok, then Kimi K3.1 Pro, then Gemini, without removing the rest of the route or overriding an explicit model.",
-            "When a recommendation head is missing, choose the first confirmed-active owner-compatible candidate in that chain. Only after every selected category, role-slot, and domain chain is exhausted, consult the shared final order Claude Opus 5.5 then GPT-6.1 Sol. If no candidate is confirmed active anywhere, keep the selector on its owner's native default model and let the rest of OMH setup finish without a model-config write.",
+            "When a recommendation head is missing, choose the first confirmed-active owner-compatible candidate in that chain. Only after every selected category, role-slot, and domain chain is exhausted, consult the shared final order Claude Opus 5.5 then GPT-6.2 Sol. If no candidate is confirmed active anywhere, keep the selector on its owner's native default model and let the rest of OMH setup finish without a model-config write.",
             "Give provider-specific native next actions without claiming provider readiness: use installed Hermes flows for OpenAI OAuth/OpenAI Codex, Anthropic or an existing Claude provider, Qwen OAuth or Alibaba, Gemini/Google/Vertex, Grok/xAI, Kimi, GLM/Z.AI, DeepSeek, or an already-working custom provider; preserve working alternatives.",
+            "Onboarding mode: when the conversation opens with OMH's onboarding message (the person ran `omh setup` and accepted model setup), run these steps in order, one question at a time: (1) inventory Hermes' main model, configured providers, credential pools, and the provider key environment variable NAMES that are present, never values; (2) ask which of those to use and whether to add one; (3) for a provider with no key, name the exact command for another terminal (`hermes auth add <provider>`, or `hermes model` for OAuth/login), wait until the person says done, then re-check; (4) set the main model and at most one fallback with `omh setup --model-setup ... --fallback-model <provider>/<model>`, previewed and digest-bound like aliases (no fallback when only one provider exists); (5) set the category chains from the shipped recommendations, ordered to the providers present, with `omh model-chains provider set` and `omh model-chains show`; (6) show one combined preview, apply only after a yes, then re-read the configuration and show it; (7) close by saying that to change any of this later, the person can just say it in chat. The rules above still hold: no secrets in chat, diff approval, no network probes.",
             "Closing step: once model routing/chains are confirmed, ask once whether the user also wants to set up coding delegation (the `maestro` lane) for an external coding CLI -- do not ask before model setup is done and never auto-enable it. Point at `omh coding executor-skills --profile <profile>` for skill-set discovery, `~/.omh/routing/dispatch-models.json` for an optional per-owner model preference, and the `ulw-maestro` skill for the handoff itself; name Codex and Claude Code neutrally rather than favoring either.",
         ),
         why_this_exists=(
@@ -9544,7 +9579,7 @@ _DEFINITIONS = [
         ),
         recovery_notes=(
             "If discovery is absent, truncated, unreadable, or layout_unverified, name that source state and continue with manual confirmed-active input instead of scanning more broadly.",
-            "If a provider serves only dated snapshot ids (`gpt-6.1-sol-YYYY-MM-DD`), confirm the dated id as active and keep it as served: OMH reads a trailing `-YYYY-MM-DD` as the base alias for recommendation chains, HUD labels, prices, and calibration, so the base's chain position applies without renaming the id; a date on a base no chain names still resolves nothing.",
+            "If a provider serves only dated snapshot ids (`gpt-6.2-sol-YYYY-MM-DD`), confirm the dated id as active and keep it as served: OMH reads a trailing `-YYYY-MM-DD` as the base alias for recommendation chains, HUD labels, prices, and calibration, so the base's chain position applies without renaming the id; a date on a base no chain names still resolves nothing.",
             "If a preferred Kimi, Claude, OpenAI, GLM, DeepSeek, Grok, or Gemini candidate is missing, preserve it as inactive and try the next confirmed-active compatible editorial candidate; do not substitute for an explicit unavailable choice.",
             "If no compatible model is confirmed active, record owner_default, finish applicable OMH setup without a model-config write, and name the relevant Hermes-native provider/auth or user-override next action.",
             "If the diagnosed Hermes config cannot be read, report the read failure and stop before proposing a diff; if the config digest changes or the user rejects the diff, do not apply it.",
@@ -10529,7 +10564,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "app-debugging",
-        "Application code misbehaves -- a wrong value, a flaky test, a lost update: reproduce it first, form competing hypotheses, discriminate them with the cheapest observation, and only then fix the demonstrated root cause.",
+        "Application code misbehaves: a wrong value, a flaky test, a lost update; reproduce it first, form competing hypotheses, discriminate them with the cheapest observation, and only then fix the demonstrated root cause.",
         (
             "app-debugging",
             "app debugging",
@@ -10610,6 +10645,8 @@ _DEFINITIONS.append(
             "Load `references/hypothesis-and-race-method.md` for the hypothesis table, flaky-test tactics, and race patterns instead of improvising them.",
             "Pick the next observation by cost and by how many hypotheses its result eliminates, and record the eliminations.",
             "Keep reproduction, root cause, fix, and verification as separate observed states.",
+            # OpenAI "Prompting GPT-6.2 in Codex" (read 2026-11-20): effort follows investigation depth.
+            "Size the effort to the depth and name it: a quick survey of one area runs at medium; tracing one suspected cause across several systems runs at high (category `deep`); several causes that may interact run at xhigh (category `forensics`). Finished means the reported symptom's root cause is shown by an observation and the fix passes the same reproduction; be exhaustive in the hypothesis table and its eliminations, not in reading code no hypothesis touches.",
             "Count a fix as failed when an executed run of the same reproduction command still shows the original symptom or shows a new symptom the fix caused rather than unmasked; planned runs and other commands do not count. After the third failed fix, prepare no fourth; re-examine the architecture assumptions every fix shared, per the method reference, and offer the user the next step as a question.",
             shared_test_authoring_line(
                 "Before the fix handoff names a regression test, ",
@@ -10678,7 +10715,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "commit-pr-authoring",
-        "Commit message or pull-request body to write for a change: draft it in the repository's own convention, with `Tested:` listing only commands observed to run and everything prepared but not run under `Not-tested:`.",
+        "Commit message or pull-request body to write: draft it for the change in the repository's own convention, with `Tested:` listing only commands observed to run and everything prepared but not run under `Not-tested:`.",
         (
             "commit-pr-authoring",
             "commit message",
@@ -10803,7 +10840,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "git-workflow",
-        "Git branch in trouble -- a merge conflict, a commit that broke something, history to repair: plan the resolution, the bisect, or the rewrite, name what is already pushed first, and force-push only with `--force-with-lease`.",
+        "Git branch in trouble: a merge conflict, a commit that broke something, history to repair; plan the resolution, the bisect, or the rewrite, name what is already pushed first, and force-push only with `--force-with-lease`.",
         (
             "git-workflow",
             "git workflow",
@@ -10942,7 +10979,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "relational-db",
-        "Database work on a relational store -- a slow query, an index to size, a migration on a big table, a lock taken during deploy, N+1 queries: plan it with the checks that prove it safe, and never call a migration ready without its lock behaviour and rollback.",
+        "Database work on a relational store: a slow query, an index to size, a migration on a big table, a lock taken during deploy, N+1 queries; plan it with the checks that prove it safe, and never call a migration ready without its lock behaviour and rollback.",
         (
             "relational-db",
             "relational database",
@@ -11083,7 +11120,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "security-event-response",
-        "Security event on the code already shipped -- a CVE in a dependency, a secret committed to the repo, a license question, an advisory: triage reachability and severity, contain in order, and never close a leaked secret before its rotation is observed.",
+        "Security event on the code already shipped: a CVE in a dependency, a secret committed to the repo, a license question, an advisory; triage reachability and severity, contain in order, and never close a leaked secret before its rotation is observed.",
         (
             "security-event-response",
             "security event response",
@@ -11227,7 +11264,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "agent-instructions",
-        "Agent instruction file for a repo -- AGENTS.md, CLAUDE.md, a Cursor rule: write or update what an agent cannot derive from the code, inside a marked region, with every command verified or marked unverified and no counts that drift.",
+        "Agent instruction file for a repo: AGENTS.md, CLAUDE.md, or a Cursor rule; write or update what an agent cannot derive from the code, inside a marked region, with every command verified or marked unverified and no counts that drift.",
         (
             "agent-instructions",
             "agents.md",
@@ -11289,6 +11326,8 @@ _DEFINITIONS.append(
         quality_bar=(
             "Inventory every instruction file first and respect closest-file-wins nesting.",
             "Load `references/instruction-file-method.md` for the section order, the marker convention, the verified and unverified command form, and the drift rules instead of recalling them.",
+            # OpenAI "Prompting GPT-6.2 in Codex" (read 2026-11-20): what belongs in AGENTS.md.
+            "Keep a line only if an agent cannot infer it from the code, tests or docs; keep the workflows the project depends on, and leave routine how-to decisions out.",
             "Record each pitfall with what it cost, so a reader can tell a scar from a preference.",
             "Pair every generated file with its source, its regenerate command, and the gate that checks it.",
             "Keep prepared, verified, and written as separate states for every command and section.",
@@ -11346,7 +11385,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "iac-change",
-        "Infrastructure-as-code change -- Terraform, OpenTofu, Pulumi, a Kubernetes manifest, a Helm chart: read the drift, the blast radius and the cost delta from the saved plan, then stage the apply behind a health gate with a rollback per stage.",
+        "Infrastructure-as-code change: Terraform, OpenTofu, Pulumi, a Kubernetes manifest, a Helm chart; read the drift, the blast radius and the cost delta from the saved plan, then stage the apply behind a health gate with a rollback per stage.",
         (
             "iac-change",
             "iac change",
@@ -11491,7 +11530,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "data-pipelines",
-        "Data pipeline work -- an ETL or streaming job, a backfill or replay, duplicate events, a schema change downstream, a lineage question, a data-quality regression: make every rerun idempotent, bound every replay, and gate each load on observed checks.",
+        "Data pipeline work on an ETL or streaming job: a backfill or replay, duplicate events, a schema change downstream, a lineage question, a data-quality regression; make every rerun idempotent, bound every replay, and gate each load on observed checks.",
         (
             "data-pipelines",
             "data pipeline",
@@ -11636,7 +11675,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "model-finetuning",
-        "Fine-tuning a model on your own data -- SFT, DPO, RLVR or a LoRA adapter: decide first whether prompting or retrieval already closes the gap, choose the method from the data you have, and promote a checkpoint only when it beats the untuned baseline on a held-out eval.",
+        "Fine-tuning a model on your own data: SFT, DPO, RLVR or a LoRA adapter; decide first whether prompting or retrieval already closes the gap, choose the method from the data you have, and promote a checkpoint only when it beats the untuned baseline on a held-out eval.",
         (
             "model-finetuning",
             "model finetuning",
@@ -11782,7 +11821,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "mobile-release",
-        "Releasing an iOS or Android app through the stores -- signing, the privacy manifest, a TestFlight or Play beta, a staged rollout, a hotfix: prepare each gate the store enforces, and plan the halt and the next build before the rollout starts, because a store release cannot be rolled back.",
+        "Releasing an iOS or Android app through a store: signing, the privacy manifest, a TestFlight or Play beta, a staged rollout, a hotfix; prepare each gate the store enforces, and plan the halt and the next build before the rollout starts, because a store release cannot be rolled back.",
         (
             "mobile-release",
             "mobile release",
@@ -12061,7 +12100,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "data-share-review",
-        "Before data leaves the team -- a dataset, log, ticket export or transcript excerpt bound for a vendor, a public issue, a model provider or a training corpus: classify every field, minimize first, pseudonymize with the mapping kept local, and call it redacted only after an observed residual scan.",
+        "Before data leaves the team: a dataset, log, ticket export or transcript excerpt bound for a vendor, a public issue, a model provider or a training corpus; classify every field, minimize first, pseudonymize with the mapping kept local, and call it redacted only after an observed residual scan.",
         DATA_SHARE_REVIEW_PHRASES,
         (
             "Use when a dataset, log bundle, ticket or CRM export, or transcript excerpt is about to leave the team -- to a "
@@ -12188,7 +12227,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "release-cut",
-        "Shipping a versioned release -- tag it, stage it behind a canary, or roll back the last deploy: decide what goes in, the version, the rollout stages, and a rollback with its trigger and exact command before it is needed.",
+        "Shipping a versioned release: tag it, stage it behind a canary, or roll back the last deploy; decide what goes in, the version, the rollout stages, and a rollback with its trigger and exact command before it is needed.",
         (
             "release-cut",
             "release cut",
@@ -12321,7 +12360,7 @@ _DEFINITIONS.append(
 _DEFINITIONS.append(
     SkillDefinition(
         "spend-gate",
-        "Spending money on the user's behalf -- a card checkout, an HTTP 402 or pay-per-request call, a wallet transfer, a booking, a paid data endpoint: show a pre-spend card (payee, total with fees, cap, refund terms, approver) first, and call it done only on an observed receipt.",
+        "Spending money on the user's behalf: a card checkout, an HTTP 402 or pay-per-request call, a wallet transfer, a booking, a paid data endpoint; show a pre-spend card (payee, total with fees, cap, refund terms, approver) first, and call it done only on an observed receipt.",
         SPEND_GATE_PHRASES,
         (
             "Use before the agent moves money on any rail: a card checkout in the browser, an HTTP 402 or pay-per-request "
@@ -12484,6 +12523,7 @@ _DEFINITIONS.extend(
         REPRO_AUDIT_DEFINITION,
         SYSTEMATIC_REVIEW_DEFINITION,
         MODEL_COMPRESSION_DEFINITION,
+        SKILL_EVAL_DEFINITION,
         GEOSPATIAL_ANALYSIS_DEFINITION,
         SPRITE_FORGE_DEFINITION,
         BIOMEDICAL_EVIDENCE_DEFINITION,

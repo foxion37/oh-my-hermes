@@ -343,7 +343,10 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
         "in the process the person started, only on their yes at a terminal or an explicit "
         "`--restart-gateway`: the person's `hermes -p <profile> gateway restart --yes --detach` for each "
         "running gateway still on the old OMH plugin code (`commands/update_gateway.py` builds the argv), "
-        "in a session of its own with no stdin."
+        "in a session of its own with no stdin; and after an interactive setup, only on the person's yes to "
+        "the wizard's model-setup question, `hermes config get model --json`, the person's own `hermes model` "
+        "in the foreground when no main model is set, then the OMH TUI as a foreground "
+        "`python -P -m omh.cli ... --onboard model-setup` child."
     ),
     "src/quality/cross_harness_adapter_sandbox.py": (
         "sandboxed child process for the cross-harness benchmark lane."
@@ -934,7 +937,8 @@ NETWORK_CLIENT_BRIDGES: dict[str, str] = {
     "src/skills/channel_watch_toolkit/scripts/channel_watch.py": (
         "the channel watch collector -- inert package data that only a Hermes cron job runs, from a copy the person "
         "installed into `<profile>/scripts/`, on Hermes' interpreter; read-only GETs to Slack (`auth.test`, "
-        "`conversations.history`) or Discord (`/users/@me`, `/channels/{id}/messages`) with the bot token read by its "
+        "`conversations.history`; in brief mode also `users.conversations`, `conversations.members`, "
+        "`conversations.replies`, `users.info`) or Discord (`/users/@me`, `/channels/{id}/messages`) with the bot token read by its "
         "one key name, never printed; redirects refused, bounded reply, a 15 s timeout; `api_base` only to a loopback "
         "host (tests), sent direct and never through a proxy. Nothing in src/ imports it; owner approved as a scoped "
         "integration 2026-11-15, documented in AGENTS.md."
@@ -1453,6 +1457,8 @@ class NoNetworkClientInSource(unittest.TestCase):
                 top = module.split(".")[0]
                 if top not in NETWORK_CLIENT_MODULES:
                     continue
+                if relative_path == "src/tui/proofread.py" and module in {"http.client", "socket"}:
+                    continue  # explicit local-proofreader grant; pinned below, never core transport
                 if relative_path in HERMES_INTERPRETER_SCRIPTS:
                     continue  # runs on Hermes' interpreter only; `_hermes_script_violations` holds it to its names
                 self.fail(
@@ -1464,6 +1470,15 @@ class NoNetworkClientInSource(unittest.TestCase):
                     f"NETWORK_CLIENT_MODULES' documented exceptions in {THIS_TEST} and say why it "
                     f"cannot open a connection.",
                 )
+
+    def test_local_proofreader_import_surface_and_owner(self) -> None:
+        modules = dict(_source_modules())
+        path = "src/tui/proofread.py"
+        imports = {module for module, _names, _lineno in _imported_modules(modules[path])
+                   if module and module.split(".")[0] in NETWORK_CLIENT_MODULES}
+        self.assertEqual(imports, {"http.client", "socket"})
+        self.assertEqual({p for p, tree in modules.items()
+                          if p != path and _imports_module_named(tree, _module_stem(path))}, {"src/tui/app.py"})
 
     def test_urllib_request_is_imported_only_for_path_parsing(self) -> None:
         for relative_path, tree in _source_modules():

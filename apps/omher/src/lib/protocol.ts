@@ -75,6 +75,18 @@ export interface Skill {
   description: string;
 }
 
+/** One slash command a bot answers, from Hermes' own registry (`commands.list`): the composer's `/` menu. */
+export interface SlashCommand {
+  name: string;
+  description: string;
+  /** The arguments it takes (`<file>`, `[on|off]`), "" for none. */
+  hint?: string;
+  /** "command" or "skill"; omher lists commands only, the skills come from `skills.list`. */
+  kind?: string;
+  /** The sigil the person types before the name. */
+  prefix?: string;
+}
+
 /** One row of a bot's main chat. `ts` is seconds since epoch (float). */
 export interface Msg {
   id: string;
@@ -85,6 +97,12 @@ export interface Msg {
   reply_to?: ReplyRef | null;
   /** assistant rows: the answer to an automation's delivered result (its inbound row is not sent). */
   watch?: WatchTag;
+  /** user rows: steered into a running turn (Hermes' mid-turn steer), shown with its "Sent to …" line. */
+  steered?: boolean;
+  /** steered rows: when the turn read it (the bot's next row's time, unix s), when there is such a row. */
+  steer_read?: number;
+  /** steered rows: the first line the bot wrote after it in that turn (its note or its answer). */
+  steer_reply?: string;
 }
 
 /** The automation whose delivered result a Bot Chat answer replies to: its name and when it came in (unix s). */
@@ -271,10 +289,22 @@ export interface ChatOpenResult {
 /** A Hermes chat the bridge created in a picked folder (SESSIONS > oh-my-hermes). */
 export interface FolderOpenResult {
   session: string;
+  /** Hermes' stored id of that session: what `folder.resume` takes after a restart (an older bridge sends none). */
+  stored?: string;
+  /** False when omher's folder chat record could not be written: `folder.resume` will refuse it after a restart,
+   *  so the row is not attached again by itself (an older bridge sends none). */
+  recorded?: boolean;
   cwd: string;
   model: string;
   provider: string;
   reasoning: string;
+}
+
+/** A folder chat `folder.open` made before a restart, attached again (`folder.resume`): its messages come back. */
+export interface FolderResumeResult extends FolderOpenResult {
+  stored: string;
+  messages: Msg[];
+  running: boolean;
 }
 
 /** op name -> { params, result }. `bot` is always the profile name. `session` (optional) names a folder chat
@@ -292,7 +322,7 @@ export interface OpMap {
   /** Steer the main chat's running turn (Hermes' `session.steer`): `queued` = taken, `rejected` = not (no turn runs,
    *  or Hermes refused). The bridge never sends a refused steer another way. */
   /** queued = taken; rejected = no agent saw it (safe to send normally); uncertain = may already be with the agent */
-  "chat.steer": { params: { bot: string; text: string }; result: { status: "queued" | "rejected" | "uncertain" } };
+  "chat.steer": { params: { bot: string; text: string; session?: string }; result: { status: "queued" | "rejected" | "uncertain" } };
   "approval.respond": {
     params: { bot: string; request_id: string; choice: ApprovalChoice; session?: string };
     result: Record<string, never>;
@@ -304,6 +334,8 @@ export interface OpMap {
   };
   "folder.open": { params: { bot: string; cwd: string }; result: FolderOpenResult };
   "folder.close": { params: { bot: string; session: string }; result: Record<string, never> };
+  /** Only a session the bridge made for that folder (its saved title `omher · <folder name>`); any other: not_found. */
+  "folder.resume": { params: { bot: string; cwd: string; stored: string }; result: FolderResumeResult };
   "elsewhere.list": { params: { bot: string }; result: { sessions: Away[] } };
   "elsewhere.peek": {
     params: { bot: string; session_id: string; limit?: number };
@@ -370,6 +402,8 @@ export interface OpMap {
   "bots.info": { params: { bot: string }; result: BotInfo };
   /** The bot's skills from its profile folder (read-only), sorted by name. */
   "skills.list": { params: { bot: string }; result: { skills: Skill[] } };
+  /** The slash commands Hermes answers for this bot, from Hermes' own registry (read-only). */
+  "commands.list": { params: { bot: string }; result: { commands: SlashCommand[] } };
   /** Channel names the bot already knows from its own Slack / Discord sessions, by channel id (read-only). */
   "links.places": { params: { bot: string }; result: { places: LinkPlaces } };
   /** Side panel, all read-only: the bot's latest terminal runs, the git worktrees it worked in, one diff. */
@@ -650,7 +684,8 @@ export type BridgeEvent =
   | (EventBase & { event: "bot.status"; status: BotStatus; running: boolean })
   | (EventBase & { event: "elsewhere.update" })
   | (EventBase & { event: "bots.update" })
-  /** After `bots.restart` said ok: the bot is attached again (`ok`), or did not come back in time. */
+  /** After `bots.restart` said ok: the bot is attached again (`ok`), or did not come back in time. Also `ok` when a
+   *  bot whose gateway went away without omher restarting it (an update, a relaunch) is attached again. */
   | (EventBase & { event: "bot.restarted"; ok: boolean })
   /** omher accounts changed (added, removed, made active); the Accounts views re-read accounts.list. */
   | (EventBase & { event: "accounts.update" })
@@ -681,6 +716,8 @@ export type BridgeEvent =
   /** A plugin folder appeared in the bot's profile (the bot installed it from chat). */
   | (EventBase & { event: "plugin.added"; name: string; title: string; tools: number; hooks: number; ts: number })
   | (EventBase & { event: "plugins.update" })
+  /** omher set up its Slack briefing for this bot (the `omher-brief` automation); `owner_name`: whom it briefs. */
+  | (EventBase & { event: "brief.ready"; owner_name: string | null })
   // a SESSIONS chat: a message sent while a turn ran waits until the agent takes it (or Stop drops it)
   | (EventBase & { event: "message.queued" | "message.taken" | "message.dropped"; id: string })
   /** A SESSIONS file edit's change, per file (replaces what an earlier `tool.diff` of the same step said). */

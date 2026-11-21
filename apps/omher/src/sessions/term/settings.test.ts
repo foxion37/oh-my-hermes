@@ -12,9 +12,9 @@ describe("terminal settings", () => {
     resetTermSettings();
   });
 
-  it("nothing stored reads as the defaults a terminal had before there were settings", () => {
+  it("nothing stored reads as the defaults: the bundled font (fontFamily \"\") at Otty's 13px, the rest as before there were settings", () => {
     expect(readTermSettings()).toEqual(TERM_DEFAULTS);
-    expect(TERM_DEFAULTS).toMatchObject({ fontSize: 12.5, lineHeight: 1.2, cursorBlink: true, scrollback: 5000, gpu: "auto" });
+    expect(TERM_DEFAULTS).toMatchObject({ fontFamily: "", fontSize: 13, lineHeight: 1.2, cursorBlink: true, scrollback: 5000, gpu: "auto" });
   });
 
   it("a stored value of the wrong type or out of range falls back or is clamped, field by field", () => {
@@ -61,6 +61,15 @@ describe("terminal settings", () => {
     expect(parseTermSettings({}).optionIsMeta).toBe(true);
   });
 
+  it("confirm multi-line paste: a boolean, on by default; settings saved before it existed read as on", () => {
+    expect(TERM_DEFAULTS.confirmPaste).toBe(true);
+    expect(parseTermSettings({ confirmPaste: false }).confirmPaste).toBe(false);
+    for (const bad of ["no", 0, null, [], {}]) expect(parseTermSettings({ confirmPaste: bad }).confirmPaste).toBe(true);
+    expect(parseTermSettings(JSON.stringify({ copyOnSelect: true, rightClickPaste: true })).confirmPaste).toBe(true);
+    expect(writeTermSettings({ confirmPaste: false })).toMatchObject({ confirmPaste: false, rightClickPaste: false });
+    expect(readTermSettings().confirmPaste).toBe(false);
+  });
+
   it("copy on select and right-click paste: booleans, off by default; anything else is the default (off)", () => {
     expect(TERM_DEFAULTS).toMatchObject({ copyOnSelect: false, rightClickPaste: false });
     expect(parseTermSettings({ copyOnSelect: true, rightClickPaste: true })).toMatchObject({ copyOnSelect: true, rightClickPaste: true });
@@ -77,10 +86,24 @@ describe("terminal settings", () => {
     expect(writeTermSettings({ rightClickPaste: true })).toMatchObject({ copyOnSelect: true, rightClickPaste: true });
   });
 
+  it("Kitty keys and images: booleans, on by default; anything else is the default (on)", () => {
+    expect(TERM_DEFAULTS).toMatchObject({ kittyKeys: true, images: true });
+    expect(parseTermSettings({ kittyKeys: false, images: false })).toMatchObject({ kittyKeys: false, images: false });
+    for (const bad of ["no", 0, null, [false], {}]) {
+      expect(parseTermSettings({ kittyKeys: bad }).kittyKeys).toBe(true);
+      expect(parseTermSettings({ images: bad }).images).toBe(true);
+    }
+    // settings saved before these fields existed read as on
+    expect(parseTermSettings(JSON.stringify({ themeDark: "dracula", copyOnSelect: true }))).toMatchObject({ kittyKeys: true, images: true, copyOnSelect: true });
+    // one does not switch the other
+    expect(writeTermSettings({ kittyKeys: false })).toMatchObject({ kittyKeys: false, images: true });
+    expect(writeTermSettings({ images: false })).toMatchObject({ kittyKeys: false, images: false });
+  });
+
   it("font size 9 to 24, line height 1 to 2, scrollback 1,000 to 50,000 rows: clamped, or the default for a wrong type", () => {
     expect(parseTermSettings({ fontSize: 2, lineHeight: 0.4, scrollback: 9e9 })).toMatchObject({ fontSize: 9, lineHeight: 1, scrollback: 50000 });
     expect(parseTermSettings({ fontSize: 99, lineHeight: 7, scrollback: 25000.4 })).toMatchObject({ fontSize: 24, lineHeight: 2, scrollback: 25000 });
-    expect(parseTermSettings({ fontSize: "16", lineHeight: null, scrollback: "many" })).toMatchObject({ fontSize: 12.5, lineHeight: 1.2, scrollback: 5000 });
+    expect(parseTermSettings({ fontSize: "16", lineHeight: null, scrollback: "many" })).toMatchObject({ fontSize: 13, lineHeight: 1.2, scrollback: 5000 });
   });
 
   it("a font name keeps only what a font name is made of, and a theme id of the wrong type is omher's own", () => {

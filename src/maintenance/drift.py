@@ -1011,7 +1011,12 @@ def count_metrics() -> tuple[CountMetric, ...]:
             # Its second review round: billions of money, data or volume, game, pixel-art and 3D bit widths,
             # grid transformers and firmware quantization stay off it (+18).
             # Its third review round: two billions of money or data, each followed by a noun, stay off it (+4).
-            expected=1512,
+            # dag-ulw backlogs: one bug, two and three listed bugs, a which-first question, a review, a backlog to
+            # prioritize, explain, hold back or put off, a fenced list, chores, a reading list, and a fix in or a
+            # check of the current directory or branch stay off a graph and off live information (+13).
+            # skill-eval: a chess, tennis, job-interview and Korean sales skill stay off the host-fit check (+4).
+            # Its review round: a person's skill at using Codex stays off it too (+1).
+            expected=1545,
             # The one reviewed test pin. Every other test compares its payload
             # against build_routing_precision_demo() rather than a literal.
             sites=("tests/test_routing_precision.py",),
@@ -1620,7 +1625,14 @@ def count_metrics() -> tuple[CountMetric, ...]:
             # Its second review round drops the Korean 4-bit case, which falls back to main (-1).
             # Korean design routing: thirty frontend-design requests, whole-request redesigns and phone-viewport
             # faults that reach frontend, and the look-alikes that keep their verdict (+30).
-            expected=1329,
+            # dag-ulw backlogs: five listed code backlogs reach a graph, four listed look-alikes keep their owner
+            # (GitHub issues, a named agent, failing test files, one fault's notes), and two live lookups said with
+            # "current" stay live information (+11).
+            # skill-eval: seven host-fit checks in English and Korean reach the skill, and five asks keep
+            # skill-health, skill-scout and agent-evaluation (+12).
+            # Its review round: an agent skill loading in Codex and SKILL.md compatibility reach it, and a
+            # Korean staff assessment keeps deep-interview (+3).
+            expected=1352,
             # The one reviewed test pin. Every other test compares its payload
             # against build_routing_precision_demo() rather than a literal.
             sites=("tests/test_routing_precision.py",),

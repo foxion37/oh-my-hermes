@@ -61,9 +61,11 @@ from ..omh_identities import (
     extract_identity_marker,
     identity_catalog_context,
     identity_context_payload,
+    bound_identity,
 )
 from ..dispatch_outcomes import unacknowledged_outcomes
 from ..runtime_reader import read_omh_activity, read_omh_hud, read_omh_status, read_omh_todo
+from ..defect_fix_method import METHOD_BLOCK, asks_to_fix_code, claim_method_block
 from ..skill_shortlist import claim_candidate_line, skill_candidate_line, skill_candidates_for_turn
 from .session_attendance import note_session_platform
 from .verify_hooks import clear_round_end_answer
@@ -1099,11 +1101,22 @@ def _turn_context(**kwargs) -> dict[str, object] | None:
         )
         if claim_candidate_line(session_id, candidates):
             context_parts.append(skill_candidate_line(candidates))
+    # A request to fix a code defect gets the debugging and verification
+    # method itself, once per session: Hermes' skills index tells the model
+    # not to open process skills, so app-debugging stays closed on exactly
+    # this turn (`defect_fix_method`). Every other turn gets nothing here.
+    if include_awareness and not capability_off_context and asks_to_fix_code(request_message):
+        if claim_method_block(session_id):
+            context_parts.append(METHOD_BLOCK)
 
     # The person's own text, so a marker inside a quoted reply or backfill is
     # someone else's and sets nothing. A host turn keeps its frame here, as it
     # kept the whole turn before.
-    marker = extract_role_marker(person_text)
+    selected_identity = bound_identity(session_id, omh_home, hermes_home)
+    if selected_identity is not None and selected_identity.get("status") != "available":
+        return {"block": True, "reason": "OMH selected identity cannot be delivered: "
+                + str(selected_identity.get("status"))}
+    marker = "" if selected_identity is not None else extract_role_marker(person_text)
     if marker:
         role_payload = role_context_payload(marker)
         if role_payload["status"] == "available":
@@ -1133,9 +1146,12 @@ def _turn_context(**kwargs) -> dict[str, object] | None:
     # no second injection path -- and it is the ONLY place prompt text goes:
     # nothing below or in `payload` copies it. The marker extract keeps the
     # first marker only, so an identity lands exactly once.
-    identity_marker = extract_identity_marker(request_message)
-    if identity_marker:
-        identity_payload = identity_context_payload(identity_marker, omh_home=omh_home)
+    identity_marker = "" if selected_identity is not None else extract_identity_marker(request_message)
+    if identity_marker or selected_identity is not None:
+        identity_payload = selected_identity or identity_context_payload(
+            identity_marker if ":" in identity_marker else f"custom:{identity_marker}", omh_home=omh_home)
+        if selected_identity is None:
+            identity_payload["identity"] = identity_marker
         if identity_payload["status"] == "available":
             context_parts.append(
                 "\n".join(

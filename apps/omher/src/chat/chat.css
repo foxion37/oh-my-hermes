@@ -98,6 +98,103 @@
   color: var(--muted);
   font-size: 12px;
 }
+/* the timeline's way back (TimelineJump.tsx): 0-high sticky anchors at the top and the bottom of the column, so the
+   pinned own message and the Jump to bottom pill take no room and never move the messages (the column's gap is undone) */
+.thread > .tl-anchor {
+  position: sticky;
+  height: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.thread > .tl-anchor-top {
+  top: -18px;
+  margin-bottom: -18px;
+}
+.thread > .tl-anchor-bottom {
+  bottom: -20px;
+  margin-top: -18px;
+}
+/* the top edge fades the messages under it; with the header there, it sits on a solid band instead */
+.thread.pin-on {
+  mask-image: none;
+}
+.tl-pin {
+  pointer-events: auto;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 0 8px;
+  background: linear-gradient(to bottom, var(--bg) 70%, transparent);
+  font: inherit;
+  cursor: pointer;
+  animation: pop 0.16s ease both;
+}
+.tl-pin-t {
+  max-width: min(70%, 560px);
+  padding: 3px 10px;
+  border-radius: var(--r);
+  background: var(--raise2);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-pin:hover .tl-pin-t {
+  color: var(--body);
+}
+.tl-jump {
+  pointer-events: auto;
+  position: absolute;
+  /* centred without a transform: the pop animation owns transform */
+  left: 0;
+  right: 0;
+  bottom: 32px;
+  width: max-content;
+  margin: 0 auto;
+  padding: 5px 12px;
+  border-radius: var(--r);
+  /* filled with the accent, not the bubbles' grey or the raised surface: it has to read over a bot bubble in both
+     themes (dark: the pale accent with the page's dark ink) */
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  /* lifted by a soft shadow only: no ring */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  animation: pop 0.16s ease both;
+}
+.tl-jump:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #fff);
+}
+/* light: the deeper accent carries white text (about 5:1) */
+[data-theme="light"] .tl-jump {
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+[data-theme="light"] .tl-jump:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+.tl-jump:focus-visible,
+.tl-pin:focus-visible .tl-pin-t {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.thread:focus {
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tl-pin,
+  .tl-jump {
+    animation: none;
+  }
+}
 /* consecutive messages from the same side sit close; a new turn gets air */
 .row-user + .row-user,
 .row-assistant + .row-assistant,
@@ -231,6 +328,21 @@
   font-size: 11px;
   color: var(--quiet);
 }
+/* a steer's reply: the bot's first words after it read it, one line under the Read line; long ones end in an
+   ellipsis inside the bubble's width instead of wrapping */
+.msg-steer-reply {
+  margin-top: 1px;
+  max-width: min(100% - 40px, max(70%, 380px), 640px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+/* the arrow in the UI font: a Korean font draws ↳ like the jamo ㄴ */
+.msg-steer-arrow {
+  margin-right: 4px;
+  font-family: var(--mono);
+}
 /* steer queue: a message held while the bot answers, with its ↵ mark before the bubble */
 .msg-line {
   display: flex;
@@ -246,8 +358,9 @@
   opacity: 0.72;
 }
 .sq-w {
-  position: relative;
   flex: none;
+  display: inline-flex;
+  gap: 4px;
   margin-top: calc((var(--fs-msg) * var(--lh-msg) + 18px - 24px) / 2);
 }
 .sq-mark {
@@ -255,13 +368,13 @@
   height: 24px;
   border-radius: var(--r-sm);
   font-size: 14px;
-  line-height: 24px;
+  line-height: 22px;
   color: var(--muted);
   background: var(--raise);
   border: 1px solid var(--line);
 }
 .sq-mark:hover,
-.sq-mark.on {
+.sq-mark:focus-visible {
   color: var(--ink);
   background: var(--raise2);
 }
@@ -269,74 +382,26 @@
   opacity: 0.5;
   cursor: default;
 }
-.sq-menu {
-  position: absolute;
-  z-index: 30;
-  top: 0;
-  right: calc(100% + 6px);
-  width: 150px;
-  display: flex;
-  flex-direction: column;
-  background: var(--pop);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  padding: 4px;
-  box-shadow: var(--pop-shadow);
-}
-.sq-menu.up {
-  top: auto;
-  bottom: 0;
-}
-.sq-mi {
-  height: 26px;
-  padding: 0 8px;
-  border-radius: var(--r-sm);
-  font-size: 12px;
-  color: var(--body);
-  text-align: left;
-}
-.sq-mi:hover,
-.sq-mi:focus-visible {
-  background: var(--raise2);
-  color: var(--ink);
-  outline: 0;
-}
-.sq-mi.danger:hover,
-.sq-mi.danger:focus-visible {
-  color: var(--danger);
-}
-/* steer queue sessions: an item that is off says why, on its own line under its name */
-.sq-menu.why {
-  width: 220px;
-}
-.sq-mi.off {
-  height: auto;
-  min-height: 26px;
-  padding: 4px 8px;
+/* an action that is off (an agent with no steer; a message the agent has already) says why in its tooltip */
+.sq-mark.off {
   color: var(--quiet);
   cursor: not-allowed;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
 }
-.sq-mi.off:hover,
-.sq-mi.off:focus-visible {
+.sq-mark.off:hover {
   color: var(--quiet);
-  background: transparent;
+  background: var(--raise);
 }
-.sq-mi.off:focus-visible {
-  box-shadow: inset 0 0 0 1px var(--line);
+/* × drops the message: only while the pointer is on its row or a button there has focus */
+.sq-x {
+  opacity: 0;
+  transition: opacity 0.12s ease;
 }
-.sq-why {
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--muted);
-  white-space: normal;
+.msg.u:hover .sq-x,
+.sq-w:focus-within .sq-x {
+  opacity: 1;
 }
-.sq-why-all {
-  padding: 4px 8px 6px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--line);
+.sq-x:hover:not(.off) {
+  color: var(--danger);
 }
 /* Markdown in bubbles. One rhythm (8px between blocks), headings by size, code blocks as their own surface,
    tables that keep numbers on one line, GFM task lists without a second marker. */
@@ -566,6 +631,10 @@
   align-items: center;
   height: calc(var(--fs-msg) * var(--lh-msg) + 18px);
   padding: 0 14px;
+}
+/* the live activity line right under the dots: a small gap, so the two read as one live block */
+.row-typing.above-line {
+  margin-bottom: -20px;
 }
 [data-bubbles="open"] .msg.a.typing .b {
   padding: 0 2px;
@@ -937,4 +1006,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* who sent a user bubble in a read-only agent-to-agent chat (the parent agent): small, above the bubble */
+.msg-from {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  font-size: 11px;
+  color: var(--muted);
 }

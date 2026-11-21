@@ -162,7 +162,7 @@ describe("sessions restore", () => {
     expect(old.paused).toBeUndefined();
     expect(old.agentSession).toBeUndefined();
     expect(now).toMatchObject({ id: "s8", view: "chat", status: "exited", agentSession: "session-8c11e2bc-9f55-4bcb-a597-19ea472184e8" });
-    expect(((g.__omherSessionCalls ?? []) as { op: string }[]).filter((c) => c.op !== "reset" && !c.op.startsWith("file."))).toEqual([]);
+    expect(((g.__omherSessionCalls ?? []) as { op: string }[]).filter((c) => c.op !== "reset" && !c.op.startsWith("file.") && !c.op.startsWith("history."))).toEqual([]);
     // Restart: the old one starts DeepSeek Harness fresh in its folder, the new one continues its harness session
     await ss.restart("s7");
     await ss.restart("s8");
@@ -173,7 +173,9 @@ describe("sessions restore", () => {
     ]);
   });
 
-  it("continues Claude Code and Codex in the same folder and account, pauses the others, keeps ended ones; once only", async () => {
+  // TERMINALS (2026-11-16): chat-mode CLI sessions are replaced by bot threads; a saved one is kept (its chat and files)
+  // but never starts again by itself
+  it("a saved chat-mode session starts nothing by itself; a terminal one comes back paused; ended ones stay ended; once only", async () => {
     const g: Record<string, unknown> = {};
     const store = createStore(quietBridge());
     const ss = createSessions(new MockHost(g), () => store);
@@ -181,15 +183,11 @@ describe("sessions restore", () => {
     ss.restore(saved()); // a second restore in the same page load does nothing
     await new Promise((r) => setTimeout(r, 30));
     // file housekeeping (the saved attachments of sessions that are gone) starts no program
-    const calls = (g.__omherSessionCalls as { op: string; agent?: string; cwd?: string; resume?: string; account?: string }[]).filter((c) => c.op !== "reset" && !c.op.startsWith("file."));
-    expect(calls.map(({ op, agent, cwd, resume, account }) => ({ op, agent, cwd, resume, account }))).toEqual([
-      { op: "chat.start", agent: "claude", cwd: "/w/web-app", resume: "11111111-2222-4333-8444-555555555555", account: "work" },
-      { op: "chat.start", agent: "codex", cwd: "/w/api", resume: "codex-thread-1", account: undefined },
-    ]);
+    const calls = (g.__omherSessionCalls as { op: string; agent?: string; cwd?: string; resume?: string; account?: string }[]).filter((c) => c.op !== "reset" && !c.op.startsWith("file.") && !c.op.startsWith("history."));
+    expect(calls).toEqual([]);
     const by = (id: string) => ss.getState().list.find((r) => r.id === id)!;
-    expect(by("s2")).toMatchObject({ status: "running", view: "chat" });
-    // a chat agent last seen in its terminal view comes back as its chat
-    expect(by("s3")).toMatchObject({ status: "running", view: "chat" });
+    expect(by("s2")).toMatchObject({ status: "exited", view: "chat", paused: true });
+    expect(by("s3")).toMatchObject({ status: "exited", view: "chat", paused: true });
     expect(by("s4")).toMatchObject({ status: "exited", paused: true });
     expect(by("s5")).toMatchObject({ status: "exited", paused: true, view: "terminal" });
     expect(by("s6")).toMatchObject({ status: "exited", exitCode: 0 });
@@ -249,7 +247,7 @@ describe("sessions restore", () => {
     await ss2.loadAgents();
     await new Promise((res) => setTimeout(res, 30));
     expect(ss2.getState().list).toEqual([expect.objectContaining({ id, status: "draft", agent: "codex", cwd: "/w/api" })]);
-    expect(((g2.__omherSessionCalls as { op: string }[] | undefined) ?? []).filter((c) => c.op !== "reset" && !c.op.startsWith("file."))).toEqual([]);
+    expect(((g2.__omherSessionCalls as { op: string }[] | undefined) ?? []).filter((c) => c.op !== "reset" && !c.op.startsWith("file.") && !c.op.startsWith("history."))).toEqual([]);
     // + reuses it rather than opening a second one
     expect(ss2.draft()).toBe(id);
   });

@@ -282,18 +282,30 @@ test("chat: a typing bubble with the ringed face waits for the first delta, whic
   // the face is centred on the bubble
   const [fb, bb] = await Promise.all([typing.locator(".msg-face").boundingBox(), typing.getByTestId("typing-bubble").boundingBox()]);
   expect(Math.abs(fb!.y + fb!.height / 2 - (bb!.y + bb!.height / 2))).toBeLessThan(1.5);
-  // it sits under the activity line, last in the thread
+  // last in the thread
   const last = await tl.locator(":scope > .row").last().getAttribute("data-kind");
   expect(last).toBe("typing");
 
-  // the first tool.start brings the activity line, which takes over: the typing bubble goes
+  // the first tool.start brings the activity line; the dots stay where they are with the ringed face, and the line
+  // comes under them in the text column, until the answer starts (owner 2026-11-19: the lines come under the dots)
   await emit(ev("kami", "tool.start", { tool_id: "k1", name: "terminal", detail: "pnpm test" }));
-  await expect(tl.locator("[data-testid=activity][data-state=live]").getByTestId("activity-text")).toContainText("pnpm test");
-  await expect(tl.getByTestId("typing")).toHaveCount(0);
-  // and stays gone while the line is shown, through the tool's end and the next one
+  const line = tl.locator("[data-testid=activity][data-state=live]");
+  await expect(line.getByTestId("activity-text")).toContainText("pnpm test");
+  await expect(tl.getByTestId("typing")).toBeVisible();
+  await expect(tl.getByTestId("typing-ring")).toHaveCount(1);
+  await expect(tl.getByTestId("face-ring")).toHaveCount(0);
+  const under = async () => {
+    const [lb, tb] = await Promise.all([line.boundingBox(), tl.getByTestId("typing-bubble").boundingBox()]);
+    expect(lb!.y).toBeGreaterThanOrEqual(tb!.y + tb!.height - 1);
+    expect(Math.abs(tb!.x - lb!.x)).toBeLessThan(4); // the bubble's text column
+    expect(await tl.locator(":scope > .row").last().getAttribute("data-kind")).toBe("activity");
+  };
+  await under();
+  // and stays under it through the tool's end and the next one
   await emit(ev("kami", "tool.end", { tool_id: "k1", name: "terminal", ok: true }), ev("kami", "thinking"));
-  await expect(tl.locator("[data-testid=activity][data-state=live]")).toHaveCount(1);
-  await expect(tl.getByTestId("typing")).toHaveCount(0);
+  await expect(line).toHaveCount(1);
+  await expect(tl.getByTestId("typing")).toBeVisible();
+  await under();
 
   await emit(ev("kami", "delta", { text: "Found it: the" }));
   // a line still being typed does not show; a whole one does
@@ -337,29 +349,6 @@ test("chat: an approval card replaces the typing bubble while the bot waits on y
   await emit(ev("kami", "turn.end", { outcome: "interrupted" }));
 });
 
-test("away bubbles: a session still working there rings its source mark instead of a spinner", async ({ page }) => {
-  await open(page);
-  const tl = page.getByTestId("timeline");
-  const slack = tl.locator("[data-testid=away][data-source=slack]");
-  await expect(slack.getByTestId("away-time")).toContainText(/working · \d+m/);
-  await expect(slack.locator(".ui-spin")).toHaveCount(0);
-  const ring = slack.getByTestId("away-ring");
-  await expect(ring).toBeVisible();
-  await expect(ring).toHaveCSS("animation-name", "ui-ring-turn");
-  // the ring wraps the Slack mark inside the link
-  const wraps = await ring.evaluate((el) => {
-    const mark = el.parentElement!.querySelector("svg.src-ic-slack")!.getBoundingClientRect();
-    const r = el.getBoundingClientRect();
-    return r.left < mark.left && r.right > mark.right && r.top < mark.top && r.bottom > mark.bottom && !!el.closest("[data-testid=away-link]");
-  });
-  expect(wraps).toBe(true);
-  // quieter than the bot's own ring: a 1.5px band at 60% opacity
-  await expect(ring).toHaveCSS("opacity", "0.6");
-  expect(await ring.evaluate((e) => getComputedStyle(e).getPropertyValue("--ring-w").trim())).toBe("1.5px");
-  // a finished session has no ring
-  await expect(tl.locator("[data-testid=away][data-source=discord]").getByTestId("away-ring")).toHaveCount(0);
-});
-
 test("reduced motion: the arc and the dots stand still", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await open(page);
@@ -375,7 +364,6 @@ test("reduced motion: the arc and the dots stand still", async ({ page }) => {
   const typing = page.getByTestId("typing");
   await expect(typing.getByTestId("typing-ring")).toHaveCSS("animation-name", "none");
   for (const dot of await typing.locator(".ui-typing i").all()) await expect(dot).toHaveCSS("animation-name", "none");
-  await expect(page.locator("[data-testid=away][data-source=slack]").getByTestId("away-ring")).toHaveCSS("animation-name", "none");
   await emit(ev("friren", "tool.start", { tool_id: "r1", name: "read_file", detail: "a.txt" }));
   const sub = page.getByTestId("bot-friren").getByTestId("bot-sub");
   await expect(sub.getByTestId("tick-text")).toHaveText("Reading a.txt");
@@ -405,9 +393,10 @@ for (const theme of ["dark", "light"] as const) {
     await expect(page.getByTestId("bot-kami").getByTestId("bot-time")).toHaveText(/^1[23]s$/);
     await expect(page.getByTestId("bot-friren").getByTestId("bot-time")).toHaveText("1m");
     await expect(page.getByTestId("bot-default").getByTestId("bot-time")).toHaveText("waiting");
-    // one live indicator in the chat: the activity line, no typing bubble beside it
+    // the typing dots keep the ringed face; the activity line sits under them
     await expect(page.locator("[data-testid=activity][data-state=live]")).toBeVisible();
-    await expect(page.getByTestId("typing")).toHaveCount(0);
+    await expect(page.getByTestId("typing")).toBeVisible();
+    await expect(page.getByTestId("typing-ring")).toHaveCount(1);
     await page.mouse.move(700, 400);
     await page.waitForTimeout(400);
     // hold every animation at a mid frame (ring part-way round, dots mid-hop) instead of turning them off
@@ -457,6 +446,9 @@ test("chat: a message sent while the answer is written goes under that answer, w
 test("chat: an answer to several messages quotes each one's first line; a click shows that message; one message gets none", async ({ page }) => {
   await open(page);
   const tl = page.getByTestId("timeline");
+  // the seeded history ends on a message of the person's that this answer is not about: answer it first
+  await emit(ev("kami", "message", { id: "q-a0", text: "Will do." }));
+  await expect(tl.getByTestId("bubble-bot").last()).toContainText("Will do.");
   await mock("mock.manual", { bot: "kami" });
   // the first message starts a turn; the second, typed while it runs, waits (steer queue) and is steered into that
   // same turn, so one answer replies to both
@@ -467,8 +459,7 @@ test("chat: an answer to several messages quotes each one's first line; a click 
   await page.keyboard.press("Enter");
   const waiting = tl.getByTestId("bubble-user").filter({ hasText: "and too many bubbles per answer" });
   await waiting.getByTestId("queue-mark").click();
-  await page.getByTestId("queue-steer").click();
-  await expect(waiting.getByTestId("bubble-steered")).toBeVisible();
+  await expect(waiting.getByTestId("bubble-read")).toBeVisible();
   await emit(ev("kami", "message", { id: "q-a1", text: "Fixed both." }), ev("kami", "turn.end", { outcome: "done" }));
   const quote = tl.getByTestId("bubble-quote");
   await expect(quote).toHaveCount(1);
@@ -490,4 +481,20 @@ test("chat: an answer to several messages quotes each one's first line; a click 
   await emit(ev("kami", "turn.start"), ev("kami", "message", { id: "q-a2", text: "Sure." }), ev("kami", "turn.end", { outcome: "done" }));
   await expect(tl.getByTestId("bubble-bot").last()).toHaveText("Sure.");
   await expect(tl.getByTestId("bubble-quote")).toHaveCount(1);
+});
+
+test("chat: one message, then a card, then the answer: no quote header", async ({ page }) => {
+  await open(page);
+  const tl = page.getByTestId("timeline");
+  await emit(ev("kami", "message", { id: "qc-a0", text: "Will do." }));
+  await expect(tl.getByTestId("bubble-bot").last()).toContainText("Will do.");
+  await mock("mock.manual", { bot: "kami" });
+  await page.getByTestId("composer").fill("di");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("stop")).toBeVisible();
+  await emit(ev("kami", "clarify.request", { request_id: "qc-ask", question: "Which environment?", choices: ["staging", "production"] }));
+  await expect(tl.getByTestId("card-clarify")).toBeVisible();
+  await emit(ev("kami", "message", { id: "qc-a1", text: "Which one?" }), ev("kami", "turn.end", { outcome: "done" }));
+  await expect(tl.getByTestId("bubble-bot").last()).toContainText("Which one?");
+  await expect(tl.getByTestId("bubble-quote")).toHaveCount(0);
 });

@@ -5,7 +5,17 @@ import { useEffect, useState } from "react";
 import "./settings.css";
 import type { SlotProps } from "../features";
 import type { Bot, ModelOptions } from "../lib/protocol";
-import { getStore, notifyEnabled, setNotifyEnabled, useStore } from "../state/store";
+import {
+  busySend,
+  getStore,
+  notifyEnabled,
+  notifyErrorsEnabled,
+  setBusySend,
+  setNotifyEnabled,
+  setNotifyErrorsEnabled,
+  useStore,
+  type BusySend,
+} from "../state/store";
 import { addToList } from "../addbot/bots";
 import { appSounds, setSoundsEnabled, soundsEnabled } from "../lib/sounds";
 import { LANG_NAMES, LANGS, t, type Key, type Lang } from "../i18n";
@@ -18,6 +28,10 @@ import { ProvidersPage } from "./providers/ProvidersPage";
 import { TerminalPage } from "./terminal/TerminalPage";
 import { SshMarker } from "../peers/SshMarker";
 import { RemoteMachines } from "../peers/RemoteMachines";
+import { setBar, useTasks } from "../tasks/state";
+import { DISK_WARN_CHOICES, diskWarn, setDiskWarn } from "../lib/disk";
+import { Toggle } from "../pages/kit";
+import { awakeEnabled, closeHides, isMacPlatform, setAwakeEnabled, setCloseHides } from "../lib/power";
 import { AgentsPage } from "./agents/AgentsPage";
 import { AvatarEditor, BotFacts, NameEditor, PictureActions, placeName, useBotInfo, usePictureEditor } from "./BotIdentity";
 
@@ -358,6 +372,23 @@ const SHORTCUTS: [string, Key][] = [
   [`${MOD},`, "key.settings"],
   [`${MOD}J`, "key.nextAsk"],
   [MOD === "⌘" ? `${MOD}N · ${MOD}T` : `${MOD}N`, "key.newSession"],
+  [MOD === "⌘" ? "⌘D · ⌘⇧D" : "Ctrl+Shift+D · Alt+Shift+D", "key.splitPane"],
+  [MOD === "⌘" ? "⌘W" : "Ctrl+Shift+W", "key.closePane"],
+  [MOD === "⌘" ? "⌘⌥ ←↑↓→" : "Ctrl+Alt+ ←↑↓→", "key.focusPane"],
+  [MOD === "⌘" ? "⌘] · ⌘[" : "Ctrl+Tab · Ctrl+Shift+Tab", "key.stepPane"],
+  [MOD === "⌘" ? "⌘⇧⌥ ←↑↓→" : "Ctrl+Alt+Shift+ ←↑↓→", "key.movePane"],
+  [MOD === "⌘" ? "⌘⇧↩" : "Ctrl+Shift+Enter", "key.zoomPane"],
+  [MOD === "⌘" ? "⌘⌃=" : "Ctrl+Alt+=", "key.equalizePanes"],
+  [MOD === "⌘" ? "⌘= · ⌘- · ⌘0" : "Ctrl+= · Ctrl+- · Ctrl+0", "key.termFont"],
+  ...(MOD === "⌘"
+    ? ([
+        ["⌘← · ⌘→ · ⌘⌫ · ⌘⌦", "key.termLine"],
+        ["⌥← · ⌥→", "key.termWord"],
+        ["⌘K", "key.termClear"],
+      ] as [string, Key][])
+    : ([["Ctrl+Shift+C · Ctrl+Shift+V · Ctrl+Insert · Shift+Insert", "key.termCopyPaste"]] as [string, Key][])),
+  [MOD === "⌘" ? "⌘Home · ⌘End" : "Ctrl+Home · Ctrl+End", "key.termScroll"],
+  [MOD === "⌘" ? "⌘⇧C" : "Alt+Shift+C", "key.copyLink"],
   ["1 · 2 · 3", "key.cardKeys"],
   ["Esc", "key.stop"],
 ];
@@ -378,6 +409,26 @@ function NotifySeg() {
         setOn(v === "on");
       }}
       testId="notify-seg"
+    />
+  );
+}
+
+function NotifyErrorsSeg() {
+  const [on, setOn] = useState(notifyErrorsEnabled());
+  return (
+    <Seg
+      small
+      label={t("set.notifyErrors")}
+      value={on ? "on" : "off"}
+      options={[
+        { value: "on", label: t("set.on") },
+        { value: "off", label: t("set.off") },
+      ]}
+      onChange={(v) => {
+        setNotifyErrorsEnabled(v === "on");
+        setOn(v === "on");
+      }}
+      testId="notify-errors-seg"
     />
   );
 }
@@ -407,6 +458,84 @@ function SoundsSeg() {
   );
 }
 
+/** Settings › General: warn below 5/10/20/50 GB of free disk space, or not at all (src/lib/disk.ts). */
+function DiskWarnSeg() {
+  const [v, setV] = useState(diskWarn());
+  return (
+    <Seg
+      small
+      label={t("disk.setting")}
+      value={String(v)}
+      options={DISK_WARN_CHOICES.map((n) => ({ value: String(n), label: n ? t("disk.gb", { n }) : t("set.off") }))}
+      onChange={(x) => {
+        setV(Number(x));
+        setDiskWarn(Number(x));
+      }}
+      testId="set-disk-warn"
+    />
+  );
+}
+
+function BusySendSeg() {
+  const [mode, setMode] = useState(busySend());
+  return (
+    <Seg
+      small
+      label={t("busySend.title")}
+      value={mode}
+      options={[
+        { value: "queue", label: t("busySend.queue") },
+        { value: "steer", label: t("busySend.steer") },
+      ]}
+      onChange={(v) => {
+        setBusySend(v as BusySend);
+        setMode(v as BusySend);
+      }}
+      testId="busy-send-seg"
+    />
+  );
+}
+
+function TasksBarToggle() {
+  const tk = useTasks();
+  return <Toggle on={tk.bar} label={t("tasks.barSetting")} onChange={setBar} testId="set-tasks-bar" />;
+}
+
+function CloseSeg() {
+  const [hide, setHide] = useState(closeHides());
+  return (
+    <Seg
+      small
+      label={t("win.close")}
+      value={hide ? "tray" : "quit"}
+      options={[
+        { value: "tray", label: t("win.closeTray") },
+        { value: "quit", label: t("win.closeQuit") },
+      ]}
+      onChange={(v) => {
+        setCloseHides(v === "tray");
+        setHide(v === "tray");
+      }}
+      testId="window-close-seg"
+    />
+  );
+}
+
+function AwakeToggle() {
+  const [on, setOn] = useState(awakeEnabled());
+  return (
+    <Toggle
+      on={on}
+      label={t("awake.title")}
+      onChange={(v) => {
+        setAwakeEnabled(v);
+        setOn(v);
+      }}
+      testId="set-awake"
+    />
+  );
+}
+
 function GeneralPage() {
   const s = useStore();
   const h = s.hello;
@@ -430,8 +559,33 @@ function GeneralPage() {
         <Row title={t("set.notify")} hint={t("set.notifyHint")}>
           <NotifySeg />
         </Row>
+        <Row title={t("set.notifyErrors")} hint={t("set.notifyErrorsHint")}>
+          <NotifyErrorsSeg />
+        </Row>
         <Row title={t("sounds.title")} hint={t("sounds.hint")}>
           <SoundsSeg />
+        </Row>
+        <Row title={t("disk.setting")} hint={t("disk.settingHint")}>
+          <DiskWarnSeg />
+        </Row>
+      </div>
+      <div className="st-grp">
+        <Row title={t("busySend.title")} hint={t("busySend.hint")}>
+          <BusySendSeg />
+        </Row>
+      </div>
+      <div className="st-grp">
+        <Row title={t("tasks.barSetting")} hint={t("tasks.barSettingHint")}>
+          <TasksBarToggle />
+        </Row>
+      </div>
+      <div className="st-gh">{t("set.system")}</div>
+      <div className="st-grp" data-testid="set-system">
+        <Row title={t("win.close")} hint={t(isMacPlatform() ? "win.closeHint" : "win.closeHintOther")}>
+          <CloseSeg />
+        </Row>
+        <Row title={t("awake.title")} hint={t("awake.hint")}>
+          <AwakeToggle />
         </Row>
       </div>
       <div className="st-gh">{t("set.keyboard")}</div>

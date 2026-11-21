@@ -32,7 +32,7 @@ from omh.coding.model_routing import (  # noqa: E402
     resolve_model_route,
     route_provenance,
 )
-from omh.coding.pi_family_interop import PI_DISTRIBUTION_HOST
+from omh.coding.pi_family_interop import PI_DISTRIBUTION_HOST, PI_FORK_HOST
 
 
 class ResearchRoleTests(unittest.TestCase):
@@ -40,12 +40,12 @@ class ResearchRoleTests(unittest.TestCase):
         """Autorouting survey consensus: standard is the default; shallow is
         the declared saving, deep the declared escalation — never inferred."""
         codex = resolve_model_route("codex", role="research")
-        self.assertEqual(codex["selected_model"], "gpt-6.1-sol")
+        self.assertEqual(codex["selected_model"], "gpt-6.2-sol")
         # Standard research takes the effort its category declares: `research`
         # reads unspecified-low/quick, and since 2026-10-01 the codex
         # unspecified-low row names `medium` rather than leaving it to the CLI,
         # because GPT-6.1 Sol's Codex default is `low` where GPT-6 Sol's was
-        # `medium`. Depth is the dial that escalates.
+        # `medium` (GPT-6.2 Sol's is `low` too). Depth is the dial that escalates.
         self.assertEqual(codex["selected_reasoning_effort"], "medium")
         self.assertEqual(codex["provenance"], "role_chain_head")
         self.assertNotIn("depth", codex)
@@ -70,17 +70,17 @@ class ResearchRoleTests(unittest.TestCase):
         # nothing until someone asks for it.
         self.assertEqual(deep["selected_reasoning_effort"], "xhigh")
         deep_codex = resolve_model_route("codex", role="research", requested_depth="deep")
-        self.assertEqual(deep_codex["selected_model"], "gpt-6-astra")
+        self.assertEqual(deep_codex["selected_model"], "gpt-6.2-astra")
         self.assertEqual(deep_codex["selected_reasoning_effort"], "xhigh")
         outcomes = {entry["stage"]: entry["outcome"] for entry in deep["attempted"]}
         self.assertEqual(outcomes["research_depth"], "applied")
 
     def test_standard_and_unknown_depths_keep_the_role_chain(self) -> None:
         standard = resolve_model_route("codex", role="research", requested_depth="standard")
-        self.assertEqual(standard["selected_model"], "gpt-6.1-sol")
+        self.assertEqual(standard["selected_model"], "gpt-6.2-sol")
         self.assertEqual(standard["depth"], "standard")
         unknown = resolve_model_route("codex", role="research", requested_depth="bottomless")
-        self.assertEqual(unknown["selected_model"], "gpt-6.1-sol")
+        self.assertEqual(unknown["selected_model"], "gpt-6.2-sol")
         outcomes = {entry["stage"]: entry["outcome"] for entry in unknown["attempted"]}
         self.assertEqual(outcomes["research_depth"], "unknown_depth")
 
@@ -174,6 +174,8 @@ class FamilyPrefixParityTests(unittest.TestCase):
             "google/gemini-4-carbon": "gemini",
             "gemini-4-hydrogen": "gemini",
             "google/gemini-4-hydrogen": "gemini",
+            "gemini-4-neon": "gemini",
+            "google/gemini-4-neon": "gemini",
             "glm-5.3-flashx": "glm",
             "z-ai/glm-5.3-flashx": "glm",
             "qwen3.8-max": "qwen",
@@ -220,6 +222,18 @@ class FamilyPrefixParityTests(unittest.TestCase):
             )
         for model in ("qwen3", "qwen3x-max", "qwen/abab-style"):
             self.assertEqual(model_family(model), "unknown")
+
+    def test_qwen4_generation_is_a_bounded_family_alias(self) -> None:
+        # Qwen4-Max (2026-11-16) as the vendor serves it, as OpenRouter spells
+        # it, and the Token Plan preview id: each reaches the qwen family
+        # instead of `unknown`. The prefix is bounded like Qwen3's, so a bare
+        # generation token or a near-miss concatenation stays unknown.
+        for model in ("qwen4-max", "qwen/qwen4-max", "qwen4-max-preview", "QWEN4-MAX", "qwen4-max-2026-11-16"):
+            with self.subTest(model=model):
+                self.assertEqual(model_family(model), "qwen")
+        for model in ("qwen4", "qwen4x-max", "qwen/qwen4"):
+            with self.subTest(model=model):
+                self.assertEqual(model_family(model), "unknown")
 
     def test_vendor_prefixed_model_ids_alias_to_design_families(self) -> None:
         self.assertEqual(model_family("digitalocean/openai-gpt-5.6-sol"), "gpt")
@@ -747,9 +761,9 @@ class ModelRouteResolverTests(unittest.TestCase):
         route = resolve_model_route("codex", role="review")
         self.assertEqual(route["status"], "routed")
         self.assertEqual(route["provenance"], "role_chain_head")
-        self.assertEqual(route["selected_model"], "gpt-6.1-sol")
+        self.assertEqual(route["selected_model"], "gpt-6.2-sol")
         chain_models = [entry["model_id"] for entry in route["chain"]]
-        self.assertEqual(chain_models, ["gpt-6.1-sol"])
+        self.assertEqual(chain_models, ["gpt-6.2-sol"])
         selected_flags = [entry["selected"] for entry in route["chain"]]
         self.assertEqual(selected_flags, [True])
 
@@ -758,7 +772,7 @@ class ModelRouteResolverTests(unittest.TestCase):
         # Codex entry is Astra at xhigh. effort_change stays absent because the
         # user requested nothing (chain efforts never appear in effort_change).
         route = resolve_model_route("codex", role="brain")
-        self.assertEqual(route["selected_model"], "gpt-6-astra")
+        self.assertEqual(route["selected_model"], "gpt-6.2-astra")
         self.assertEqual(route["selected_reasoning_effort"], "xhigh")
         self.assertNotIn("effort_change", route)
 
@@ -1227,14 +1241,14 @@ class DispatchArgvTests(unittest.TestCase):
     def test_behavior_change_review_on_codex_now_emits_model(self) -> None:
         # 5b(i) before/after: the old resolver returned choice_required with
         # no selected_model for review-on-codex, so dispatch emitted the bare
-        # template argv; the chain head now emits --model gpt-6.1-sol, and
+        # template argv; the chain head now emits --model gpt-6.2-sol, and
         # since 2026-10-01 the named `medium` its category row carries.
         old_shape_route = {"selected_model": "", "selected_reasoning_effort": ""}
         self.assertEqual(build_dispatch_argv("codex", "p", old_shape_route), ["codex", "exec", "p"])
         new_route = resolve_model_route("codex", role="review")
         self.assertEqual(
             build_dispatch_argv("codex", "p", new_route),
-            ["codex", "exec", "--model", "gpt-6.1-sol", "--config", "model_reasoning_effort=medium", "p"],
+            ["codex", "exec", "--model", "gpt-6.2-sol", "--config", "model_reasoning_effort=medium", "p"],
         )
 
     def test_behavior_change_effort_max_on_codex_catalog_model(self) -> None:
@@ -1252,7 +1266,7 @@ class PiFamilyHostDetectionTests(unittest.TestCase):
         the runtime as a plugin. First on PATH wins, deterministically."""
         from omh.coding.fanout_dispatch import PI_FAMILY_HOST_CANDIDATES, pi_family_host
 
-        self.assertEqual(PI_FAMILY_HOST_CANDIDATES, ("pi", PI_DISTRIBUTION_HOST, "opencode"))
+        self.assertEqual(PI_FAMILY_HOST_CANDIDATES, ("pi", PI_DISTRIBUTION_HOST, PI_FORK_HOST, "opencode"))
         both = lambda name: f"/x/{name}" if name in ("pi", PI_DISTRIBUTION_HOST) else None
         self.assertEqual(pi_family_host(both), "pi")
         self.assertEqual(pi_family_host(lambda name: f"/x/{PI_DISTRIBUTION_HOST}" if name == PI_DISTRIBUTION_HOST else None), PI_DISTRIBUTION_HOST)
@@ -1272,6 +1286,32 @@ class PiFamilyHostDetectionTests(unittest.TestCase):
         with mock.patch("omh.coding.fanout_dispatch.shutil.which", lambda name: "/x/opencode" if name == "opencode" else None):
             oc_argv = build_dispatch_argv("pi-family-runtime", "work", route)
         self.assertEqual(oc_argv, ["opencode", "run", "--model", "zai/glm-5.2", "--variant", "high", "work"])
+
+    def test_fork_host_alone_on_path_is_picked_after_pi(self) -> None:
+        from omh.coding.fanout_dispatch import pi_family_host
+
+        self.assertEqual(pi_family_host(lambda name: f"/x/{name}" if name == PI_FORK_HOST else None), PI_FORK_HOST)
+        self.assertEqual(pi_family_host(lambda name: f"/x/{name}" if name in ("pi", PI_FORK_HOST) else None), "pi")
+        self.assertEqual(
+            pi_family_host(lambda name: f"/x/{name}" if name in (PI_FORK_HOST, "opencode") else None), PI_FORK_HOST
+        )
+
+    def test_fork_host_argv_prints_without_a_session_or_an_approval_flag(self) -> None:
+        on_path = lambda name: f"/x/{name}" if name == PI_FORK_HOST else None  # noqa: E731
+        with mock.patch("omh.coding.fanout_dispatch.shutil.which", on_path):
+            bare = build_dispatch_argv("pi-family-runtime", "-work", None)
+            routed = build_dispatch_argv(
+                "pi-family-runtime",
+                "-work",
+                {"selected_model": "zai/glm-5.2", "selected_reasoning_effort": "high"},
+            )
+        self.assertEqual(bare, [PI_FORK_HOST, "--print", "--no-session", "--", "-work"])
+        self.assertNotIn("--permission-preset", bare)
+        self.assertFalse(any(part.startswith("--approval") for part in bare))
+        self.assertEqual(
+            routed,
+            [PI_FORK_HOST, "--print", "--no-session", "--model", "zai/glm-5.2", "--thinking", "high", "--", "-work"],
+        )
 
     def test_no_host_on_path_means_no_argv(self) -> None:
         with mock.patch("omh.coding.fanout_dispatch.shutil.which", lambda name: None):
@@ -1418,7 +1458,7 @@ class IdentityRoutingTests(unittest.TestCase):
         )
         self.assertEqual(route["status"], "routed")
         self.assertEqual(route["provenance"], "role_chain_head")
-        self.assertEqual(route["selected_model"], "gpt-6-astra")
+        self.assertEqual(route["selected_model"], "gpt-6.2-astra")
         self.assertNotIn("identity_id", route)
         self.assertNotIn("identity_fingerprint", route)
         outcomes = {entry["stage"]: entry["outcome"] for entry in route["attempted"]}
@@ -1428,7 +1468,7 @@ class IdentityRoutingTests(unittest.TestCase):
         route = resolve_model_route("codex", role="brain", requested_identity="script-coding")
         self.assertEqual(route["status"], "routed")
         self.assertEqual(route["provenance"], "role_chain_head")
-        self.assertEqual(route["selected_model"], "gpt-6-astra")
+        self.assertEqual(route["selected_model"], "gpt-6.2-astra")
         outcomes = {entry["stage"]: entry["outcome"] for entry in route["attempted"]}
         self.assertEqual(outcomes["requested_identity"], "unknown")
 
@@ -1560,7 +1600,7 @@ class ModelRouteCliTests(unittest.TestCase):
             self.assertEqual(status, 0, stderr)
             lines = [line for line in stdout.splitlines() if line.startswith("- ")]
             self.assertEqual(len(lines), len(MODEL_ROLES))
-            self.assertIn("gpt-6-astra xhigh* > gpt-6.1-sol high", stdout)
+            self.assertIn("gpt-6.2-astra xhigh* > gpt-6.2-sol high", stdout)
             self.assertNotIn("gpt-5.6", stdout)
             self.assertNotIn("claude-code", stdout)
 

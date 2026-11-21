@@ -51,6 +51,10 @@ const shownLabel = (l: Label): Label => (l.verb === WORKING ? { ...l, verb: tr("
 
 const labelText = (l: Label) => (l.code ? `${l.verb} ${l.code}` : l.verb);
 
+/** How much of a command the live line shows: a glance, not the whole line across the chat (full text on hover). */
+const CODE_MAX = 24;
+const clipCode = (l: Label): Label => (l.code && l.code.length > CODE_MAX ? { ...l, code: `${l.code.slice(0, CODE_MAX - 1).trimEnd()}…` } : l);
+
 function LabelView({ label }: { label: Label }) {
   return (
     <>
@@ -125,7 +129,9 @@ function stoppedTime(step: Step, ms: number): string {
   return tr(step.late.ok ? "act.stepLate" : "act.stepLateFailed", { t: stepTime(step.late.ms) });
 }
 
-function StepRow({ step, live, now }: { step: Step; live: boolean; now: number }) {
+/** One step row. `io` (a read-only session view, `src/harness/AgentChat`): the call's full input and result, shown
+ *  under the row when it is opened, the way a file edit opens to its diff. */
+export function StepRow({ step, live, now, io }: { step: Step; live: boolean; now: number; io?: { input: string; result: string } }) {
   // a file edit that carries its change opens to it (closed by default: a long change never moves the chat)
   const [diffOpen, setDiffOpen] = useState(false);
   if (step.name === "delegate_task" && step.dag?.length) return <DagRows step={step} live={live} />;
@@ -134,13 +140,14 @@ function StepRow({ step, live, now }: { step: Step; live: boolean; now: number }
   const running = step.endedAt === undefined;
   const ms = (step.endedAt ?? now) - step.startedAt;
   const diff = step.diff?.length ? step.diff : null;
+  const opens = !!diff || !!io;
   const row = (
     <div
-      className={`act-step${failed ? " fail" : ""}${stopped ? " stopped" : ""}${diff ? " has-diff" : ""}${diffOpen ? " open" : ""}`}
+      className={`act-step${failed ? " fail" : ""}${stopped ? " stopped" : ""}${opens ? " has-diff" : ""}${diffOpen ? " open" : ""}`}
       data-testid="activity-step"
       data-ok={stopped ? "stopped" : failed ? "false" : running ? "running" : "true"}
       {...(step.late ? { "data-late": step.late.ok ? "done" : "failed" } : {})}
-      {...(diff
+      {...(opens
         ? {
             role: "button",
             tabIndex: 0,
@@ -168,20 +175,26 @@ function StepRow({ step, live, now }: { step: Step; live: boolean; now: number }
           </span>
         ))}
       <span className="s" data-testid="activity-step-time">
-        {running && live ? "…" : stopped ? stoppedTime(step, ms) : failed ? tr("act.stepFailed", { t: stepTime(ms) }) : stepTime(ms)}
+        {step.untimed ? "" : running && live ? "…" : stopped ? stoppedTime(step, ms) : failed ? tr("act.stepFailed", { t: stepTime(ms) }) : stepTime(ms)}
       </span>
-      {diff && (
+      {opens && (
         <span className="act-chev" aria-hidden>
           <ChevronRight size={9} />
         </span>
       )}
     </div>
   );
-  if (!diff) return row;
+  if (!opens) return row;
   return (
     <>
       {row}
-      {diffOpen && <DiffView files={diff} />}
+      {diffOpen && diff && <DiffView files={diff} />}
+      {diffOpen && io && (
+        <div className="act-io" data-testid="activity-step-io">
+          {io.input && <pre className="act-io-in" data-testid="activity-step-input">{io.input}</pre>}
+          {io.result && <pre className="act-io-out" data-testid="activity-step-result">{io.result}</pre>}
+        </div>
+      )}
     </>
   );
 }
@@ -233,7 +246,9 @@ export default function Activity({ bot, item, live }: SlotProps["activity"]) {
             </span>
           ))}
         {live ? (
-          <Ticker label={shownLabel(liveLabel(t))} />
+          <span className="act-live" title={labelText(shownLabel(liveLabel(t)))}>
+            <Ticker label={clipCode(shownLabel(liveLabel(t)))} />
+          </span>
         ) : (
           <span className={`act-sum${state === "error" ? " wrap" : ""}`} data-testid="activity-text">
             {summary}

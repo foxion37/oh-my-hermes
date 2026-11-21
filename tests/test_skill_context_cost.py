@@ -111,7 +111,11 @@ class SkillContextCostTests(unittest.TestCase):
         # sprite-forge its line + newline (13,243 -> 13,328); merged with main's
         # repro-audit line, 13,327 + 85 = 13,412; systematic-review its line +
         # newline (+90); model-compression its line + newline (+90).
-        self.assertEqual(skill_index_chars(), 13_592)
+        # 13,592 -> 12,970: the index producer cuts at a word boundary the way
+        # Hermes' `clip_skill_description` does, not at a fixed 57 characters.
+        # skill-eval then adds its line + newline; model-compression's clause
+        # then says "smaller or cheaper" again (+3).
+        self.assertEqual(skill_index_chars(), 13_054)
         # research and web-research add the shipped `ru` trigger pack's routing
         # signals (+446 and +316 bytes, after its review dropped the everyday
         # and nested phrases) to their pre-feature bodies; the search guidance
@@ -128,7 +132,8 @@ class SkillContextCostTests(unittest.TestCase):
         # 12,261 -> 12,409: web-research's Do-Not-Use line for market sizing (+148, not search guidance).
         # Each baseline -316: every body's reply-voice paragraph becomes one line (not search guidance).
         # Each baseline +276: the one reply line takes back the turn-ending rule (not search guidance).
-        baseline = {'research': 20_862, 'web-research': 12_369, 'source-finder': 9_369}
+        # 2026-11-20: source-finder's literature-retrieval pointer line adds 282 bytes (not search guidance).
+        baseline = {'research': 20_862, 'web-research': 12_369, 'source-finder': 9_651}
         for name, before in baseline.items():
             record = skill_record(name)
             body = record.body().content

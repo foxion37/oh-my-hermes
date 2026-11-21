@@ -1,6 +1,7 @@
 // The v0.2 polish pass: what each fix promises, measured. (The sidebar split is in sessions.spec.ts, the graph in
 // runs.spec.ts.)
 import { expect, test, type Page } from "@playwright/test";
+import { motionDone } from "./motion";
 
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 
@@ -126,6 +127,8 @@ test("a narrow chat column: a bubble may use the column, instead of a sentence i
   await page.setViewportSize({ width: 1100, height: 760 });
   await open(page);
   await page.getByTestId("places").click();
+  // the tabs slide in with the panel: press one once it has stopped
+  await motionDone(page);
   await page.getByTestId("panel-tab-terminal").click();
   // one long paragraph from the bot
   const text = "The upstream closes idle connections after sixty seconds while the gateway keeps them for seventy five, so a request that picks a stale one fails; ".repeat(3);
@@ -260,26 +263,6 @@ test("five asks: the Needs list ends on the third, whole, and a '+2 more' row op
   await expect(list.getByTestId("needs-item")).toHaveCount(3);
 });
 
-test("an away bubble has one left edge: a link or a 'working' that wraps starts where the text starts", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await open(page);
-  const bubble = page.getByTestId("away").filter({ has: page.getByTestId("away-time") }).first();
-  await expect(bubble).toBeVisible();
-  const edges = await bubble.evaluate((m) => {
-    // each part on a line of its own, as a narrow column wraps them
-    const text = m.querySelector<HTMLElement>(".ew-text")!;
-    const link = m.querySelector<HTMLElement>(".ew-link, .ew-where")!;
-    text.style.display = "inline-block";
-    text.style.width = "100%";
-    link.style.width = "100%";
-    const left = (e: Element) => e.getBoundingClientRect().left;
-    return { text: left(text), mark: left(link.querySelector(".src-ic")!), working: left(m.querySelector("[data-testid=away-time]")!), lines: [text, link, m.querySelector("[data-testid=away-time]")!].map((e) => Math.round(e.getBoundingClientRect().top)) };
-  });
-  expect(new Set(edges.lines).size).toBe(3); // three lines
-  expect(Math.abs(edges.mark - edges.text)).toBeLessThanOrEqual(0.5);
-  expect(Math.abs(edges.working - edges.text)).toBeLessThanOrEqual(0.5);
-});
-
 test("lines that carry information are 12px in --muted, not the 11px tertiary gray", async ({ page }) => {
   // the bot cannot be reached: the notice in the date dividers' place
   await page.routeWebSocket(/127\.0\.0\.1/, (ws) => {
@@ -314,12 +297,16 @@ test("question cards: a clarify's choices are the interview's chips, one control
   await mock("mock.ask", { bot: "kami", kind: "clarify" });
   await expect(page.getByTestId("card-clarify")).toBeVisible();
   const clarify = await style("[data-testid=card-clarify] button");
+  // the visible text is the title: medium weight, one for both cards
+  const title = (sel: string) => page.locator(sel).first().evaluate((e) => getComputedStyle(e).fontWeight);
+  expect(await title("[data-testid=card-clarify] .iv-title")).toBe("500");
   await mock("mock.ask", { bot: "friren", kind: "interview" });
   await page.getByTestId("bot-friren").click();
   await expect(page.locator(".iv-chip").first()).toBeVisible();
   const interview = await style(".iv-chips .iv-chip:not(.on)");
   expect(clarify).toBe(interview);
   expect(clarify).toContain("| 400 |"); // outlined and regular, not filled and bold
+  expect(await title(".iv-chips .iv-chip:not(.on) .iv-title")).toBe("500");
 });
 
 test("text fields take one calm focus: a 1px edge in --muted, the sidebar search and the model search alike", async ({ page }) => {
@@ -329,7 +316,7 @@ test("text fields take one calm focus: a 1px edge in --muted, the sidebar search
     const muted = await token(page, "--muted");
     const side = page.locator(".search");
     const before = await side.evaluate((e) => getComputedStyle(e).boxShadow);
-    await page.getByRole("searchbox", { name: "Search bots and sessions" }).focus();
+    await page.getByRole("searchbox", { name: "Search bots and terminals" }).focus();
     const sideFocus = await side.evaluate((e) => ({ shadow: getComputedStyle(e).boxShadow, outline: getComputedStyle(e).outlineStyle }));
     expect(sideFocus.shadow).not.toBe(before);
     expect(sideFocus.shadow).toBe(`${muted} 0px 0px 0px 1px inset`);
@@ -342,13 +329,14 @@ test("text fields take one calm focus: a 1px edge in --muted, the sidebar search
   }
 });
 
-test("a running terminal session's dot: 6px, solid, inside its tile, readable on it", async ({ page }) => {
+// chat-mode CLI sessions replaced by bot threads (2026-11-16: terminals kept)
+test.skip("a running terminal session's dot: 6px, solid, inside its tile, readable on it", async ({ page }) => {
   for (const theme of ["dark", "light"] as const) {
     await page.addInitScript(
       (t) => {
         localStorage.setItem("omher.theme", t);
         localStorage.removeItem("omher.sessions.recent");
-        (window as unknown as Record<string, unknown>).__omherPickFolder = "/Users/you/code/api";
+        (window as unknown as Record<string, unknown>).__omherPickFolder = "/home/you/code/api";
         (window as unknown as Record<string, unknown>).__omherMockAgents = ["claude", "grok"];
       },
       theme,

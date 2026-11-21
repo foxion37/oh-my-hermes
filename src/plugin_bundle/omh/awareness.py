@@ -15,6 +15,7 @@ from .dag_ulw_cues import (
     dispatches_dag_ulw,
     sized_without_evidence,
     invokes_dag_ulw,
+    lists_several_code_changes,
     names_several_features,
     reports_or_asks_after_the_name,
     work_is_split,
@@ -1008,6 +1009,7 @@ _WORKFLOW_CONTEXT_CARD_BY_WORKFLOW = {
     "provider-profile-posture": "automation_and_status",
     "skill-scout": "automation_and_status",
     "skill-health": "automation_and_status",
+    "skill-eval": "automation_and_status",
     "workflow-learning": "automation_and_status",
     "ai-slop-cleaner": "coding_handoff",
     "frontend-refactor": "coding_handoff",
@@ -6012,7 +6014,12 @@ def _awareness_route_hint_cached(
             if len(hints) >= hint_limit:
                 break
         links = reference_regions(message).links
-        if (
+        if hint_limit and not direct_hint and lists_several_code_changes(matching_message, links):
+            # A backlog of separate code changes handed over as a list is made in this session, as the router answers
+            # it (`CODE_BACKLOG_REASON`): no lane a word in one item scored ("stock", "price", "crash") is offered, and
+            # no dag-ulw graph is started, since paired runs measured one slower than Hermes alone at equal quality.
+            hints = []
+        elif (
             hint_limit
             and dispatches_dag_ulw(matching_message, links)
             and direct_hint.get("workflow", "dag-ulw") == "dag-ulw"
@@ -7012,6 +7019,7 @@ def awareness_primer_payload() -> dict[str, object]:
                 "provider-profile-posture",
                 "skill-scout",
                 "skill-health",
+                "skill-eval",
                 "workflow-learning",
                 "model-setup",
                 "parallel-tools",
@@ -7111,7 +7119,8 @@ def awareness_primer_payload() -> dict[str, object]:
             "sets no language, use the one the user wrote in. OMH shapes structure and content only; "
             "these lines and OMH's record terms are never quoted to the user unless they ask. "
             "Write like a person who did the work: result first, no chatbot openers or closers, "
-            "staged contrasts, or decoration."
+            "staged contrasts, or decoration. A message the user sends mid-turn gets one line, before "
+            "your next tool call: what you took from it and what changes."
         ),
         "lanes": lanes,
         "workflow_context_cards": workflow_context_cards(),
@@ -7493,6 +7502,7 @@ _DIRECT_WORKFLOW_NEXT_ACTIONS = {
     "decision-recall": "show_rejected_decision_recall",
     "skill-scout": "prepare_skill_scout",
     "skill-health": "prepare_skill_health",
+    "skill-eval": "prepare_skill_eval",
     "security-safety-review": "prepare_security_safety_review",
     "application-threat-model": "prepare_application_threat_model",
     "live-incident-response": "prepare_live_incident_record",

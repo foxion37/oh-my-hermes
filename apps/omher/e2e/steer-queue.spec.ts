@@ -62,14 +62,18 @@ test("a message sent while the bot answers waits with a ↵ mark and a Waiting l
   const bub = (await b.locator(".b").boundingBox())!;
   expect(mark.x + mark.width).toBeLessThanOrEqual(bub.x);
   expect(await sent()).toEqual(["Refactor the gateway retry code"]);
-  // the menu: Send now, Steer, Edit, Delete
-  await b.getByTestId("queue-mark").click();
-  await expect(page.getByTestId("queue-menu").getByRole("menuitem")).toHaveText(["Send now", "Steer", "Edit", "Delete"]);
-  // the menu of the last waiting message stays inside the chat's scroll box (it opens upward there)
-  const menu = (await page.getByTestId("queue-menu").boundingBox())!;
-  const tl = (await page.getByTestId("timeline").boundingBox())!;
-  expect(menu.y).toBeGreaterThanOrEqual(tl.y);
-  expect(menu.y + menu.height).toBeLessThanOrEqual(tl.y + tl.height);
+  // no menu: ↵ (Steer here), ↓ (back to the box) and × (drop, shown on hover) sit before the bubble
+  await expect(b.getByTestId("queue-acts").getByRole("button")).toHaveText(["×", "↵", "↓"]);
+  // ↓ sits right beside the bubble, whether or not × shows
+  const down = (await b.getByTestId("queue-edit").boundingBox())!;
+  expect(Math.abs((await b.locator(".b").boundingBox())!.x - (down.x + down.width) - 6)).toBeLessThanOrEqual(1);
+  await expect(b.getByTestId("queue-mark")).toHaveAttribute("aria-label", "Steer");
+  await expect(b.getByTestId("queue-edit")).toHaveAttribute("aria-label", "Edit");
+  await expect(page.getByTestId("queue-menu")).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await expect(b.getByTestId("queue-delete")).toHaveCSS("opacity", "0");
+  await b.hover();
+  await expect(b.getByTestId("queue-delete")).toHaveCSS("opacity", "1");
   // a waiting bubble is muted
   expect(Number(await b.locator(".b").evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(1);
 });
@@ -90,29 +94,15 @@ test("auto-send: untouched messages go out after the turn ends, one per turn, in
   await expect(page.locator("[data-testid=bubble-user][data-held]")).toHaveCount(0);
 });
 
-test("Send now: one interrupt, then this message goes out first", async ({ page }) => {
-  await running(page);
-  await say(page, "older one");
-  await say(page, "urgent one");
-  const b = held(page, "urgent one");
-  await b.getByTestId("queue-mark").click();
-  await page.getByTestId("queue-now").click();
-  await expect.poll(async () => (await calls("chat.interrupt")).length).toBe(1);
-  await expect.poll(sent).toEqual(["Refactor the gateway retry code", "urgent one"]);
-  await expect(page.getByTestId("timeline")).toContainText(/Stopped/);
-  await endTurn();
-  await expect.poll(sent).toEqual(["Refactor the gateway retry code", "urgent one", "older one"]);
-  expect((await calls("chat.interrupt")).length).toBe(1);
-});
-
-test("Steer: one chat.steer, a Steered line, the message leaves the queue and is never sent again", async ({ page }) => {
+test("↵ steers in one click: one chat.steer, a Steered line, never sent again, no interrupt", async ({ page }) => {
   await running(page);
   await say(page, "also keep the old timeout");
   const b = held(page, "also keep the old timeout");
   await b.getByTestId("queue-mark").click();
-  await page.getByTestId("queue-steer").click();
   const row = page.locator("[data-testid=bubble-user][data-steered]", { hasText: "also keep the old timeout" });
-  await expect(row.getByTestId("bubble-steered")).toHaveText("Sent to Kami · joins the running answer or starts right after");
+  // Hermes queued it: the bot has it, read right away (messenger style), with the time
+  await expect(row.getByTestId("bubble-read")).toHaveText(/^Read · \d\d:\d\d$/);
+  await expect(row.getByTestId("bubble-steered")).toHaveCount(0);
   await expect(row.getByTestId("queue-mark")).toHaveCount(0);
   const steer = await calls("chat.steer");
   expect(steer.map((c) => c.params)).toEqual([{ bot: "kami", text: "also keep the old timeout" }]);
@@ -120,6 +110,7 @@ test("Steer: one chat.steer, a Steered line, the message leaves the queue and is
   await endTurn();
   await page.waitForTimeout(400);
   expect(await sent()).toEqual(["Refactor the gateway retry code"]);
+  expect((await calls("chat.interrupt")).length).toBe(0);
 });
 
 test("Steer refused: the message stays waiting and is sent normally after the turn", async ({ page }) => {
@@ -128,27 +119,68 @@ test("Steer refused: the message stays waiting and is sent normally after the tu
   await say(page, "a");
   await say(page, "b goes first");
   await held(page, "b goes first").getByTestId("queue-mark").click();
-  await page.getByTestId("queue-steer").click();
   await expect.poll(async () => (await calls("chat.steer")).length).toBe(1);
   await expect(held(page, "b goes first")).toBeVisible();
   await expect(page.getByTestId("bubble-steered")).toHaveCount(0);
+  // refused: the bot does not have it, so no read mark on it
+  await expect(held(page, "b goes first").getByTestId("bubble-read")).toHaveCount(0);
   await endTurn();
   await expect.poll(sent).toEqual(["Refactor the gateway retry code", "b goes first"]);
   await endTurn();
   await expect.poll(sent).toEqual(["Refactor the gateway retry code", "b goes first", "a"]);
 });
 
-test("Edit puts the text back in the box; Delete drops it; neither is sent", async ({ page }) => {
+test("While it answers › Steer: a message sent mid-answer is steered at once; one behind a waiting message waits", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("omher.busySend", "steer"));
+  await mock("mock.steerMode", { bot: "kami", mode: "reject" });
+  await running(page);
+  // refused, like the button's steer: it waits and goes out after the turn
+  await say(page, "first, steered for me");
+  await expect.poll(async () => (await calls("chat.steer")).map((c) => c.params.text)).toEqual(["first, steered for me"]);
+  await expect(held(page, "first, steered for me")).toBeVisible();
+  // a second message never goes ahead of the one already waiting
+  await say(page, "second waits its turn");
+  await expect(held(page, "second waits its turn")).toBeVisible();
+  await page.waitForTimeout(300);
+  expect((await calls("chat.steer")).length).toBe(1);
+  await endTurn();
+  await expect.poll(sent).toEqual(["Refactor the gateway retry code", "first, steered for me"]);
+  await endTurn();
+  await expect.poll(sent).toEqual(["Refactor the gateway retry code", "first, steered for me", "second waits its turn"]);
+  expect((await calls("chat.interrupt")).length).toBe(0);
+});
+
+test("While it answers › Steer: taken by Hermes, it shows the Steered line and is never sent again", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => localStorage.removeItem("omher.busySend"));
+  // the setting lives in Settings › General and defaults to Wait
+  await page.getByTestId("nav-settings").click();
+  const seg = page.getByTestId("busy-send-seg");
+  await expect(seg.getByRole("radio", { checked: true })).toHaveText("Wait");
+  await seg.getByRole("radio", { name: "Steer" }).click();
+  expect(await page.evaluate(() => localStorage.getItem("omher.busySend"))).toBe("steer");
+  await running(page);
+  await say(page, "keep the old timeout too");
+  // Hermes queued it: the bot has it, so the row is marked steered and reads Read, never sent again
+  const row = page.locator("[data-testid=bubble-user][data-steered]", { hasText: "keep the old timeout too" });
+  await expect(row.getByTestId("bubble-read")).toHaveText(/^Read · \d\d:\d\d$/);
+  await expect(row.getByTestId("bubble-steered")).toHaveCount(0);
+  expect((await calls("chat.steer")).map((c) => c.params)).toEqual([{ bot: "kami", text: "keep the old timeout too" }]);
+  await endTurn();
+  await page.waitForTimeout(400);
+  expect(await sent()).toEqual(["Refactor the gateway retry code"]);
+});
+
+test("↓ puts the text back in the box; × drops it; neither is sent", async ({ page }) => {
   await running(page);
   await say(page, "fix teh typo");
   await say(page, "never mind this");
-  await held(page, "fix teh typo").getByTestId("queue-mark").click();
-  await page.getByTestId("queue-edit").click();
+  await held(page, "fix teh typo").getByTestId("queue-edit").click();
   await expect(page.getByTestId("composer")).toHaveValue("fix teh typo");
   await expect(page.getByTestId("composer")).toBeFocused();
   await expect(held(page, "fix teh typo")).toHaveCount(0);
-  await held(page, "never mind this").getByTestId("queue-mark").click();
-  await page.getByTestId("queue-delete").click();
+  await held(page, "never mind this").hover();
+  await held(page, "never mind this").getByTestId("queue-delete").click();
   await expect(page.getByTestId("bubble-user").filter({ hasText: "never mind this" })).toHaveCount(0);
   await page.getByTestId("composer").fill("");
   await endTurn();
@@ -165,32 +197,77 @@ test("Stop keeps the waiting messages; they go out after the stopped turn", asyn
   expect((await calls("chat.interrupt")).length).toBe(1);
 });
 
-test("keyboard: the ↵ is a button, the menu takes arrows, Enter and Esc (Esc does not stop the answer)", async ({ page }) => {
+test("keyboard: ↵, ↓ and × are buttons in tab order; Enter on × drops it without touching the answer", async ({ page }) => {
   await running(page);
   await say(page, "keyboard one");
-  const mark = held(page, "keyboard one").getByTestId("queue-mark");
-  await expect(mark).toHaveAttribute("aria-haspopup", "menu");
+  const b = held(page, "keyboard one");
+  const mark = b.getByTestId("queue-mark");
+  await expect(mark).not.toHaveAttribute("aria-haspopup", /.+/);
   await mark.focus();
-  await page.keyboard.press("Enter");
-  const menu = page.getByTestId("queue-menu");
-  await expect(menu).toBeVisible();
-  await expect(page.getByTestId("queue-now")).toBeFocused();
-  await page.keyboard.press("ArrowDown");
-  await expect(page.getByTestId("queue-steer")).toBeFocused();
-  await page.keyboard.press("ArrowUp");
-  await page.keyboard.press("ArrowUp");
-  await expect(page.getByTestId("queue-delete")).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(menu).toHaveCount(0);
-  await expect(mark).toBeFocused();
-  await expect(page.getByTestId("stop")).toBeVisible();
-  expect((await calls("chat.interrupt")).length).toBe(0);
-  await page.keyboard.press("Enter");
-  await page.keyboard.press("End");
-  await expect(page.getByTestId("queue-delete")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(b.getByTestId("queue-edit")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
+  const x = b.getByTestId("queue-delete");
+  await expect(x).toBeFocused();
+  await expect(x).toHaveCSS("opacity", "1"); // focus shows it, as hover does
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("bubble-user").filter({ hasText: "keyboard one" })).toHaveCount(0);
   expect((await calls("chat.interrupt")).length).toBe(0);
+  expect((await calls("chat.steer")).length).toBe(0);
+});
+
+test("read receipt: the last message the bot has says Read; a held one does not until it goes out", async ({ page }) => {
+  await running(page);
+  const first = page.locator("[data-testid=bubble-user]", { hasText: "Refactor the gateway retry code" });
+  await expect(first.getByTestId("bubble-read")).toHaveText(/^Read · \d\d:\d\d$/);
+  // only the last message the bot has carries it: earlier ones do not
+  await expect(page.locator("[data-testid=bubble-user]:not([data-steered]) [data-testid=bubble-read]")).toHaveCount(1);
+  await say(page, "then write the notes");
+  await expect(held(page, "then write the notes").getByTestId("bubble-read")).toHaveCount(0);
+  await expect(first.getByTestId("bubble-read")).toBeVisible();
+  await endTurn();
+  const sentLater = page.locator("[data-testid=bubble-user]", { hasText: "then write the notes" });
+  await expect(sentLater.getByTestId("bubble-read")).toBeVisible();
+  await expect(first.getByTestId("bubble-read")).toHaveCount(0);
+});
+
+test("steer reply: the bot's first words after it took the steer show under it, one line, the rest stays hidden", async ({ page }) => {
+  await running(page);
+  await say(page, "keep the old timeout");
+  await held(page, "keep the old timeout").getByTestId("queue-mark").click();
+  const row = page.locator("[data-testid=bubble-user][data-steered]", { hasText: "keep the old timeout" });
+  await expect(row.getByTestId("bubble-read")).toBeVisible();
+  await expect(row.getByTestId("bubble-steer-reply")).toHaveCount(0);
+  const ev = (event: string, extra: Record<string, unknown> = {}) => ({ event, bot: "kami", ...extra });
+  await mock("mock.emit", { events: [
+    ev("tool.start", { tool_id: "sr1", name: "terminal", detail: "ls" }),
+    ev("tool.end", { tool_id: "sr1", name: "terminal", ok: true }),
+    ev("delta", { text: "Got it, keeping the old timeout as it is.\nRe-running the tests now." }),
+    ev("tool.start", { tool_id: "sr2", name: "terminal", detail: "pnpm test" }),
+  ] });
+  await expect(row.getByTestId("bubble-steer-reply")).toHaveText("↳Got it, keeping the old timeout as it is.");
+  await expect(page.getByText("Re-running the tests now.")).toHaveCount(0);
+  // one line under the bubble, inside its width
+  const [r, b] = await Promise.all([row.getByTestId("bubble-steer-reply").boundingBox(), row.locator(".b").boundingBox()]);
+  expect(r!.height).toBeLessThan(20);
+  expect(r!.x + r!.width).toBeLessThanOrEqual(b!.x + b!.width + 1);
+});
+
+test("live line: a long command is cut to a glance with the full text on hover, and the line stays short", async ({ page }) => {
+  await running(page);
+  const long = "cd /Users/you/work/api-server && pnpm -s exec vitest run src/state/store.test.ts --reporter verbose";
+  await mock("mock.emit", { events: [{ event: "tool.start", bot: "kami", tool_id: "ll1", name: "terminal", detail: long }] });
+  const line = page.locator("[data-testid=activity][data-state=live]");
+  const text = line.getByTestId("activity-text");
+  await expect(text).toContainText("cd /Users/you/work");
+  expect(((await text.textContent()) ?? "").length).toBeLessThanOrEqual("Running ".length + 24);
+  await expect(line.locator(".act-live")).toHaveAttribute("title", `Running ${long}`);
+  const [h, tl] = await Promise.all([line.getByTestId("activity-toggle").boundingBox(), page.getByTestId("timeline").boundingBox()]);
+  expect(h!.width).toBeLessThanOrEqual(Math.min(0.4 * tl!.width, 340) + 1);
+  // the typing dots stay above it, with the one ringed face
+  await expect(page.getByTestId("typing")).toBeVisible();
+  await expect(page.getByTestId("typing-ring")).toHaveCount(1);
 });
 
 test("shots: a waiting bubble and its menu, dark/light, en/ko, 900x600", async ({ page }) => {
@@ -209,19 +286,16 @@ test("shots: a waiting bubble and its menu, dark/light, en/ko, 900x600", async (
       const steer = lang === "ko" ? "기존 타임아웃 값은 그대로 둬" : "keep the old timeout as it is";
       await say(page, steer);
       await held(page, steer).getByTestId("queue-mark").click();
-      await page.getByTestId("queue-steer").click();
-      await expect(page.getByTestId("bubble-steered")).toBeVisible();
+      await expect(page.getByTestId("bubble-read")).toBeVisible();
       await say(page, lang === "ko" ? "끝나면 테스트도 돌려줘" : "run the tests when you are done");
       await say(page, lang === "ko" ? "그리고 PR 설명도 써줘" : "and write the PR description");
-      await page.locator("[data-testid=bubble-user][data-held]").last().getByTestId("queue-mark").click();
-      await expect(page.getByTestId("queue-menu")).toBeVisible();
-      await page.getByTestId("queue-now").hover();
-      const menu = (await page.getByTestId("queue-menu").boundingBox())!;
-      const tl = (await page.getByTestId("timeline").boundingBox())!;
-      expect(menu.y + menu.height).toBeLessThanOrEqual(tl.y + tl.height - 12);
-      // it covers no bubble of the person's
+      // the last waiting message hovered: its three buttons, none over a bubble of the person's
+      const last = page.locator("[data-testid=bubble-user][data-held]").last();
+      await last.hover();
+      await expect(last.getByTestId("queue-delete")).toHaveCSS("opacity", "1");
+      const acts = (await last.getByTestId("queue-acts").boundingBox())!;
       for (const box of await page.locator("[data-testid=bubble-user] .b").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().toJSON())))
-        expect(menu.x + menu.width <= box.x || menu.y + menu.height <= box.y || box.y + box.height <= menu.y, JSON.stringify({ menu, box })).toBe(true);
+        expect(acts.x + acts.width <= box.x || acts.y + acts.height <= box.y || box.y + box.height <= acts.y, JSON.stringify({ acts, box })).toBe(true);
       // contrast of a waiting bubble's text and of its Waiting line, as drawn (opacity included)
       console.log(lang, theme, JSON.stringify(await page.evaluate(() => {
         const rgb = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number);
@@ -245,5 +319,50 @@ test("shots: a waiting bubble and its menu, dark/light, en/ko, 900x600", async (
       })));
       await page.screenshot({ path: join(SHOTS, `steer-queue-${lang}-${theme}.png`), animations: "disabled" });
     }
+  }
+});
+
+// Shots for the read receipt, the steer reply and the live line with the dots under it (ko, dark/light, 1280x820,
+// Retina): STEER_ACK_SHOTS=<dir>.
+test.describe("steer ack shots", () => {
+  test.use({ deviceScaleFactor: 2 });
+  for (const theme of ["dark", "light"] as const) {
+    test(`shot steer-ack-ko-${theme}`, async ({ page }) => {
+      const dir = process.env.STEER_ACK_SHOTS || "";
+      test.skip(!dir, "STEER_ACK_SHOTS not set");
+      mkdirSync(dir, { recursive: true });
+      await page.setViewportSize({ width: 1280, height: 820 });
+      await page.addInitScript(([t]) => {
+        localStorage.setItem("omher.theme", t);
+        localStorage.setItem("omher.lang", "ko");
+      }, [theme]);
+      await page.goto("/");
+      await expect(page.getByTestId("bot-kami")).toHaveAttribute("aria-current", "true");
+      await expect(page.getByTestId("bubble-user").first()).toBeVisible();
+      await say(page, "게이트웨이 재시도 코드 리팩터링해줘");
+      await expect(page.getByTestId("stop")).toBeVisible();
+      await say(page, "기존 타임아웃 값은 그대로 둬");
+      await held(page, "기존 타임아웃 값은 그대로 둬").getByTestId("queue-mark").click();
+      const ev = (event: string, extra: Record<string, unknown> = {}) => ({ event, bot: "kami", ...extra });
+      await mock("mock.emit", { events: [
+        ev("tool.start", { tool_id: "sh1", name: "read_file", detail: "gateway/retry.py" }),
+        ev("tool.end", { tool_id: "sh1", name: "read_file", ok: true }),
+        ev("delta", { text: "알겠어요, 타임아웃 값은 그대로 두고 재시도 횟수만 정리할게요.\n" }),
+        ev("tool.start", { tool_id: "sh2", name: "terminal", detail: "cd /Users/you/work/api-server && pnpm -s exec vitest run src/gateway/retry.test.ts --reporter verbose" }),
+      ] });
+      const row = page.locator("[data-testid=bubble-user][data-steered]");
+      await expect(row.getByTestId("bubble-steer-reply")).toBeVisible();
+      await expect(page.getByTestId("typing")).toBeVisible();
+      await page.mouse.move(700, 120);
+      await page.waitForTimeout(400);
+      await page.evaluate(() => {
+        for (const a of document.getAnimations()) {
+          const name = (a as CSSAnimation).animationName ?? "";
+          a.pause();
+          if (name === "ui-typing-hop") a.currentTime = 300;
+        }
+      });
+      await page.screenshot({ path: join(dir, `steer-ack-ko-${theme}.png`) });
+    });
   }
 });

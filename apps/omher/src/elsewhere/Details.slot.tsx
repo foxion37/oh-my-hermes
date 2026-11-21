@@ -1,16 +1,28 @@
 // Details panel: who the bot is, where it is right now (this chat + read-only sessions elsewhere),
 // and its routines from cron. Nothing here writes to another session.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SlotProps } from "../features";
 import type { ReactNode as JSXChild } from "react";
 import type { Away, Bot, Routine } from "../lib/protocol";
-import { useStore } from "../state/store";
+import { replyChipFor, useStore } from "../state/store";
 import { openExternal } from "../lib/openExternal";
 import { shortTime } from "../app/time";
 import { Avatar, CloseIcon, IconButton, SourceIcon } from "../ui";
 import logo from "../assets/omher-mark.png";
-import { awayTime, cadence, nextRun, sourceList, sourceName } from "./format";
-import { DiffTab, ScheduleTab, TAB_ICON, TABS, TerminalTab, WorktreesTab, type PanelTab } from "./PanelTabs";
+import { awayTime, cadence, isFailure, nextRun, sourceList, sourceName, statusText } from "./format";
+import {
+  DiffTab,
+  onPanelRowDoubleClick,
+  onPanelRowPointerDown,
+  PanelMaxButton,
+  usePanelRowSweep,
+  ScheduleTab,
+  TAB_ICON,
+  TABS,
+  TerminalTab,
+  WorktreesTab,
+  type PanelTab,
+} from "./PanelTabs";
 import { useNow } from "./useNow";
 import { RunsTab } from "../runs/RunsTab";
 import { markTabPicked } from "../chat/parts/PanelButton";
@@ -26,8 +38,18 @@ export default function DetailsPanel({ bot, open, onClose }: SlotProps["detailsP
   const tab = s.ui.panelTab;
   const [diffPath, setDiffPath] = useState<string | null>(null);
   useEffect(() => setDiffPath(null), [bot.name]);
+  const row = useRef<HTMLDivElement>(null);
+  usePanelRowSweep(() => row.current, s.ui.panelMax);
   const head = (
-    <div className="details-h pn-tabs" role="tablist" aria-label={tr("pn.panel")}>
+    <div
+      ref={row}
+      className="details-h pn-tabs"
+      role="tablist"
+      aria-label={tr("pn.panel")}
+      onPointerDown={onPanelRowPointerDown}
+      onDoubleClick={onPanelRowDoubleClick}
+      data-testid="panel-tabs"
+    >
       {TABS.map((t) => (
         <button
           key={t.id}
@@ -46,6 +68,7 @@ export default function DetailsPanel({ bot, open, onClose }: SlotProps["detailsP
           {tab === t.id && <span>{t.label}</span>}
         </button>
       ))}
+      <PanelMaxButton />
       <IconButton label={tr("pn.close")} onClick={onClose}>
         <CloseIcon />
       </IconButton>
@@ -94,7 +117,7 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
 
   const model = chat?.model || bot.model;
   const last = chat?.messages[chat.messages.length - 1];
-  const hereTime = chat?.turn ? "working" : last ? shortTime(last.ts, now) : "now";
+  const hereTime = chat?.turn ? tr("act.dag.working") : last ? shortTime(last.ts, now) : tr("time.now");
   const sources = sourceList(away.map((a) => a.source));
 
   return (
@@ -137,10 +160,25 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
           </li>
           {shown.map((a) => {
             const src = sourceName(a.source);
+            // "Reply there" lives here now that these sessions are not in the chat: it points the next message at
+            // that thread (the chip above the composer), and sends nothing by itself
+            const chip = replyChipFor(a);
+            const reply = chip && (
+              <button
+                type="button"
+                className="ew-reply"
+                data-testid="where-reply"
+                title={tr("aw.replyTip")}
+                onClick={() => s.setReplyTo(chip, bot.name)}
+              >
+                {tr("aw.reply")}
+              </button>
+            );
+            const name = a.label?.trim() || a.title?.trim() || tr("aw.session", { app: src });
             const row = (
               <>
-                <span className="t1" title={a.label}>
-                  {a.label}
+                <span className="t1" title={name}>
+                  {name}
                 </span>
                 <span className={`st${a.running ? " run" : ""}`}>
                   {a.running && <i className="ew-live" aria-hidden />}
@@ -156,7 +194,7 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
               </>
             );
             return (
-              <li key={a.id} data-testid="where-row" data-session={a.id}>
+              <li key={a.id} className={reply ? "ew-has-reply" : undefined} data-testid="where-row" data-session={a.id}>
                 {a.url ? (
                   <a
                     className="ew-ss link"
@@ -174,6 +212,7 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
                     {row}
                   </div>
                 )}
+                {reply}
               </li>
             );
           })}
@@ -186,7 +225,10 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
           )}
         </ul>
         <div className="ew-note" data-testid="where-note">
-          {tr("pn.note", { bot: bot.display_name, places: sources || tr("pn.slackDiscord") })}
+          {/* nothing elsewhere yet: no thread to reply to and nothing to open, so the note does not talk about them */}
+          {away.length
+            ? tr("pn.note", { bot: bot.display_name, places: sources || tr("pn.slackDiscord") })
+            : tr("pn.noteHere", { bot: bot.display_name })}
         </div>
         <div className="ew-sec" data-testid="routines-sec">
           {tr("pn.routines")}
@@ -202,7 +244,7 @@ function DetailsTab({ bot, open, head }: { bot: Bot; open: boolean; head: JSXChi
                 <span className="st">{nextRun(r, now)}</span>
                 <span className="t2">
                   <span className="ew-src">{cadence(r.schedule)}</span>
-                  {r.last_status && r.last_status !== "ok" && <span className="st bad">{tr("pn.lastRun", { status: r.last_status })}</span>}
+                  {r.last_status && isFailure(r.last_status) && <span className="st bad">{tr("pn.lastRun", { status: statusText(r.last_status) })}</span>}
                 </span>
               </li>
             ))}

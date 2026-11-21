@@ -208,6 +208,32 @@ class SkillIndexRenderingTests(unittest.TestCase):
         # Surrounding whitespace, then surrounding quote characters, are stripped first.
         self.assertEqual(skill_index.hermes_index_description('  "quoted"  '), "quoted")
 
+    def test_description_cut_matches_hermes_on_real_descriptions(self) -> None:
+        # Expected values are the output of hermes-agent
+        # `agent/skill_utils.py::clip_skill_description` (Nov 2026 main) on
+        # the openings of three shipped descriptions, pasted as literals: the cut lands
+        # on a word boundary, trailing punctuation is stripped, and `...` is
+        # appended. OMH does not import Hermes, so the literals are the pin.
+        cases = (
+            (
+                "[omh] Git branch in trouble: a merge conflict, a commit that broke something, "
+                "history to repair; plan the resolution.",
+                "[omh] Git branch in trouble: a merge conflict, a commit...",
+            ),
+            (
+                "[omh] Accumulated tech debt or architecture deepening: rank it; build the "
+                "severity-by-effort debt ledger.",
+                "[omh] Accumulated tech debt or architecture deepening...",
+            ),
+            (
+                "[omh] Current tech or business fact to cite from web: web lookup lane - settle a question.",
+                "[omh] Current tech or business fact to cite from web: web...",
+            ),
+        )
+        for description, expected in cases:
+            with self.subTest(description=description[:40]):
+                self.assertEqual(skill_index.hermes_index_description(description), expected)
+
     def test_one_line_per_installable_skill_under_sorted_category_headers(self) -> None:
         lines = skill_index.full_profile_skill_index_lines()
         skill_lines = [line for line in lines if line.startswith("    - ")]
@@ -552,9 +578,12 @@ class IndexOpeningLintTests(unittest.TestCase):
         self.assertEqual(skill_index.index_opening("Hermes Code Review workflow: bug-first"), "hermes code review")
 
     def test_the_prefix_costs_six_characters_of_the_visible_window(self) -> None:
-        # The window is 57 characters either way; the prefix sits inside it.
-        self.assertEqual(skill_index.index_opening("[omh] " + "a" * 60 + " b c"), "a" * 51)
-        self.assertEqual(skill_index.index_opening("a" * 60 + " b c"), "a" * 57)
+        # The window is the same either way and the prefix sits inside it: a
+        # third word that ends at character 57 is whole without the prefix
+        # and cut at the word boundary with it.
+        body = "a" * 24 + " " + "b" * 24 + " " + "c" * 7 + " d e"
+        self.assertEqual(skill_index.index_opening("[omh] " + body), "a" * 24 + " " + "b" * 24)
+        self.assertEqual(skill_index.index_opening(body), "a" * 24 + " " + "b" * 24 + " " + "c" * 7)
 
     def test_openings_that_differ_by_the_third_word_do_not_collide(self) -> None:
         pairs = [("one", "[omh] Hermes frontend workflow: x"), ("two", "[omh] Hermes frontend refactor: y")]
@@ -687,6 +716,30 @@ class PluginToolSchemaProducerTests(unittest.TestCase):
         # The node `role` field (+85, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped the same way, from
         # this and from the live schema below, so it can spend neither the approved schema nor the parked cap.
 
+        # The node `review_focus` field (+130, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped before
+        # `identity`: its property and its name in the description's field list.
+        def without_review_focus(target: dict) -> int:
+            before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+            focus = target["parameters"]["properties"]["nodes"]["items"]["properties"].pop("review_focus")
+            self.assertEqual(focus, {"type": "string",
+                                     "description": "What the parent will look for when it reads this node's work."})
+            self.assertEqual(target["description"].count("read_only, identity, review_focus)"), 1)
+            target["description"] = target["description"].replace(
+                "read_only, identity, review_focus)", "read_only, identity)", 1)
+            return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+
+        # The node `identity` field (+122, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry; #2939) is stripped first,
+        # from this and from the live schema below, so it can spend neither the approved schema nor the parked cap.
+        def without_identity(target: dict) -> int:
+            before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+            identity = target["parameters"]["properties"]["nodes"]["items"]["properties"].pop("identity")
+            self.assertEqual(identity, {"type": "string",
+                                        "description": "Optional identity reference: builtin:<name> or custom:<name>."})
+            self.assertEqual(target["description"].count("write_scope, role, owner, local, read_only, identity)"), 1)
+            target["description"] = target["description"].replace(
+                "write_scope, role, owner, local, read_only, identity)", "write_scope, role, owner, local, read_only)", 1)
+            return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+
         # The node `read_only` field (+45, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped before `local`.
         def without_read_only(target: dict) -> int:
             before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
@@ -740,7 +793,34 @@ class PluginToolSchemaProducerTests(unittest.TestCase):
             properties["goal"]["description"] = "define: the run's goal criteria, one line."
             return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
 
+        # The escalated outcome (+224, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped first: its enum value
+        # and its description sentence.
+        def without_escalation(target: dict) -> int:
+            before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+            outcomes = target["parameters"]["properties"]["outcome"]["enum"]
+            self.assertEqual(outcomes.count("escalated"), 1)
+            outcomes.remove("escalated")
+            sentence = ("A child whose handoff starts a line with ESCALATE: settles escalated with the question as "
+                        "reason; the node is offered again one category up (quick, unspecified-low, unspecified-high, "
+                        "ultrabrain), at most twice. ")
+            self.assertEqual(target["description"].count(sentence), 1)
+            target["description"] = target["description"].replace(sentence, "", 1)
+            return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+
+        # The define-only `carry_forward` base revision (+188, its own PLUGIN_TOOL_SCHEMA_CHAR_LIMIT entry) is stripped
+        # first: one optional string property, no description sentence.
+        def without_carry_forward(target: dict) -> int:
+            before = len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+            carry = target["parameters"]["properties"].pop("carry_forward")
+            self.assertEqual(set(carry), {"type", "description"})
+            self.assertEqual(carry["type"], "string")
+            return before - len(json.dumps(target, sort_keys=True, ensure_ascii=False))
+
+        self.assertEqual(without_carry_forward(legacy), 188)
+        self.assertEqual(without_review_focus(legacy), 130)
+        self.assertEqual(without_escalation(legacy), 224)
         self.assertEqual(without_criteria(legacy), 226 + 95 + 8)
+        self.assertEqual(without_identity(legacy), 122)
         self.assertEqual(without_read_only(legacy), 45)
         self.assertEqual(without_local(legacy), 37)
         self.assertEqual(without_owner(legacy), 70)
@@ -758,7 +838,11 @@ class PluginToolSchemaProducerTests(unittest.TestCase):
         # category values, so category growth cannot spend the parked cap.
         live = copy.deepcopy(schema)
         del live["parameters"]["properties"]["nodes"]["items"]["properties"]["category"]["enum"][-len(recipe):]
+        self.assertEqual(without_carry_forward(live), 188)
+        self.assertEqual(without_review_focus(live), 130)
+        self.assertEqual(without_escalation(live), 224)
         self.assertEqual(without_criteria(live), 226 + 95 + 8)
+        self.assertEqual(without_identity(live), 122)
         self.assertEqual(without_read_only(live), 45)
         self.assertEqual(without_local(live), 37)
         self.assertEqual(without_owner(live), 70)
@@ -766,7 +850,7 @@ class PluginToolSchemaProducerTests(unittest.TestCase):
         delta = len(json.dumps(live, sort_keys=True, ensure_ascii=False)) - len(encoded)
         self.assertEqual(
             per_turn_context.plugin_tool_schema_chars_by_tool()["omh_dag"] - len(encoded) - delta,
-            75 + 85 + 70 + 37 + 226 + 95 + 8 + 45,
+            75 + 85 + 70 + 37 + 226 + 95 + 8 + 45 + 122 + 224 + 188 + 130,
         )
         self.assertGreater(delta, 0)
         self.assertLessEqual(delta, 429)  # Measured feature cap, not general headroom.
@@ -789,6 +873,7 @@ class PreLlmCallScenarioTests(unittest.TestCase):
                     "first_turn_without_section",
                     "route_hint",
                     "skill_candidates",
+                    "defect_fix_method",
                     "role_marker",
                     "active_workflow",
                     "running_work_board",
@@ -825,6 +910,21 @@ class PreLlmCallScenarioTests(unittest.TestCase):
         with mock.patch.object(llm_hooks, "acceptance_line", lambda *args: ""):
             without_line = per_turn_context.pre_llm_call_context_scenario_chars()["plan_acceptance"]
         self.assertEqual(with_line - without_line, len(plan_follow_on.ACCEPTANCE_LINE) + len("\n\n"))
+
+    def test_the_defect_fix_scenario_measures_the_method_block(self) -> None:
+        from omh.plugin_bundle.omh.defect_fix_method import METHOD_BLOCK
+        from omh.plugin_bundle.omh.hooks import llm_hooks
+
+        with_block = per_turn_context.pre_llm_call_context_scenario_chars()
+        with mock.patch.object(llm_hooks, "asks_to_fix_code", lambda _message: False):
+            without_block = per_turn_context.pre_llm_call_context_scenario_chars()
+        self.assertEqual(
+            with_block["defect_fix_method"] - without_block["defect_fix_method"], len(METHOD_BLOCK) + len("\n\n")
+        )
+        # Only the scenarios whose request asks to fix code move: this one and the
+        # plain first turn ("... and fix the tests"); the maxima do not.
+        moved = sorted(name for name in with_block if with_block[name] != without_block[name])
+        self.assertEqual(moved, ["defect_fix_method", "first_turn_without_section"])
 
     def test_the_console_scenarios_measure_the_console_choices_lines(self) -> None:
         from omh.plugin_bundle.omh import console_choices
@@ -877,12 +977,16 @@ class PreLlmCallScenarioTests(unittest.TestCase):
     def test_the_primer_limit_still_binds_the_primer_alone(self) -> None:
         self.assertLessEqual(len(awareness_primer_context()), AWARENESS_PRIMER_CONTEXT_CHAR_LIMIT)
         # The first-turn scenario is the primer inside the fence, plus the
-        # request's skill candidate line when it has one, and nothing else.
+        # request's skill candidate line when it has one, plus the debugging
+        # method block when the request asks to fix code, and nothing else.
+        from omh.plugin_bundle.omh.defect_fix_method import METHOD_BLOCK, asks_to_fix_code
+
         first_turn = per_turn_context.pre_llm_call_context_scenario_chars()["first_turn_without_section"]
         fence_overhead = len(llm_hooks.fence_omh_context(["x"])) - 1
         line = skill_candidate_line(skill_candidates_for_turn(per_turn_context._PLAIN_REQUEST))
         line_chars = len("\n\n" + line) if line else 0
-        self.assertEqual(first_turn, len(awareness_primer_context()) + fence_overhead + line_chars)
+        block_chars = len("\n\n" + METHOD_BLOCK) if asks_to_fix_code(per_turn_context._PLAIN_REQUEST) else 0
+        self.assertEqual(first_turn, len(awareness_primer_context()) + fence_overhead + line_chars + block_chars)
 
     def test_a_larger_injected_part_moves_the_measurement(self) -> None:
         before = per_turn_context.pre_llm_call_context_scenario_chars()["first_turn_without_section"]

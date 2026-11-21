@@ -4,9 +4,10 @@
 // agent picked in the SESSIONS + menu: its composer shows that agent read-only and, under it, the folder chip; the
 // first message starts the agent there (Start, for an agent that opens in its terminal). After that the folder is
 // read-only too. A chat agent's composer takes files as the bot chat's does (paste, the + menu, a drop on the chat),
-// in a draft too; a file dropped or pasted on a terminal is saved and its path typed at the prompt.
+// in a draft too; a file dropped or pasted on a terminal is saved and its path typed at the prompt. A TERMINALS session
+// can split with up to three others on any side (SplitView: ⌘D / ⌘⇧D in its terminal, or a TERMINALS row dragged onto it).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { selectAsks, useStore, type OutFile } from "../state/store";
+import { getStore, selectAsks, useStore, type OutFile } from "../state/store";
 import { useResolvedTheme } from "../app/theme";
 import { Timeline } from "../chat/parts/Timeline";
 import { Composer } from "../chat/parts/Composer";
@@ -20,8 +21,9 @@ import type { SessionQueue } from "../chat/parts/Timeline";
 import { ownSetting } from "./ownSetting";
 import type { Bot } from "../lib/protocol";
 import { AgentMark } from "./AgentMark";
+import { fgName, TermRowMark } from "./TermRowMark";
 import { SessionFace } from "./SessionFace";
-import { agentDef, agentLabel, continues, GONE, isCustom, isGone, STOPS_BACKGROUND, draftOpen, folderChoices, folderName, hermesOnly, missingNote, opensAs, parentPath, sessionMode, terminalNote, tildePath, type AgentId, type OpenAs, type SessionRec } from "./agents";
+import { agentDef, agentLabel, continues, GONE, isCustom, isGone, STOPS_BACKGROUND, draftOpen, folderChoices, folderName, hermesOnly, missingNote, opensAs, parentPath, sessionMode, termFallbackName, termMarkAgent, terminalNote, tildePath, type AgentId, type OpenAs, type SessionRec } from "./agents";
 import { pickTitle } from "./titles";
 import { t as tr, tx, type Key } from "../i18n";
 import { windowWatched } from "../lib/notify";
@@ -35,6 +37,12 @@ import { waitingSubs } from "../chat/activity/Subagents";
 import { subagentEnded } from "../state/store";
 import { useAccounts } from "../settings/accounts/useAccounts";
 import { t } from "../i18n";
+import { wireFileDrop, isWindows } from "../terminal/terms";
+import { isMac } from "../app/shortcuts";
+import { SplitView, useSplit, useSplitKeys } from "./SplitView";
+import { groupOf } from "./splitState";
+import { isCopyLinkKey, LINK_COPIED_EVENT } from "./termLink";
+import { TermShareCards } from "./TermShareCard";
 
 const STATUS: Record<string, Key> = { starting: "ss.starting", running: "ss.running", exited: "ss.ended", failed: "ss.couldNotStart" };
 
@@ -42,12 +50,7 @@ const STATUS: Record<string, Key> = { starting: "ss.starting", running: "ss.runn
  *  `background_tasks_changed` lists them beside its background commands). OmO counts commands only. */
 const COUNTS_BACKGROUND_SUBAGENTS: readonly AgentId[] = ["claude"];
 
-const isWindows = () => typeof navigator !== "undefined" && /^Win/.test(navigator.platform);
-
-/** A file as the terminal's drop and paste hand it on. */
-const fileIn = (f: File) => ({ name: f.name || "pasted.png", read: async () => new Uint8Array(await f.arrayBuffer()) });
-
-function TerminalPane({ rec }: { rec: SessionRec }) {
+function TerminalPane({ rec, splits }: { rec: SessionRec; splits?: boolean }) {
   const s = useStore();
   const box = useRef<HTMLDivElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -62,38 +65,42 @@ function TerminalPane({ rec }: { rec: SessionRec }) {
     return () => el.removeEventListener(FIND_EVENT, on);
   }, []);
   // A file dropped on the terminal, or a picture pasted there, is saved and its path typed at the prompt (as a
-  // system terminal types a dropped file's path). Plain text pastes stay xterm's own.
+  // system terminal types a dropped file's path). Plain text pastes stay xterm's own. The bottom panel's panes use the
+  // same wiring (terminal/terms.ts).
   useEffect(() => {
     const el = wrap.current;
     if (!el) return;
-    const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
-    const over = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-    };
-    const drop = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
-      e.preventDefault();
-      const files = [...(e.dataTransfer?.files ?? [])];
-      if (files.length) void getSessions().dropOnTerminal(rec.id, files.map(fileIn), isWindows());
-    };
-    const paste = (e: ClipboardEvent) => {
-      const files = [...(e.clipboardData?.files ?? [])];
-      if (!files.length) return;
+    return wireFileDrop(el, (files) => void getSessions().dropOnTerminal(rec.id, files, isWindows()));
+  }, [rec.id]);
+  // the split keys in a TERMINALS terminal (⌘D, ⌘⇧D, ⌘W, ⌘⌥arrows...; SplitView), taken before xterm
+  useSplitKeys(wrap, rec.id, !!splits);
+  // ⌘⇧C (Alt+Shift+C off macOS) in a TERMINALS terminal: its link to the clipboard. Taken before xterm.
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el || !splits) return;
+    const on = (e: KeyboardEvent) => {
+      if (composing(e) || !isCopyLinkKey(e, isMac())) return;
       e.preventDefault();
       e.stopPropagation();
-      void getSessions().dropOnTerminal(rec.id, files.map(fileIn), isWindows());
+      if (!e.repeat) void getSessions().copyLink(rec.id);
     };
-    el.addEventListener("dragenter", over);
-    el.addEventListener("dragover", over);
-    el.addEventListener("drop", drop);
-    el.addEventListener("paste", paste, true);
+    el.addEventListener("keydown", on, true);
+    return () => el.removeEventListener("keydown", on, true);
+  }, [rec.id, splits]);
+  // a copied link says so on the terminal for a moment (the row menu's Copy link too, while this one shows)
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const on = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== rec.id) return;
+      setCopied(true);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setCopied(false), 1600);
+    };
+    window.addEventListener(LINK_COPIED_EVENT, on);
     return () => {
-      el.removeEventListener("dragenter", over);
-      el.removeEventListener("dragover", over);
-      el.removeEventListener("drop", drop);
-      el.removeEventListener("paste", paste, true);
+      window.removeEventListener(LINK_COPIED_EVENT, on);
+      if (timer) clearTimeout(timer);
     };
   }, [rec.id]);
   useEffect(() => {
@@ -109,6 +116,12 @@ function TerminalPane({ rec }: { rec: SessionRec }) {
     <div className="term-wrap" ref={wrap} data-testid="terminal" data-session={rec.id}>
       <div className="term-box" ref={box} />
       {find && <FindBar req={find} onClose={() => setFind(null)} />}
+      {copied && (
+        <div className="tlink-copied" role="status" data-testid="term-link-copied">
+          {t("tlink.copied")}
+        </div>
+      )}
+      <TermShareCards sessionId={rec.id} title={pickTitle(rec, termFallbackName(rec, getSessions().getState().agents)).title} />
     </div>
   );
 }
@@ -143,7 +156,7 @@ function ChatPane({ rec, chatKey }: { rec: SessionRec; chatKey: string }) {
         : tr("ss.hasEnded", { agent: label });
   // one element per chat: the bubbles are memoized on it
   const face = useMemo(() => <SessionFace chatKey={chatKey} size={28} />, [chatKey]);
-  // steer queue sessions: the ↵ menu of an agent chat's waiting message (a Hermes folder chat has none)
+  // steer queue sessions: the ↵ ↓ × buttons of an agent chat's waiting message (a Hermes folder chat has none)
   const queue = useMemo<SessionQueue | undefined>(
     () =>
       takesFiles
@@ -556,9 +569,14 @@ function Ended({ rec }: { rec: SessionRec }) {
 /** A session that was running when omher restarted and does not continue by itself: one line and Resume, which
  *  starts it again in the same folder (and account). */
 function Paused({ rec }: { rec: SessionRec }) {
+  // why it did not come back by itself (an oh-my-hermes chat the bridge would not attach again), when known
+  const why = rec.error ? rec.error.trim().split("\n").pop() : "";
   return (
     <div className="ss-ended" role="status" data-testid="session-paused">
-      <span className="ss-ended-t">{t("resume.paused")}</span>
+      <span className="ss-ended-t" title={why || undefined}>
+        {t("resume.paused")}
+        {why ? ` · ${why}` : ""}
+      </span>
       <button
         type="button"
         className="ss-restart"
@@ -572,15 +590,48 @@ function Paused({ rec }: { rec: SessionRec }) {
   );
 }
 
+/** What a paused terminal showed before omher restarted, read-only (dimmed, under its divider); nothing starts. */
+function PausedHistory({ rec }: { rec: SessionRec }) {
+  const s = useStore();
+  const mode = useResolvedTheme(s.ui.theme);
+  const box = useRef<HTMLDivElement>(null);
+  const [has, setHas] = useState(true);
+  useEffect(() => {
+    if (!box.current) return;
+    return getSessions().previewHistory(rec.id, box.current, mode, setHas);
+  }, [rec.id, mode]);
+  // with nothing kept it is the same empty space the paused line always had above it
+  return (
+    <div className={has ? "term-wrap" : "chat-empty"} data-testid="session-paused-history">
+      <div className="term-box" ref={box} hidden={!has} />
+    </div>
+  );
+}
+
 /** A restored terminal session that is not running: no terminal is started until the person asks (Resume, or
- *  Restart once it has ended). */
+ *  Restart once it has ended). A paused one shows what it showed before the restart. */
 function TerminalIdle({ rec }: { rec: SessionRec }) {
   const label = agentDef(rec.agent).label;
   return (
     <div className="pane ss-chat ss-idle" data-testid="session-idle">
-      <div className="chat-empty">{rec.paused ? null : tr("ss.agentEnded", { agent: label })}</div>
+      {rec.paused ? <PausedHistory rec={rec} /> : <div className="chat-empty">{tr("ss.agentEnded", { agent: label })}</div>}
       {rec.paused ? <Paused rec={rec} /> : <Ended rec={rec} />}
+      {/* a bot's request waits here too: Deny, or Resume and send (termShare.ts) */}
+      <TermShareCards sessionId={rec.id} title={pickTitle(rec, termFallbackName(rec, getSessions().getState().agents)).title} />
     </div>
+  );
+}
+
+/** One TERMINALS session in a split pane: its terminal (with the Ended line once it ended), or what a paused or
+ *  ended session without a terminal shows (Resume, Restart). */
+function SplitPane({ rec }: { rec: SessionRec }) {
+  const ended = isEnded(rec);
+  if (rec.paused || (ended && !getSessions().hasTerm(rec.id))) return <TerminalIdle rec={rec} />;
+  return (
+    <>
+      <TerminalPane key={`${rec.id}-term-${getSessions().termRun(rec.id)}`} rec={rec} splits />
+      {ended && <Ended rec={rec} />}
+    </>
   );
 }
 
@@ -772,6 +823,7 @@ function SessionModel({ rec, options, note }: { rec: SessionRec; options: ModelO
 export function SessionView() {
   const s = useStore();
   const ss = useSessions();
+  const sp = useSplit();
   const rec = ss.list.find((r) => r.id === s.ui.session) ?? null;
   // looking at a session sees what its row carried for the person (it rang, it finished): at once when it is opened,
   // and when the window comes back to it
@@ -816,7 +868,8 @@ export function SessionView() {
   const chatKey = getSessions().chatKey(rec.id);
   // a session opened as a terminal is one whatever its agent usually does: it has no chat, no model and no toggle
   const mode = sessionMode(ss.agents, rec);
-  const label = agentLabel(rec.agent, ss.agents);
+  // a terminal names the CLI in its foreground (a Shell where `claude` runs reads Claude Code)
+  const label = mode === "terminal" && rec.fgAgent ? fgName(rec.fgAgent) : agentLabel(rec.agent, ss.agents);
   // DeepSeek Harness ships no terminal profile: a DSH chat has no Terminal view (and its model is set in its own app).
   // A Hermes chat without oh-my-hermes has none either: that view starts `omh`, which is not there.
   const noTerminal = rec.agent === "dsh" || (rec.agent === "omh" && hermesOnly(ss.agents));
@@ -864,7 +917,7 @@ export function SessionView() {
     <>
       <header className="head" data-testid="header">
         <span className="ss-head-mark">
-          <AgentMark agent={rec.agent} size={18} />
+          {mode === "terminal" ? <TermRowMark agent={termMarkAgent(rec)} size={18} /> : <AgentMark agent={rec.agent} size={18} />}
         </span>
         {/* two boxes that are not there on a wide header (display: contents): on a narrow one with background work
             they let the status, the label and its Stop go under the name (sessions.css) */}
@@ -880,7 +933,7 @@ export function SessionView() {
           </span>
           <span className="ss-head-now">
             <span
-              className={`ss-head-st ${rec.view === "terminal" && canToggle ? "mode" : rec.status}${showChat && !turn ? " idle" : ""}${showChat && needs ? " needs" : ""}`}
+              className={`ss-head-st ${rec.view === "terminal" && canToggle ? "mode" : rec.status}${mode === "terminal" ? " term" : ""}${showChat && !turn ? " idle" : ""}${showChat && needs ? " needs" : ""}`}
               title={status}
               data-testid="session-status"
             >
@@ -933,7 +986,10 @@ export function SessionView() {
           </div>
         )}
       </header>
-      {showChat ? (
+      {mode === "terminal" && !showChat && groupOf(sp.groups, rec.id) ? (
+        // a TERMINALS session in a split: every pane shows, each as its session is (running, paused, ended)
+        <SplitView main={rec} pane={(r) => <SplitPane rec={r} />} />
+      ) : showChat ? (
         <ChatPane rec={rec} chatKey={chatKey!} />
       ) : rec.paused || ((rec.status === "exited" || rec.status === "failed") && !getSessions().hasTerm(rec.id)) ? (
         <TerminalIdle rec={rec} />
@@ -946,8 +1002,13 @@ export function SessionView() {
         </div>
       ) : (
         <>
-          {/* a new key after Restart: a fresh terminal for the program started again */}
-          <TerminalPane key={`${rec.id}-term-${getSessions().termRun(rec.id)}`} rec={rec} />
+          {/* a new key after Restart: a fresh terminal for the program started again. A TERMINALS session can split
+              (once split, the branch above draws every pane) */}
+          {mode === "terminal" ? (
+            <TerminalPane key={`${rec.id}-term-${getSessions().termRun(rec.id)}`} rec={rec} splits />
+          ) : (
+            <TerminalPane key={`${rec.id}-term-${getSessions().termRun(rec.id)}`} rec={rec} />
+          )}
           {!canToggle && isEnded(rec) && <Ended rec={rec} />}
         </>
       )}

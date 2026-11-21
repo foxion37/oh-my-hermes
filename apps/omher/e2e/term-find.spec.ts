@@ -127,12 +127,13 @@ test("the counter is not clipped and the bar stays inside a narrow window", asyn
   expect(r.radius).toBeLessThanOrEqual(6);
 });
 
-test("the shortcut does nothing in a chat session", async ({ page }) => {
+// chat-mode CLI sessions replaced by bot threads (2026-11-16: terminals kept)
+test.skip("the shortcut does nothing in a chat session", async ({ page }) => {
   await openApp(page);
   await page.getByTestId("session-new").click();
-  await page.getByTestId("session-agent-claude").click();
   await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
+  await page.getByTestId("session-agent-claude").click();
   await expect(page.getByTestId("session-chat")).toHaveAttribute("data-draft", "true");
   await page.getByTestId("composer").fill("/status");
   await page.keyboard.press("Enter");

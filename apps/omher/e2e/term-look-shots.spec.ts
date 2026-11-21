@@ -32,7 +32,7 @@ async function open(page: Page, theme: string, lang = "en") {
       localStorage.setItem("omher.lang", l);
       for (const k of ["omher.term", "omher.sessions.recent", "omher.sessions.open", "omher.resume"]) localStorage.removeItem(k);
       const w = window as unknown as { __omherPickFolder: string; __omherMockAgents: string[] };
-      w.__omherPickFolder = "/Users/you/code/web-app";
+      w.__omherPickFolder = "/home/you/code/web-app";
       w.__omherMockAgents = ["claude", "codex", "omh"];
     },
     [theme, lang],
@@ -49,11 +49,9 @@ async function settings(page: Page) {
 
 async function terminalClaude(page: Page) {
   await page.getByTestId("session-new").click();
-  await page.getByTestId("session-agent-claude").click();
   await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
-  await page.getByTestId("session-way-terminal").click();
-  await page.getByTestId("session-go").click();
+  await page.getByTestId("session-agent-claude").click();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
 }
 

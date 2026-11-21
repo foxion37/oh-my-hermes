@@ -23,19 +23,27 @@
 // message by its saved copy's path. An oh-my-hermes session takes no files: the bridge attaches files to a bot's
 // main chat only.
 import { useSyncExternalStore } from "react";
-import type { Terminal } from "@xterm/xterm";
+import type { ITerminalInitOnlyOptions, ITerminalOptions, Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
-import { afterOpen, feed, onVisible } from "./term/engine";
+import { afterOpen, bracketedPaste, CELLS_EVENT, feed, gpuComing, isParked, live, onVisible, PARKING_EVENT, type Remake } from "./term/engine";
+import { onCwd, onProgress } from "./term/engine-marks";
 import { applyLook, termOptions } from "./term/look";
+import { termFontsReady } from "./term/fonts";
 import { onTermSettings, readTermSettings } from "./term/settings";
+import { forgetHistory, pruneHistory, restoredText, trackHistory, watchHistorySetting } from "./term/history";
+import { savedPanelKeys } from "../terminal/state";
 import { termTheme } from "./term/themes";
-import { acpRow, agentDef, agentLabel, continues, draftAgent, draftFolder, draftOpen, hermesOnly, installLine, isBuiltin, isGone, OPEN_KEY, opensAs, parseOpens, parseRecent, pushRecent, RECENT_KEY, registerAcp, sessionMode, type AgentId, type AgentInfo, type OpenAs, type Unseen, type Opens, type Recent, type SessionRec } from "./agents";
+import { getShellHost, learnThisHost } from "../terminal/host";
+import { onSessionFg } from "./fg";
+import { termActs } from "./termActivity";
+import { isLinkId, LINK_COPIED_EVENT, newLinkId, termLinkUrl } from "./termLink";
+import { acpRow, agentDef, agentLabel, continues, draftAgent, draftFolder, draftOpen, hermesOnly, installLine, isBuiltin, isGone, isShell, isTerminalRec, LAST_LINE_MAX, SHELL, termEnd, termMarkAgent, lastPrintedLine, OPEN_KEY, opensAs, parseOpens, parseRecent, pushRecent, RECENT_KEY, registerAcp, sessionMode, termGroups, type AgentId, type AgentInfo, type OpenAs, type Unseen, type Opens, type Recent, type SessionRec } from "./agents";
 import { NAME_MAX, parseTitles, promptTitle, putTitle, TITLES_KEY } from "./titles";
 import { getDraft, setDraft as setUnsent } from "../app/drafts";
 import { getHost, type ChatEvent, type ChatInput, type PastChat, type SessionHost } from "./host";
 import { localBot } from "../peers/peerKey";
 import { folderKey, getStore, notifySessionEvent, notifySessionNote, onBridgeEvent, selectAsks, setChatRoute, setSessionKeyLookup, type OutFile, type SentFile, type Store } from "../state/store";
-import { blobType, bytesOf, inlinePicture, parseSentFiles, putSentFiles, SENT_FILES_KEY, shellQuote, wireText, type SavedFile, type SentFilesBook } from "./attach";
+import { blobType, bytesOf, inlinePicture, parseSentFiles, pathsTyped, putSentFiles, SENT_FILES_KEY, shellQuote, wireText, type SavedFile, type SentFilesBook } from "./attach";
 import type { AccountCli, AccountGroup, ApprovalChoice, BridgeEvent, ClarifyAnswers, Msg } from "../lib/protocol";
 import { continuesItself, type SavedSession } from "../app/resume";
 import { accountGroups } from "../settings/accounts/useAccounts";
@@ -43,6 +51,9 @@ import { modesOf, steersOf } from "./controls";
 import { parseCommands, type AgentCommand } from "../chat/parts/commands";
 import { t as tr } from "../i18n";
 import { windowWatched, type SessionNote } from "../lib/notify";
+import { createCloseGrace, graceMs, restoreSplitIn, type SplitWas } from "./closeGrace";
+import { getSplit, groupOf, leaveIn, setSplit } from "./splitState";
+import { getFolderPrefs, orderFolders } from "./folders";
 
 /** The Accounts CLI a session of `agent` signs in as (mirrors `session_cli` in src-tauri/src/accounts.rs). */
 const ACCOUNT_CLI: Partial<Record<AgentId, AccountCli>> = { claude: "claude", codex: "codex", grok: "grok" };
@@ -106,21 +117,43 @@ export interface AgentLive {
 }
 
 interface Term {
-  term: Terminal;
+  /** the terminal now: reading it makes a parked one again (term/park.ts) */
+  readonly term: Terminal;
+  /** the xterm it has, parked or not */
+  raw: Terminal;
   fit: FitAddon;
+  /** makes it again after it was parked */
+  remake?: Remake;
   /** xterm renders into this element; it moves between session views instead of being re-created */
   el: HTMLDivElement;
   hostId: number | null;
   closed: boolean;
   /** Undoes what the engine attached after the terminal opened (its renderer, add-ons). */
   undo: () => void;
-  /** Bytes drawn before the shell's id for the session was known: acknowledged once it is. */
-  owed: number;
   /** The size the program was last told (when it started, then each resize sent). */
   told: { cols: number; rows: number } | null;
+  /** xterm resized (and so reflowed or trimmed its screen) since the program was last told its size: set by every
+   *  resize, cleared by `tellSize`. A size that came back to `told` still needs the program to redraw. */
+  reflowed: boolean;
   /** A changed size waiting to be sent (`RESIZE_SETTLE_MS`). */
   settle: ReturnType<typeof setTimeout> | null;
+  /** Where its program runs: the agent PTY host, or (a Shell row) the login-shell host of the bottom panel. */
+  io: TermIo;
+  /** Which program run in this terminal it is (a CLI row goes on as the login shell when its CLI ends): output
+   *  drawn after its program was replaced is not acknowledged to the next one. */
+  run: number;
+  /** The person typed into the current program: a shell that ends before that, with an error, failed at start. */
+  typed: boolean;
+  /** Its row was closed and waits out the undo window (closeGrace.ts): its program runs on, hidden, and takes no
+   *  input (keys, bot prompts, dropped files) until Undo puts the row back. */
+  held?: boolean;
 }
+
+/** The PTY calls a terminal makes once its program runs. */
+type TermIo = Pick<SessionHost, "write" | "ack" | "resize" | "close">;
+
+/** The row's last-output time is written at most this often (a flood would otherwise re-render the sidebar). */
+const OUT_MARK_MS = 500;
 
 /** A terminal's new size goes to its program once it has stopped changing for this long. Dragging a window gives
  *  one size per frame (16.7 ms at 60 Hz), so a wait of one frame or less collapses nothing; two frames does, and
@@ -129,12 +162,36 @@ export const RESIZE_SETTLE_MS = 32;
 
 const utf8 = new TextEncoder();
 
+/** A random (version 4) UUID: the id omher gives a new Claude Code conversation in a terminal (`--session-id`). */
+export function newConversationId(): string {
+  const c = globalThis.crypto;
+  if (typeof c?.randomUUID === "function") return c.randomUUID();
+  const b = c.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/** TERMINALS agents that continue their own conversation after omher restarts (`claude --resume`, `codex resume`). */
+const TERM_CONTINUES: readonly AgentId[] = ["claude", "codex"];
+/** TERMINALS agents that reopen their own dropped session after omher restarts with no id from omher: oh-my-hermes
+ *  (`omh`) is told its row's link (`OMHER_TERMINAL_LINK`, rule 11) and reopens the session it dropped under that
+ *  terminal by itself (OMH's auto-resume), so it needs no conversation id. */
+const TERM_REOPENS: readonly AgentId[] = ["omh"];
+/** Whether a TERMINALS session that was running when omher closed starts again by itself after the restart. */
+const termComesBack = (s: Pick<SavedSession, "agent" | "agentSession">): boolean =>
+  TERM_REOPENS.includes(s.agent) || (!!s.agentSession && TERM_CONTINUES.includes(s.agent));
+/** When a TERMINALS Codex session first asks for its conversation id, and how often after that until it has one. */
+const CODEX_ID_FIRST_MS = 5_000;
+const CODEX_ID_EVERY_MS = 15_000;
+
 type Xterm = [typeof import("@xterm/xterm"), typeof import("@xterm/addon-fit")];
 let xtermLoad: Promise<Xterm> | null = null;
 let xtermMods: Xterm | null = null;
 /** xterm (about 88 kB gz) loads when the first session opens, not with the app. */
 const loadXterm = () =>
-  (xtermLoad ??= Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/xterm/css/xterm.css")]).then(
+  (xtermLoad ??= Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/xterm/css/xterm.css"), termFontsReady()]).then(
     ([x, f]) => (xtermMods = [x, f]),
   ));
 
@@ -233,6 +290,15 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
    *  sends no account; the shell uses the one picked for new sessions). */
   const fromBefore = new Set<string>();
   const accountOf = (r: SessionRec) => (fromBefore.has(r.id) ? r.account : undefined);
+  /** TERMINALS sessions put back after a restart whose agent continues its own conversation: their next start (once)
+   *  continues it (`--resume`, `codex resume`) instead of starting a new one. */
+  const termAgain = new Set<string>();
+  /** TERMINALS sessions put back after a restart whose kept history goes into their terminal before their program's
+   *  first output (once). */
+  const histBack = new Set<string>();
+  /** Each TERMINALS session's history keeping (term/history.ts). */
+  const histOf = new Map<string, { touch: () => void; stop: () => void; flush: () => void }>();
+  watchHistorySetting(host);
   /** drafts whose agent / folder the person picked: a late agent or home look-up no longer moves them */
   const picked = new Map<string, { agent?: boolean; cwd?: boolean }>();
   let notify: ((ev: BridgeEvent) => void) | null = null;
@@ -243,6 +309,13 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     for (const l of [...listeners]) l();
   };
   const rec = (id: string) => state.list.find((s) => s.id === id);
+  /** A link id no session in the list holds (termLink.ts). */
+  const freshLinkId = (taken: ReadonlySet<string> = new Set(state.list.map((r) => r.linkId).filter((x): x is string => !!x))): string => {
+    for (;;) {
+      const id = newLinkId();
+      if (!taken.has(id)) return id;
+    }
+  };
 
   // ---- what a session did while the person looked elsewhere --------------------------------
 
@@ -273,8 +346,9 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     const r = rec(id);
     if (!r || watching(id)) return;
     flag(id, "end");
-    // `told`: the turn that failed with it already raised a notification with the same reason
-    if (!told) notifyState?.(id, { kind, name: nameOf(r), ...detail });
+    // `told`: the turn that failed with it said the same reason (a notification only with "Also notify on errors");
+    // `ms`: a program that ends within its first seconds did not really run
+    notifyState?.(id, { kind, name: nameOf(r), ...detail, ms: Date.now() - r.startedAt, told });
   };
   const patchRec = (id: string, p: Partial<SessionRec>) => set({ list: state.list.map((s) => (s.id === id ? { ...s, ...p } : s)) });
   let titles = readTitles();
@@ -593,13 +667,60 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
       keys.set(id, folderKey(bot, res.session));
       registerRoute(id);
       openChat(id, res.model);
-      patchRec(id, { status: "running", model: res.model, agentSession: res.session });
+      // the row keeps Hermes' stored id (what `folder.resume` takes after a restart); the live bridge id is the proc's.
+      // A chat the bridge could not record (`recorded: false`) would be refused after a restart: the row keeps no id,
+      // so it comes back paused and Resume opens a new folder chat
+      patchRec(id, { status: "running", model: res.model, agentSession: (res.recorded !== false && res.stored) || undefined });
       void loadHermesModels(id, bot);
     } catch (e) {
       if (procs.get(id) === proc) procs.delete(id);
       const error = errText(e);
       patchRec(id, { status: "failed", error });
       tellEnd(id, "failed", { error });
+    }
+  };
+
+  /**
+   * Attach again the Hermes folder chat session `id` held before omher restarted (`folder.resume` with the stored id
+   * its row kept): the same conversation, its messages read back from Hermes, its waiting asks sent again. The bridge
+   * takes only a folder chat it made for this folder (rule 3). Null when it is attached, else why not.
+   */
+  const reattachFolder = async (id: string): Promise<string | null> => {
+    const r = rec(id);
+    const bot = r?.bot;
+    const stored = r?.agentSession;
+    if (!r || !bot || !stored) return tr("ss.noBot");
+    const proc: ChatProc = { kind: "folder", bot };
+    procs.set(id, proc);
+    try {
+      const res = await store().actions.folderResume(bot, r.cwd, stored);
+      proc.fid = res.session;
+      if (procs.get(id) !== proc) {
+        void store().actions.folderClose(bot, res.session).catch(() => undefined);
+        return null;
+      }
+      // the chat restored from the snapshot gives way to the one Hermes holds (no await before this: the asks the
+      // bridge sends after its reply find the chat open)
+      const old = keys.get(id);
+      const key = folderKey(bot, res.session);
+      if (old && old !== key) {
+        setChatRoute(old, null);
+        store().dispatch({ type: "chat.forget", bot: old });
+      }
+      keys.set(id, key);
+      registerRoute(id);
+      store().dispatch({
+        type: "chat.opened",
+        bot: key,
+        res: { session_id: key, messages: res.messages ?? [], running: !!res.running, model: res.model, provider: res.provider, reasoning: res.reasoning },
+        now: Date.now(),
+      });
+      patchRec(id, { status: "running", model: res.model, agentSession: res.stored || stored, paused: undefined, error: undefined, exitCode: null });
+      void loadHermesModels(id, bot);
+      return null;
+    } catch (e) {
+      if (procs.get(id) === proc) procs.delete(id);
+      return errText(e);
     }
   };
 
@@ -685,7 +806,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     const key = keys.get(id);
     return key && chatOf(key)?.queue?.includes(lid) && heldInputs.get(lid)?.id === id ? key : null;
   };
-  /** The ↵ menu of a waiting message in session `id`'s chat. */
+  /** The ↵ ↓ × buttons of a waiting message in session `id`'s chat. */
   const queuePick = async (id: string, lid: string, c: "now" | "steer" | "edit" | "delete") => {
     const key = heldIn(id, lid);
     if (!key) return; // already with the agent: the menu offers nothing
@@ -937,6 +1058,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     if (agent) picked.set(id, { agent: true });
     const r: SessionRec = {
       id,
+      linkId: freshLinkId(),
       agent: agent ?? draftAgent(state.recent, state.agents),
       cwd: draftFolder(state.recent, state.home),
       startedAt: Date.now(),
@@ -965,6 +1087,50 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
   };
 
   /**
+   * TERMINALS +: start `agent` (or the Shell, `SHELL`) in a terminal in `cwd` (none: the last folder used, else home)
+   * at once, and open it. Never a chat: an agent that usually opens as omher's chat is opened as its own terminal.
+   * A Shell runs `shell` (an id from the shell's list; none: Settings › Terminal › Default shell, else the login shell).
+   */
+  const startTerminal = (agent: AgentId, cwd?: string, shell?: string): string | null => {
+    const at = cwd || draftFolder(state.recent, state.home);
+    if (!at) return null;
+    const id = `s${++seq}`;
+    const startedAt = Date.now();
+    const asTerminal = !isShell(agent) && sessionMode(state.agents, { agent }) !== "terminal";
+    const account = isShell(agent) ? undefined : accountFor(accounts(), agent);
+    const shellId = isShell(agent) ? shell || readTermSettings().defaultShell || undefined : undefined;
+    const r: SessionRec = {
+      id,
+      linkId: freshLinkId(),
+      agent,
+      cwd: at,
+      startedAt,
+      status: "starting",
+      view: "terminal",
+      ...(asTerminal ? { open: "terminal" as const } : {}),
+      ...(account ? { account } : {}),
+      ...(shellId ? { shell: shellId } : {}),
+      fgAgent: null,
+    };
+    const recent = pushRecent(state.recent, { agent, cwd: at, at: startedAt });
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+    } catch {
+      /* no storage */
+    }
+    set({ list: [r, ...state.list], recent });
+    store().actions.openSession(id);
+    return id;
+  };
+
+  /** The CLI running in the foreground of session `id`'s terminal (the shell's foreground-process event), or null. */
+  const setSessionFg = (id: string, agent: string | null) => {
+    const r = rec(id);
+    if (!r || (r.fgAgent ?? null) === agent) return;
+    patchRec(id, { fgAgent: agent });
+  };
+
+  /**
    * Continue a conversation Claude Code or Codex keeps for a folder (made in its CLI, or anywhere else): a session in
    * that folder whose chat shows the conversation's last messages, and whose agent continues it (Claude Code
    * `--resume`, Codex `thread/resume`). A session that already runs that conversation is opened instead.
@@ -980,6 +1146,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     const startedAt = Date.now();
     const r: SessionRec = {
       id,
+      linkId: freshLinkId(),
       agent: chat.agent,
       cwd: chat.cwd,
       startedAt,
@@ -1154,61 +1321,202 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
 
   /** How many times session `id`'s terminal was started again (Restart): the view keys its terminal on it. */
   const termRuns = new Map<string, number>();
+  /** What stops following each session's foreground CLI (its pty's `session-fg` events). */
+  const fgOff = new Map<string, () => void>();
 
+  /** TERMINALS Codex sessions that do not know their conversation id yet: the next ask. A running Codex holds its
+   *  own rollout open once its first prompt is answered, so while the row's Codex runs the shell is asked which
+   *  conversation the Codex in that terminal's foreground holds open (rule 11: only the pty id goes out, only a UUID
+   *  comes back), 5 s after it started and every 15 s after, until it names one; that is kept as the row's
+   *  `agentSession` so a restart continues it (`codex resume <id>`) and the asking stops. A row only ever hears of the
+   *  file its own process holds, so another row's conversation can never come to it. A Codex that ends stops the
+   *  asking and hands its id to no row (its row goes on as its shell and is not resumed); one that never learned it
+   *  comes back paused. */
+  const codexIdTimer = new Map<string, ReturnType<typeof setTimeout>>();
+  const findCodexId = (id: string, t: Term, run: number, pty: number, wait: number) => {
+    if (!host.codexConversation) return;
+    clearTimeout(codexIdTimer.get(id));
+    codexIdTimer.set(
+      id,
+      setTimeout(async () => {
+        codexIdTimer.delete(id);
+        const live = () => terms.get(id) === t && t.run === run && !t.closed && t.hostId === pty && rec(id)?.agent === "codex" && !rec(id)?.agentSession;
+        if (!live()) return;
+        const got = await host.codexConversation!(pty).catch(() => null);
+        if (!live()) return;
+        if (got) patchRec(id, { agentSession: got });
+        else findCodexId(id, t, run, pty, CODEX_ID_EVERY_MS);
+      }, wait),
+    );
+  };
+
+  /**
+   * Start session `id`'s program in its terminal `t`. A Shell row runs the person's login shell; a CLI row runs its
+   * CLI and, when that ends, goes on as the login shell in the same terminal (same scrollback, size and folder), so
+   * the next CLI the person starts there is followed like any other (`session-fg`). When the shell of a TERMINALS row
+   * ends the row closes, as its x does; a shell that ends with an error before the person typed anything (it could
+   * not start properly) stays, with what it printed.
+   */
   const startTerm = async (id: string, t: Term) => {
     const r = rec(id);
     if (!r) return;
+    const run = ++t.run;
+    const shell = isShell(r.agent);
+    const io: TermIo = shell ? getShellHost() : host;
+    t.io = io;
+    t.hostId = null;
+    t.closed = false;
+    t.typed = false;
+    t.told = null;
     // the terminal view of a chat session does not decide the session's status; the chat does
     const ofChat = sessionMode(state.agents, r) !== "terminal";
-    // Claude Code's terminal continues the chat's conversation
-    const resume = r.agentSession && ofChat && r.agent === "claude" ? r.agentSession : undefined;
+    // a TERMINALS Claude Code or Codex session put back after a restart continues its own conversation (once);
+    // Claude Code's terminal view of a chat continues the chat's conversation
+    const again = !ofChat && termAgain.delete(id) && !!r.agentSession && TERM_CONTINUES.includes(r.agent);
+    // a TERMINALS oh-my-hermes terminal is told its row's link (OMHER_TERMINAL_LINK): `omh` reopens by itself the
+    // session it dropped in this terminal (after omher restarted, or on Restart), and no other program is told it
+    const link = !ofChat && r.agent === "omh" && isLinkId(r.linkId) ? r.linkId : undefined;
+    const resume = again ? r.agentSession : r.agentSession && ofChat && r.agent === "claude" ? r.agentSession : undefined;
+    // any other Claude Code terminal starts a new conversation under an id omher makes, kept so a restart continues it
+    const sessionId = !ofChat && !resume && r.agent === "claude" ? newConversationId() : undefined;
+    if (sessionId) patchRec(id, { agentSession: sessionId });
+    // what this terminal showed before omher restarted comes first, dimmed, under a divider (once)
+    if (!ofChat && histBack.delete(id)) {
+      const back = await restoredText(host, id);
+      if (t.run !== run) return;
+      if (back) feed(t.term, back);
+    }
+    if (!ofChat && !histOf.has(id)) {
+      const h = trackHistory(host, id, () => (terms.get(id) === t && !isParked(t.raw) ? t.term : null));
+      const flush = () => h.flush();
+      t.el.addEventListener(PARKING_EVENT, flush);
+      histOf.set(id, { ...h, stop: () => (t.el.removeEventListener(PARKING_EVENT, flush), h.stop()) });
+    }
     const { cols, rows } = t.term;
+    let marked = 0;
+    // this program's pty id once known, and what was drawn of its output before that
+    let pty: number | null = null;
+    let owed = 0;
+    // the TERMINALS card's second line: the last line on its screen with text, read a moment after output stops
+    // flowing in (once per OUT_MARK_MS at most), from the terminal itself
+    let lineTimer: ReturnType<typeof setTimeout> | null = null;
+    const readLine = () => {
+      lineTimer = null;
+      const b = t.term.buffer.active;
+      const lines: string[] = [];
+      for (let y = 0; y < t.term.rows; y++) lines.push(b.getLine(b.baseY + y)?.translateToString(true) ?? "");
+      const line = lastPrintedLine(lines) || undefined;
+      // its own small store: a line change re-renders that one row, never the sessions list
+      if (rec(id)) termActs.patch(id, { lastLine: line });
+    };
+    // parked before that read came (only an e2e's short thresholds allow it: a real park waits for a minute of
+    // quiet): the line is read now, from the xterm being parked, so the read does not make it again
+    const lineBeforePark = () => {
+      if (t.run !== run) return t.el.removeEventListener(PARKING_EVENT, lineBeforePark);
+      if (lineTimer === null) return;
+      clearTimeout(lineTimer);
+      readLine();
+    };
+    t.el.addEventListener(PARKING_EVENT, lineBeforePark);
+    const onData = (d: Uint8Array | string) => {
+      // every message is acknowledged once the terminal has taken it, in order: the shell reads the program
+      // no further ahead of the page than its credit allows (to this program only: a replaced one is gone)
+      const bytes = typeof d === "string" ? utf8.encode(d).length : d.byteLength;
+      feed(t.term, d, () => {
+        if (t.run !== run) return;
+        if (pty === null) owed += bytes;
+        else io.ack(pty, bytes);
+      });
+      histOf.get(id)?.touch();
+      // the TERMINALS row's spinner and age: when output last flowed (throttled)
+      const now = Date.now();
+      if (!ofChat && now - marked >= OUT_MARK_MS) {
+        marked = now;
+        termActs.patch(id, { lastOut: now });
+      }
+      if (!ofChat && lineTimer === null) lineTimer = setTimeout(readLine, OUT_MARK_MS);
+    };
     try {
-      const hostId = await host.start(
-        r.agent,
-        r.cwd,
-        cols,
-        rows,
-        (d) => {
-          // every message is acknowledged once the terminal has taken it, in order: the shell reads the program
-          // no further ahead of the page than its credit allows
-          const bytes = typeof d === "string" ? utf8.encode(d).length : d.byteLength;
-          feed(t.term, d, () => {
-            if (t.hostId === null) t.owed += bytes;
-            else host.ack(t.hostId, bytes);
-          });
-        },
-        (code) => {
-          t.closed = true;
-          if (!ofChat) {
-            patchRec(id, { status: "exited", exitCode: code });
-            tellEnd(id, "ended", { code });
-          }
-          t.term.write(`\r\n\x1b[2m[${code ? tr("ss.termEndedExit", { agent: agentDef(r.agent).label, code }) : tr("ss.termEnded", { agent: agentDef(r.agent).label })}]\x1b[0m\r\n`);
-        },
-        resume,
-        accountOf(r),
-      );
-      t.hostId = hostId;
-      if (t.closed) {
-        // closed while starting
-        void host.close(hostId);
+      const onExit = (code: number | null) => {
+        // a program omher stopped (the row closed, Restart) or one already replaced says nothing more
+        if (terms.get(id) !== t || t.run !== run) return;
+        t.closed = true;
+        termActs.patch(id, { progress: undefined });
+        if (lineTimer !== null) clearTimeout(lineTimer);
+        lineTimer = null;
+        fgOff.get(id)?.();
+        fgOff.delete(id);
+        if (rec(id)?.fgAgent) setSessionFg(id, null);
+        // its row was closed and waits to be undone: with the program gone there is nothing to undo
+        if (t.held) {
+          grace.finish(id);
+          return;
+        }
+        const label = agentDef(r.agent).label;
+        const end = termEnd({ ofChat, shell, typed: t.typed, code });
+        if (end === "shell") {
+          // the CLI ended: the same terminal goes on as the person's login shell in that folder
+          feed(t.term, `\r\n\x1b[2m${code ? tr("ss.backToShellExit", { agent: label, code }) : tr("ss.backToShell", { agent: label })}\x1b[0m\r\n`);
+          patchRec(id, { agent: SHELL, open: undefined, account: undefined, agentSession: undefined, agentTitle: undefined, startedAs: undefined, fgAgent: null, status: "starting", exitCode: null, error: undefined });
+          void startTerm(id, t);
+          return;
+        }
+        if (end === "close") {
+          // exit, Ctrl+D: the row goes, as closing it with its x does (nothing runs, so no undo window)
+          close(id);
+          return;
+        }
+        if (!ofChat) {
+          patchRec(id, { status: "exited", exitCode: code });
+          tellEnd(id, "ended", { code });
+        }
+        feed(t.term, `\r\n\x1b[2m[${code ? tr("ss.termEndedExit", { agent: label, code }) : tr("ss.termEnded", { agent: label })}]\x1b[0m\r\n`);
+      };
+      // a Shell row is the person's login shell (the bottom panel's `shell_start`: only a folder and a size go out)
+      // this computer's name first, so the program's first OSC 7 already counts as local
+      await learnThisHost();
+      let hostId: number;
+      if (shell) {
+        const got = await getShellHost().start(r.cwd || null, cols, rows, onData, onExit, rec(id)?.shell);
+        hostId = got.id;
+        if (got.missing && t.run === run) {
+          // the shell it was made with is gone from this computer: the default one runs, and the row says so once
+          feed(t.term, `\x1b[33m${tr("term.shellMissing", { shell: got.missing })}\x1b[0m\r\n`);
+          patchRec(id, { shell: undefined });
+        }
+      } else hostId = await host.start(r.agent, r.cwd, cols, rows, onData, onExit, resume, accountOf(r), sessionId, link);
+      if (t.run !== run) {
+        // replaced while starting
+        void io.close(hostId).catch(() => undefined);
         return;
       }
-      if (t.owed) host.ack(hostId, t.owed);
-      t.owed = 0;
+      t.hostId = hostId;
+      pty = hostId;
+      // the TERMINALS row's mark follows the CLI the shell sees in the foreground (`session-fg`)
+      fgOff.get(id)?.();
+      fgOff.set(id, onSessionFg(hostId, (agent) => setSessionFg(id, agent)));
+      if (t.closed) {
+        // closed while starting
+        void io.close(hostId);
+        return;
+      }
+      if (owed) io.ack(hostId, owed);
+      owed = 0;
       // the program started at this size; one that changed while it started is sent now
       t.told = { cols, rows };
+      t.reflowed = false; // nothing was drawn by the program yet: no screen of its to redraw
       if (t.settle === null) tellSize(t);
       if (!ofChat) patchRec(id, { status: "running" });
+      if (!ofChat && r.agent === "codex" && !rec(id)?.agentSession) findCodexId(id, t, run, hostId, CODEX_ID_FIRST_MS);
     } catch (e) {
+      if (t.run !== run) return;
       t.closed = true;
       const error = errText(e);
       if (!ofChat) {
         patchRec(id, { status: "failed", error });
         tellEnd(id, "failed", { error });
       }
-      t.term.write(`\x1b[31m${error}\x1b[0m\r\n`);
+      feed(t.term, `\x1b[31m${error}\x1b[0m\r\n`);
     }
   };
 
@@ -1217,19 +1525,42 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     t.settle = null;
     if (t.hostId === null || t.closed) return;
     const { cols, rows } = t.term;
-    if (t.told?.cols === cols && t.told.rows === rows) return;
+    const same = t.told?.cols === cols && t.told.rows === rows;
+    const reflowed = t.reflowed;
+    t.reflowed = false;
+    if (same && !reflowed) return;
     t.told = { cols, rows };
-    void host.resize(t.hostId, cols, rows).catch(() => undefined);
+    const hostId = t.hostId;
+    // Back at the size the program knows after xterm changed it and back (a show re-fits in the DOM renderer's cells,
+    // then in the GPU's): xterm reflowed and trimmed its screen, the program saw no change and would never redraw it,
+    // and a pty resize to the size it has sends no SIGWINCH. One size off and then the real one does, in that order.
+    if (same) {
+      void t.io
+        .resize(hostId, cols + 1, rows)
+        .catch(() => undefined)
+        .then(() => t.io.resize(hostId, cols, rows))
+        .catch(() => undefined);
+      return;
+    }
+    void t.io.resize(hostId, cols, rows).catch(() => undefined);
   };
 
   const disposeTerm = (id: string) => {
     const t = terms.get(id);
     if (!t) return;
-    if (t.hostId !== null && !t.closed) void host.close(t.hostId).catch(() => undefined);
+    // its history keeping follows the next terminal of the session (Restart), or ends with it
+    histOf.get(id)?.stop();
+    histOf.delete(id);
+    clearTimeout(codexIdTimer.get(id));
+    codexIdTimer.delete(id);
+    fgOff.get(id)?.();
+    fgOff.delete(id);
+    if (t.hostId !== null && !t.closed) void t.io.close(t.hostId).catch(() => undefined);
     t.closed = true;
     if (t.settle !== null) clearTimeout(t.settle);
+    const wasParked = isParked(t.raw);
     t.undo();
-    t.term.dispose();
+    if (!wasParked) t.raw.dispose(); // a parked one was disposed when it was parked
     t.el.remove();
     terms.delete(id);
   };
@@ -1249,7 +1580,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     };
   };
 
-  const mount = ([{ Terminal }, { FitAddon }]: Xterm, id: string, container: HTMLElement): (() => void) => {
+  const mount = ([{ Terminal }, { FitAddon }]: Xterm, id: string, container: HTMLElement, quiet = false): (() => void) => {
     const settings = readTermSettings();
     const theme = termTheme(look, settings);
     let t = terms.get(id);
@@ -1257,89 +1588,216 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     if (!t) {
       const el = document.createElement("div");
       el.className = "term-host";
-      const term = new Terminal(termOptions(theme, settings));
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      t = { term, fit, el, hostId: null, closed: false, undo: () => undefined, owed: 0, told: null, settle: null };
+      const make = (opts: ITerminalOptions & ITerminalInitOnlyOptions) => {
+        const term = new Terminal(opts);
+        const fit = new FitAddon();
+        term.loadAddon(fit);
+        return { term, fit };
+      };
+      const first = make(termOptions(theme, settings));
+      t = {
+        get term() {
+          return live(this.raw);
+        },
+        raw: first.term,
+        fit: first.fit,
+        el,
+        hostId: null,
+        closed: false,
+        undo: () => undefined,
+        told: null,
+        reflowed: false,
+        settle: null,
+        io: isShell(rec(id)?.agent) ? getShellHost() : host,
+        run: 0,
+        typed: false,
+      };
       terms.set(id, t);
       const tt = t;
-      term.onData((d) => {
-        if (tt.hostId !== null && !tt.closed) void host.write(tt.hostId, d).catch(() => undefined);
-      });
-      term.onResize(() => {
-        // the size it ends on is sent, once (a drag gives one size per frame)
-        if (tt.settle !== null) clearTimeout(tt.settle);
-        tt.settle = setTimeout(() => tellSize(tt), RESIZE_SETTLE_MS);
-      });
-      // The program rang the terminal's bell, as agents do when they wait for the person. omher reads nothing the
-      // program prints: the bell is the one thing a terminal tells it. The row says so and a notification goes
-      // out, once, until the person comes back to the session.
-      const ring = () => {
-        const r = rec(id);
-        if (r && !tt.closed && flag(id, "bell")) notifyState?.(id, { kind: "bell", name: nameOf(r) });
+      // a parked terminal made again: the same options and handlers, at the size it had, where it was
+      tt.remake = ({ cols, rows }) => {
+        const s = readTermSettings();
+        const th = termTheme(look, s);
+        const next = make({ ...termOptions(th, s), cols, rows });
+        tt.raw = next.term;
+        tt.fit = next.fit;
+        wire(next.term);
+        next.term.open(tt.el);
+        tt.undo = afterOpen(next.term, tt.el, s, tt.remake);
+        applyLook(next.term, th, s);
+        return next.term;
       };
-      term.onBell(ring);
-      // The notification escapes agents send instead of a bell count as a ring too: OSC 9 with a message (not a
-      // `9;<number>` report such as the 9;4 progress bar) and OSC 777 `notify`. Their text is never shown or kept.
-      term.parser.registerOscHandler(9, (d) => {
-        if (!/^\d+(;|$)/.test(d)) ring();
-        return false; // not consumed: another handler may want the escape
+      const wire = (term: Terminal) => {
+        term.onData((d) => {
+          if (tt.hostId === null || tt.closed || tt.held) return;
+          tt.typed = true;
+          void tt.io.write(tt.hostId, d).catch(() => undefined);
+        });
+        // the title the program sets (OSC 0/2): the TERMINALS card's second line until it prints a line
+        term.onTitleChange((title) => {
+          const v = title.replace(/\s+/g, " ").trim().slice(0, LAST_LINE_MAX) || undefined;
+          if (rec(id)) termActs.patch(id, { oscTitle: v });
+        });
+        term.onResize(() => {
+          tt.reflowed = true;
+          // the size it ends on is sent, once (a drag gives one size per frame)
+          if (tt.settle !== null) clearTimeout(tt.settle);
+          tt.settle = setTimeout(() => tellSize(tt), RESIZE_SETTLE_MS);
+        });
+        // The program rang the terminal's bell, as agents do when they wait for the person. omher reads nothing the
+        // program prints: the bell is the one thing a terminal tells it. The row says so and a notification goes
+        // out, once, until the person comes back to the session.
+        const ring = () => {
+          const r = rec(id);
+          if (r && !tt.closed && flag(id, "bell")) notifyState?.(id, { kind: "bell", name: nameOf(r), agent: termMarkAgent(r) !== null });
+        };
+        term.onBell(ring);
+        // The notification escapes agents send instead of a bell count as a ring too: OSC 9 with a message (not a
+        // `9;<number>` report such as the 9;4 progress bar) and OSC 777 `notify`. Their text is never shown or kept.
+        term.parser.registerOscHandler(9, (d) => {
+          if (!/^\d+(;|$)/.test(d)) ring();
+          return false; // not consumed: another handler may want the escape
+        });
+        term.parser.registerOscHandler(777, (d) => {
+          if (d.startsWith("notify;")) ring();
+          return false;
+        });
+      };
+      wire(first.term);
+      // the folder its shell reports (OSC 7): the row's folder line. Progress (OSC 9;4): working while reported; done
+      // after working, unseen, marks the row as the bell does (no notification: a report is not a ring). Both come
+      // on the element, which a parked terminal made again keeps, and go with it.
+      onCwd(el, (path) => {
+        if (rec(id)) termActs.patch(id, { cwd: path });
       });
-      term.parser.registerOscHandler(777, (d) => {
-        if (d.startsWith("notify;")) ring();
-        return false;
+      onProgress(el, (st) => {
+        if (!rec(id) || tt.closed) return;
+        if (st === "busy") return termActs.patch(id, { progress: true });
+        if (!termActs.get(id).progress) return;
+        termActs.patch(id, { progress: undefined });
+        flag(id, "bell");
       });
     }
     const tt = t;
     container.appendChild(tt.el);
     if (fresh) {
-      tt.term.open(tt.el);
-      tt.undo = afterOpen(tt.term, tt.el, settings);
+      tt.raw.open(tt.el);
+      tt.undo = afterOpen(tt.raw, tt.el, settings, tt.remake);
     }
     applyLook(tt.term, theme, settings);
     const refit = () => {
       if (!tt.el.isConnected || tt.el.clientWidth === 0) return;
+      // shown again with the GPU renderer on its way: fitted in the standard renderer's cells now, it is fitted again
+      // in the GPU's, and the screen is reflowed twice. The engine's CELLS_EVENT fits it once, when they are known.
+      if (!fresh && gpuComing(tt.raw)) return;
       try {
         tt.fit.fit();
       } catch {
         /* not measurable yet */
       }
     };
+    // shown first: the engine then knows a GPU renderer is coming (`gpuComing`) when the first fit is made, and the
+    // terminal is fitted again when its cells change size (CELLS_EVENT: the GPU renderer arrived, or went)
+    tt.el.addEventListener(CELLS_EVENT, refit);
+    onVisible(tt.term, true);
     refit();
     if (fresh) void ready().then(() => startTerm(id, tt));
     const ro = new ResizeObserver(refit);
     ro.observe(container);
-    onVisible(tt.term, true);
-    tt.term.focus();
+    if (!quiet) tt.term.focus();
     return () => {
       ro.disconnect();
-      onVisible(tt.term, false);
+      tt.el.removeEventListener(CELLS_EVENT, refit);
+      onVisible(tt.raw, false);
       if (tt.el.parentElement === container) container.removeChild(tt.el);
+    };
+  };
+
+  /** A paused TERMINALS session's kept history (dimmed, under its divider), shown read-only in `container` until the
+   *  person presses Resume: a terminal of its own that starts nothing, takes no keys and is not the session's
+   *  terminal (Resume makes that one, which writes the same history back first). `shown` hears whether there was any. */
+  const previewHistory = (id: string, container: HTMLElement, mode: "dark" | "light", shown: (has: boolean) => void): (() => void) => {
+    let gone = false;
+    let term: Terminal | null = null;
+    let ro: ResizeObserver | null = null;
+    if (!histBack.has(id)) {
+      shown(false);
+      return () => undefined;
+    }
+    void Promise.all([loadXterm(), restoredText(host, id)]).then(([[{ Terminal: Term }, { FitAddon }], text]) => {
+      if (gone) return;
+      if (!text) return shown(false);
+      const s = readTermSettings();
+      const theme = termTheme(mode, s);
+      const t = (term = new Term({ ...termOptions(theme, s), disableStdin: true, cursorBlink: false }));
+      const fit = new FitAddon();
+      t.loadAddon(fit);
+      t.open(container);
+      applyLook(t, theme, s);
+      const refit = () => {
+        if (!container.isConnected || container.clientWidth === 0) return;
+        try {
+          fit.fit();
+        } catch {
+          /* not measurable yet */
+        }
+      };
+      refit();
+      ro = new ResizeObserver(refit);
+      ro.observe(container);
+      // the kept text, and no cursor: nothing runs here
+      t.write(`${text}\x1b[?25l`);
+      shown(true);
+    });
+    return () => {
+      gone = true;
+      ro?.disconnect();
+      term?.dispose();
     };
   };
 
   /** Type text at session `id`'s terminal prompt, as if the person had (a dropped file's path). */
   const typeAt = async (id: string, text: string) => {
     const t = terms.get(id);
-    if (!t || t.hostId === null || t.closed) return;
-    await host.write(t.hostId, text);
+    if (!t || t.hostId === null || t.closed || t.held) return;
+    t.typed = true;
+    await t.io.write(t.hostId, text);
     t.term.focus();
   };
 
+  /** Type a bot's prompt the person allowed (termShare.ts: the card's Allow, each request its own) into session
+   *  `id`'s terminal, then Enter. A bracketed paste when the program turned that on, so a many-line prompt arrives as
+   *  one (a parked terminal keeps the mode it had: term/engine.ts `bracketedPaste`); else its lines are typed as a
+   *  paste types them. Control characters never reach the program (the prompt is
+   *  cleaned before and here). Nothing else calls this. */
+  const typeAllowed = async (id: string, prompt: string) => {
+    const t = terms.get(id);
+    if (!t || t.hostId === null || t.closed || t.held) return false;
+    // eslint-disable-next-line no-control-regex
+    const text = prompt.replace(/\r\n/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
+    if (!text.trim()) return false;
+    const bracketed = bracketedPaste(t.raw);
+    await t.io.write(t.hostId, bracketed ? `\x1b[200~${text}\x1b[201~\r` : `${text.replace(/\n/g, "\r")}\r`);
+    return true;
+  };
+
   /** Files dropped or pasted on session `id`'s terminal: each saved under the session's own folder (the page
-   *  never sees a dropped file's own path), then the saved paths typed at the prompt, shell-quoted. */
+   *  never sees a dropped file's own path), then the saved paths typed at the prompt, shell-quoted (a paste when the
+   *  program turned bracketed paste on: attach.ts `pathsTyped`). */
   const dropOnTerminal = async (id: string, files: { name: string; read: () => Promise<Uint8Array> }[], windows: boolean) => {
     const t = terms.get(id);
+    if (t?.held) return; // closed, waiting to be undone: nothing is saved or typed
     const paths: string[] = [];
     for (const f of files) {
       try {
         paths.push(shellQuote(await host.saveFile(id, f.name, await f.read()), windows));
       } catch (e) {
-        t?.term.write(`\r\n\x1b[31m${tr("att.failed", { name: f.name, error: errText(e) })}\x1b[0m\r\n`);
+        if (t) feed(t.term, `\r\n\x1b[31m${tr("att.failed", { name: f.name, error: errText(e) })}\x1b[0m\r\n`);
         return;
       }
     }
-    if (paths.length) await typeAt(id, `${paths.join(" ")} `);
+    const now = terms.get(id);
+    if (paths.length && now) await typeAt(id, pathsTyped(paths, bracketedPaste(now.raw)));
   };
 
   const stopChat = async (id: string) => {
@@ -1434,9 +1892,11 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
       patchRec(id, { paused: undefined, status: "starting", error: undefined, exitCode: null });
       return;
     }
-    // oh-my-hermes: a new Hermes chat in the folder; the saved one was only a picture of the old chat
-    const old = keys.get(id);
     patchRec(id, { paused: undefined, status: "starting", error: undefined, exitCode: null });
+    // oh-my-hermes: the same Hermes chat when the bridge still has it (`folder.resume`, by the stored id the row kept)
+    if (r.agentSession && r.bot && !(await reattachFolder(id))) return;
+    // else a new Hermes chat in the folder; the saved one was only a picture of the old chat
+    const old = keys.get(id);
     if (old) {
       keys.delete(id);
       setChatRoute(old, null);
@@ -1448,14 +1908,17 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
   /**
    * Put back the sessions saved before omher restarted (once per page load; a second call does nothing, so no
    * program starts twice). Each keeps its id, folder, account and chat. A chat that was running and continues a
-   * conversation (Claude Code, Codex, OmO) continues it; any other running one comes back paused; ended ones stay
-   * ended (with Restart).
+   * conversation (Claude Code, Codex, OmO) continues it; a TERMINALS Claude Code or Codex terminal continues its
+   * conversation and an oh-my-hermes terminal starts again (`omh` reopens the session it dropped there); an
+   * oh-my-hermes folder chat is attached again (`folder.resume`), paused with the reason when the bridge refuses; any
+   * other running one comes back paused; ended ones stay ended (with Restart).
    */
   const restore = (saved: SavedSession[]) => {
     if (restored || state.list.length > 0) return;
     restored = true;
     if (!saved.length) {
       void ready().then(() => host.pruneFiles([]).catch(() => undefined));
+      void ready().then(() => pruneHistory(host, savedPanelKeys()));
       saveSentFiles({});
       return;
     }
@@ -1464,6 +1927,12 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     // generic ACP agents the shell has not described yet (it answers after this): whether they continue by themselves
     // is known once it has
     const later: string[] = [];
+    // oh-my-hermes terminals: started once the agents are known (an `omh` gone from this computer comes back paused)
+    const omhLater: string[] = [];
+    // oh-my-hermes folder chats to attach again once the bridge is up, each saved chat (bot and stored id) once: a
+    // second row holding the same one comes back paused, so one Hermes session is never attached for two rows
+    const folderAgain: string[] = [];
+    const folderTaken = new Set<string>();
     for (const s of saved) {
       if (isGone(s.agent) && s.draft) {
         // a New session never started on an agent omher no longer offers: a draft again, on the usual agent
@@ -1500,7 +1969,16 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
         openChat(s.id);
         continue;
       }
-      const auto = s.running && mode === "chat" && continuesItself(s);
+      // TERMINALS lists terminal sessions only: a saved chat-mode session is kept as it was (its files and messages
+      // stay) but is not listed and never starts again
+      const terminalOnly = !isTerminalRec(state.agents, { agent: s.agent, open: s.open, status: "exited" });
+      const auto = !terminalOnly && s.running && mode === "chat" && continuesItself(s);
+      // a TERMINALS Claude Code or Codex session that was running continues its own conversation in a fresh terminal;
+      // an oh-my-hermes one starts again, and `omh` reopens what it dropped there
+      const termAuto = !terminalOnly && s.running && mode === "terminal" && termComesBack(s);
+      // an oh-my-hermes folder chat that was running is attached again (rule 3: only one the bridge made)
+      const folderAuto = s.running && mode === "hermes" && !!s.agentSession && !!s.bot && !folderTaken.has(`${s.bot}\0${s.agentSession}`);
+      if (folderAuto) folderTaken.add(`${s.bot}\0${s.agentSession}`);
       const r: SessionRec = {
         id: s.id,
         agent: s.agent,
@@ -1509,7 +1987,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
         // a chat agent comes back as its chat (its terminal view would start the program on sight)
         view: mode === "terminal" ? "terminal" : "chat",
         ...(s.open === "terminal" ? { open: s.open } : {}),
-        status: auto ? "starting" : s.failed ? "failed" : "exited",
+        status: auto || termAuto || folderAuto ? "starting" : s.failed ? "failed" : "exited",
         exitCode: s.running ? null : (s.exitCode ?? null),
         ...(s.error && !s.running ? { error: s.error } : {}),
         ...(s.agentSession ? { agentSession: s.agentSession } : {}),
@@ -1522,7 +2000,8 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
         ...(s.promptTitle ? { promptTitle: s.promptTitle } : {}),
         ...(s.mode ? { mode: s.mode } : {}),
         ...(s.effort ? { effort: s.effort } : {}),
-        ...(s.running && !auto ? { paused: true } : {}),
+        ...(s.shell && isShell(s.agent) ? { shell: s.shell } : {}),
+        ...(s.running && !auto && !termAuto && !folderAuto ? { paused: true } : {}),
       };
       list.push(r);
       fromBefore.add(s.id);
@@ -1535,13 +2014,27 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
         else openChat(s.id, s.model ?? "", msgs);
       }
       if (auto) again.push({ id: s.id, resume: s.agentSession! });
-      else if (s.running && s.agentSession && !isBuiltin(s.agent) && !acpRow(s.agent)) later.push(s.id);
+      if (termAuto) termAgain.add(s.id);
+      if (termAuto && TERM_REOPENS.includes(s.agent)) omhLater.push(s.id);
+      if (folderAuto) folderAgain.push(s.id);
+      if (!terminalOnly && mode === "terminal") histBack.add(s.id);
+      else if (s.running && s.agentSession && !isBuiltin(s.agent) && !acpRow(s.agent) && !terminalOnly) later.push(s.id);
+    }
+    // each keeps its link (a session saved before links existed, or a clash, gets a fresh one)
+    const taken = new Set(state.list.map((r) => r.linkId).filter((x): x is string => !!x));
+    for (const [i, r] of list.entries()) {
+      const was = saved.find((x) => x.id === r.id)?.linkId;
+      const linkId = was && !taken.has(was) ? was : freshLinkId(taken);
+      taken.add(linkId);
+      list[i] = { ...r, linkId };
     }
     set({ list: [...list, ...state.list] });
     for (const r of list) if (keys.has(r.id)) registerRoute(r.id);
     // the saved copies of sessions that are gone go; the ones kept show again in their bubbles
     const ids = list.map((r) => r.id);
     void ready().then(() => host.pruneFiles(ids).catch(() => undefined));
+    // the kept history of terminals that are gone goes (the bottom panel's tabs keep theirs)
+    void ready().then(() => pruneHistory(host, [...ids, ...savedPanelKeys()]));
     saveSentFiles(Object.fromEntries(Object.entries(sentFiles).filter(([sid]) => ids.includes(sid))));
 
     // the home folder (for `~/…` paths) and each agent's mode, as a first launch would read them; then the generic ACP
@@ -1551,13 +2044,153 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
         const r = rec(id);
         if (r?.paused && continues(r.agent) && sessionMode(state.agents, r) === "chat") void resume(id);
       }
+      // an oh-my-hermes terminal whose `omh` is no longer here (only Hermes is) comes back paused, as it did before
+      const gone = omhLater.filter((id) => {
+        const r = rec(id);
+        return !!r && r.status === "starting" && !terms.has(id) && !opensAs(r.agent, state.agents).terminal;
+      });
+      for (const id of gone) {
+        termAgain.delete(id);
+        patchRec(id, { status: "exited", exitCode: null, paused: true });
+      }
+      const go = omhLater.filter((id) => termAgain.has(id));
+      if (go.length && typeof document !== "undefined") void loadXterm().then((m) => go.forEach((id) => startOffPage(m, id)));
     });
     if (again.length) void ready().then(() => Promise.all(again.map(({ id, resume: rid }) => (procs.has(id) ? undefined : startAgentChat(id, rid)))));
+    // their terminals are made and started now, off the page (a view that opens one later takes it as it is)
+    const now = [...termAgain].filter((id) => !omhLater.includes(id));
+    if (now.length && typeof document !== "undefined") void loadXterm().then((m) => now.forEach((id) => startOffPage(m, id)));
+    // the folder chats once the bridge has put back the bots: refused or failed, a row is paused with the reason
+    if (folderAgain.length)
+      void store().resumed.then(() =>
+        Promise.all(
+          folderAgain.map(async (id) => {
+            if (procs.has(id) || rec(id)?.status !== "starting") return;
+            const why = await reattachFolder(id);
+            if (why !== null && rec(id)?.status === "starting" && !procs.has(id)) patchRec(id, { status: "exited", exitCode: null, paused: true, error: why });
+          }),
+        ),
+      );
   };
 
-  /** Stop the program(s) and remove the session. */
+  /** Make session `id`'s terminal and start its program without showing it: measured in a box off the page, then
+   *  taken off it, as a terminal whose view the person left. Nothing happens when its view already made it. */
+  const startOffPage = (m: Xterm, id: string) => {
+    if (terms.has(id) || !rec(id)) return;
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;left:-10000px;top:0;width:960px;height:600px;visibility:hidden";
+    document.body.appendChild(box);
+    try {
+      mount(m, id, box, true)();
+    } finally {
+      box.remove();
+    }
+  };
+
+  /** What a closed row needs to come back: itself, where it stood in the list, and the split it was in. */
+  type Held = { rec: SessionRec; index: number; split: SplitWas | null };
+  /** Closed TERMINALS rows whose program still runs for the undo window; at its end the old close runs, once. */
+  const grace = createCloseGrace<Held>({ expire: (g) => close(g.id) });
+  /** The rows of closes waiting out their window (no longer listed): what `close` reads when the window ends. */
+  const heldRecs = new Map<string, SessionRec>();
+  if (typeof document !== "undefined") {
+    // a hidden window may hold timers back: whatever passed its deadline closes when the window shows again
+    document.addEventListener("visibilitychange", () => grace.sweep());
+    window.addEventListener("focus", () => grace.sweep());
+  }
+  /** The undo window now, in ms (0: Off). The mock host takes `window.__omherCloseGraceMs` for a window that is on;
+   *  a browser driven by a test (`navigator.webdriver`) that set none closes at once, as specs written before the
+   *  undo window expect (term-close-undo.spec.ts sets it). */
+  const graceNow = () => {
+    let w: unknown;
+    if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
+      w = (window as unknown as { __omherCloseGraceMs?: unknown }).__omherCloseGraceMs;
+      if (w === undefined && typeof navigator !== "undefined" && navigator.webdriver) w = 0;
+    }
+    return graceMs(readTermSettings().undoClose, w);
+  };
+
+  /** Close TERMINALS row `id` so it can be undone: it leaves the list (and its split) now, its terminal takes no
+   *  input, its program runs on hidden. False when it closes as before: the setting is Off, it is not a TERMINALS row,
+   *  or its program is not running (ended, or still starting with nothing yet). */
+  const holdable = (id: string): boolean => {
+    const r = rec(id);
+    const t = terms.get(id);
+    return !!r && !!t && !t.closed && !t.held && t.hostId !== null && isTerminalRec(state.agents, r) && graceNow() > 0;
+  };
+  /** What opens when `id`, the session in view, goes away (its program ended, or it was closed): the pane of its
+   *  split that takes its place; else the row below it in the sidebar (the folder groups as shown, as ⌘⇧] steps),
+   *  or the nearest above when it was the last. `was` still holds `id`, `list` no longer does. */
+  const successor = (id: string, was: SessionRec[], list: SessionRec[]): string | null => {
+    const left = new Set(list.map((s) => s.id));
+    const heir = leaveIn(getSplit().groups, id).heir;
+    if (heir && left.has(heir)) return heir;
+    const order = orderFolders(termGroups(was.filter((r) => isTerminalRec(state.agents, r))), getFolderPrefs().order).flatMap((g) => g.rows.map((r) => r.id));
+    const at = order.indexOf(id);
+    const near = at < 0 ? undefined : [...order.slice(at + 1), ...order.slice(0, at).reverse()].find((x) => left.has(x));
+    if (near) return near;
+    const index = was.findIndex((s) => s.id === id);
+    return list[Math.min(index, list.length - 1)]?.id ?? null;
+  };
+
+  const holdClosed = (id: string): boolean => {
+    const r = rec(id);
+    const t = terms.get(id);
+    if (!r || !t || !holdable(id)) return false;
+    const ms = graceNow();
+    const g = groupOf(getSplit().groups, id);
+    const index = state.list.findIndex((s) => s.id === id);
+    const split: SplitWas | null = g ? { layout: g.layout, ...(g.zoom ? { zoom: true as const } : {}) } : null;
+    if (!grace.begin(id, r.title || nameOf(r), ms, { rec: r, index, split })) return false;
+    heldRecs.set(id, r);
+    t.held = true;
+    const was = state.list;
+    const list = was.filter((s) => s.id !== id);
+    set({ list });
+    const ui = store().getState().ui;
+    if (ui.view === "session" && ui.session === id) store().actions.openSession(successor(id, was, list));
+    return true;
+  };
+
+  /** Undo the close of row `id` (the newest when none is named): the same row, terminal and program back where it
+   *  was, in its split when that is still there. False when there is nothing to undo. */
+  const undoClose = (id?: string): boolean => {
+    const which = id ?? grace.list()[0]?.id;
+    const g = which ? grace.undo(which) : null;
+    if (!g) return false;
+    heldRecs.delete(g.id);
+    const t = terms.get(g.id);
+    if (t) t.held = false;
+    const list = [...state.list];
+    list.splice(Math.max(0, Math.min(g.data.index, list.length)), 0, g.data.rec);
+    set({ list });
+    if (g.data.split) {
+      const groups = restoreSplitIn(getSplit().groups, g.id, g.data.split, new Set(list.map((r) => r.id)));
+      if (groups !== getSplit().groups) setSplit({ groups });
+    }
+    store().actions.openSession(g.id);
+    return true;
+  };
+
+  /** The person closes session `id` (row x, its menu, ⌘W): a running TERMINALS row waits out the undo window first
+   *  (Settings › Terminal), anything else closes at once. A shell that ended by itself closes through `close`. */
+  const closeRow = (id: string) => {
+    if (holdClosed(id)) return;
+    if (grace.finish(id)) return;
+    close(id);
+  };
+
+  /** Stop the program(s) and remove the session. A row that waited out its undo window is no longer listed: its
+   *  kept row says what it was. */
   const close = (id: string) => {
+    const r = rec(id) ?? heldRecs.get(id);
+    heldRecs.delete(id);
     picked.delete(id);
+    histOf.get(id)?.stop();
+    histOf.delete(id);
+    histBack.delete(id);
+    termAgain.delete(id);
+    if (r && isTerminalRec(state.agents, { ...r, status: "exited" })) forgetHistory(host, id);
     disposeTerm(id);
     void stopChat(id).then(() => host.removeFiles(id).catch(() => undefined));
     forgetSentFiles(id);
@@ -1567,8 +2200,8 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
       store().dispatch({ type: "chat.forget", bot: key }); // its asks leave the Needs-you strip with it
     }
     keys.delete(id);
-    const idx = state.list.findIndex((s) => s.id === id);
-    const list = state.list.filter((s) => s.id !== id);
+    const was = state.list;
+    const list = was.filter((s) => s.id !== id);
     const models = { ...state.models };
     delete models[id];
     const notes = { ...state.notes };
@@ -1579,10 +2212,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     delete unseen[id];
     set({ list, models, notes, live, unseen });
     const ui = store().getState().ui;
-    if (ui.view === "session" && ui.session === id) {
-      const next = list[Math.min(idx, list.length - 1)];
-      store().actions.openSession(next ? next.id : null);
-    }
+    if (ui.view === "session" && ui.session === id) store().actions.openSession(successor(id, was, list));
   };
 
   /** A person's own agent was removed on Settings › Agents: each open session of it ends cleanly (its program is
@@ -1610,6 +2240,20 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
 
   /** Name a session (Rename). Empty or null = back to the automatic name. Kept on this computer under the agent's
    *  own conversation id, so the name follows the conversation when it is resumed. */
+  /** Row `id` dragged in TERMINALS to just before (or after) row `to` of the same folder: the list keeps that order,
+   *  and so does the saved list (`omher.resume`). Rows of another folder, or the same place, change nothing. */
+  const moveRow = (id: string, to: string, after: boolean) => {
+    if (id === to) return;
+    const r = rec(id);
+    const at = rec(to);
+    if (!r || !at || r.cwd !== at.cwd) return;
+    const rest = state.list.filter((x) => x.id !== id);
+    const i = rest.findIndex((x) => x.id === to);
+    const list = [...rest.slice(0, after ? i + 1 : i), r, ...rest.slice(after ? i + 1 : i)];
+    if (list.every((x, k) => x === state.list[k])) return;
+    set({ list });
+  };
+
   const rename = (id: string, title: string | null) => {
     const r = rec(id);
     if (!r || r.status === "draft") return; // a draft is named once it starts
@@ -1668,6 +2312,7 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     const settings = readTermSettings();
     const theme = termTheme(look, settings);
     for (const t of terms.values()) {
+      if (isParked(t.raw)) continue; // takes the look when it is made again
       applyLook(t.term, theme, settings);
       // a changed font or line height changes how many cells fit
       if (t.el.isConnected && t.el.clientWidth > 0) {
@@ -1679,8 +2324,13 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
       }
     }
   };
+  // Every session view calls this when it mounts and when the app theme changes: only a mode the terminals have not
+  // been given yet relooks them all (each mount used to re-apply the look and refit every open terminal)
+  let looked: "dark" | "light" | null = null;
   const setLook = (mode: "dark" | "light") => {
     look = mode;
+    if (mode === looked) return;
+    looked = mode;
     relook();
   };
   onTermSettings(relook);
@@ -1697,6 +2347,12 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     endAgent,
     draft,
     draftHere,
+    startTerminal,
+    setSessionFg,
+    /** The pty id session `id`'s terminal runs on (the `session-fg` event's id), null before it started. */
+    ptyOf: (id: string): number | null => terms.get(id)?.hostId ?? null,
+    /** The native folder dialog (TERMINALS + menu's "Choose folder…"); null when cancelled. */
+    pickFolder: (at: string) => host.pickFolder(at),
     continuePast,
     revealFolder,
     openTerminal,
@@ -1705,20 +2361,33 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
     chooseFolder,
     start,
     attach,
-    close,
+    close: closeRow,
+    /** Closing row `id` now could be undone (its row then closes without asking: the toast's Undo is the way back). */
+    closeUndoable: holdable,
+    undoClose,
+    /** Closed rows waiting out their undo window, newest first (the toasts). */
+    closing: grace.list,
+    onClosing: grace.subscribe,
     setLook,
     setView,
     setModel,
     setMode,
     setEffort,
     rename,
+    moveRow,
     restart,
     resume,
     restore,
     send,
     sendFiles,
     dropOnTerminal,
-    /** The ↵ menu of a waiting message (steer queue sessions): Send now, Steer, Edit, Delete. */
+    typeAllowed,
+    /** Session `id`'s terminal program runs and takes input now (what `typeAllowed` needs). */
+    canType: (id: string): boolean => {
+      const t = terms.get(id);
+      return !!t && t.hostId !== null && !t.closed && !t.held;
+    },
+    /** The ↵ ↓ × buttons of a waiting message (steer queue sessions): Send now or Steer, Edit, Delete. */
     queuePick,
     /** Esc / Stop: the agent's own interrupt. */
     interrupt: (id: string) => input(id, { kind: "interrupt" }).catch(() => undefined),
@@ -1730,8 +2399,28 @@ export function createSessions(host: SessionHost, store: () => Store = getStore,
         note(id, errText(e));
       }
     },
+    /** The session whose link id is `linkId`, if it is in the list. */
+    byLink: (linkId: string): SessionRec | null => state.list.find((r) => r.linkId === linkId) ?? null,
+    /** Session `id`'s link (`omher://terminal/<id>`), null when it has none. */
+    linkOf: (id: string): string | null => {
+      const l = rec(id)?.linkId;
+      return l ? termLinkUrl(l) : null;
+    },
+    /** Copy session `id`'s link to the clipboard; false when it has none or the clipboard refused. */
+    copyLink: async (id: string): Promise<boolean> => {
+      const l = rec(id)?.linkId;
+      if (!l) return false;
+      try {
+        await navigator.clipboard.writeText(termLinkUrl(l));
+        window.dispatchEvent(new CustomEvent<string>(LINK_COPIED_EVENT, { detail: id }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
     /** Session `id` has a terminal in this page load (an ended one keeps its output until it is closed). */
     hasTerm: (id: string) => terms.has(id),
+    previewHistory,
     /** Changes each time Restart starts session `id`'s terminal program again. */
     termRun: (id: string) => termRuns.get(id) ?? 0,
     /** The session whose chat has app-store key `key`. */
@@ -1761,6 +2450,8 @@ export function getSessions(): SessionsStore {
   if (!singleton) {
     const s = createSessions(getHost(), getStore, accountGroups);
     singleton = s;
+    // e2e (mock host only): drive a terminal's foreground CLI the way the shell's event will
+    if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) (window as unknown as { __omherSessions?: SessionsStore }).__omherSessions = s;
     setSessionKeyLookup((id) => s.chatKey(id));
     s.setNotify((ev) => notifySessionEvent(ev, getStore().getState()));
     s.setNotifyState((id, n) => notifySessionNote(id, n, getStore().getState()));

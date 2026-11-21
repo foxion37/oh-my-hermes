@@ -200,10 +200,19 @@ CONCEPTUAL_AWARENESS_SURFACES = ("request-to-handoff", "executor selection", "co
 # measured from the producer; no headroom.
 # 13502 -> 13592: one `model-compression` index line plus newline (+90),
 # measured from the producer; no headroom.
-SKILL_INDEX_CHAR_LIMIT = 13592
+# 13592 -> 12970: the producer now cuts descriptions the way Hermes'
+# `clip_skill_description` does, at the last word boundary inside 58
+# characters with trailing punctuation dropped, instead of a fixed 57; every
+# line that was cut mid-word gets shorter. Measured from the producer; no headroom.
+# 12970 -> 13051: one `skill-eval` index line plus newline, measured from
+# the producer after merging fix/skill-harness-fit; no headroom.
+# 13051 -> 13054: model-compression's clause says "smaller or cheaper via its
+# weights" again (+3 in its index line), measured from the producer; no headroom.
+SKILL_INDEX_CHAR_LIMIT = 13054
 # The longest single skill line in that index. Every description is already cut
 # to 60 characters, so what moves this is a longer skill name.
-SKILL_INDEX_LINE_CHAR_LIMIT = 100
+# 100 -> 99: same word-boundary cut as above, measured from the producer.
+SKILL_INDEX_LINE_CHAR_LIMIT = 99
 # The plugin bundle's registered tool schemas, 19 tools when the budget landed
 # (20 with `omh_jev_ask`), serialized as JSON with
 # sorted keys (`src/maintenance/per_turn_context.py`); `omh_todo` and `omh_loop`
@@ -430,7 +439,47 @@ SKILL_INDEX_LINE_CHAR_LIMIT = 100
 # description's node field list (+45, 3504 -> 3549). Measured by
 # per_turn_context.plugin_tool_schema_chars_by_tool() against base 55c802b39.
 # No headroom.
-PLUGIN_TOOL_SCHEMA_CHAR_LIMIT = 72940
+# 72940 -> 63324: the shared `observation` parameter (on 20 tools) keeps its
+# fields but drops the per-field descriptions a model never fills (-452 per
+# tool, -9040), and the twelve `omh_home`/`hermes_home` override descriptions
+# say the same refusal in fewer words (-576). Every rule a model acts on is
+# unchanged. Measured by per_turn_context.plugin_tool_schema_chars_by_tool()
+# against base 32a8217f8. No headroom.
+# 63324 -> 62099: the omh_todo, omh_loop, omh_document_plan and
+# omh_delegate_route descriptions say the same rules in fewer words (-1225;
+# 7811 -> 7545, 6856 -> 6726, 5512 -> 5336, 4764 -> 4111). An A/B of the
+# first tool call on 11 scenarios (claude-haiku-5-5 and claude-sonnet-5-5, 3
+# reps per arm) kept every scenario the old text passed; two sentences cut in
+# a first draft (a route set in an earlier turn runs on the previous model;
+# OMH mirrors each todo_list write) lost passes and were restored. Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against base a3068c323.
+# No headroom.
+# 62099 -> 62744: unified identities add the identity reference on omh_dag
+# nodes (+122, 3549 -> 3671), `attempt` and the qualified-reference identity
+# description on omh_delegate_route (+303, 4111 -> 4414), and the common
+# directory description and `identity` argument on omh_role (+220, 921 ->
+# 1141). Measured by per_turn_context.plugin_tool_schema_chars_by_tool()
+# against base 8c70948f6. No headroom.
+# 62744 -> 62968: omh_dag settles a node escalated when its child stops on a
+# judgement it cannot settle (+224; omh_dag 3671 -> 3895): one description
+# sentence (+211) and the outcome enum's "escalated" (+13). Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against main 8f09d0147.
+# No headroom.
+# 62968 -> 63156: omh_dag define takes the opt-in `carry_forward` base revision
+# that carries a re-run's unchanged accepted nodes (+188; omh_dag 3895 ->
+# 4083): one optional string property and its description. Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against main a5649293b.
+# No headroom.
+# 63156 -> 63824: omh_omher_terminal reads an omher terminal's status from its
+# link and asks omher to type a prompt the person allows (+668; 62968 -> 63636
+# on its own branch). Registered with a check_fn on omher's own folder, so
+# installs without omher never carry it. Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against c16924f2a, then
+# summed with main's carry_forward. No headroom.
+# 63824 -> 63954: omh_dag node `review_focus` (+130): one optional string property
+# with its description, and the field named in the tool description. Measured by
+# per_turn_context.plugin_tool_schema_chars_by_tool() against c5a909c6b. No headroom.
+PLUGIN_TOOL_SCHEMA_CHAR_LIMIT = 63954
 # PRE_LLM_CALL_CONTEXT_CHAR_LIMIT, PRE_LLM_CALL_CONTEXT_FALLBACK_CHAR_LIMIT: moved with
 # their history to src/plugin_bundle/omh/turn_budget.py; imported at the top of this file.
 # 340000 -> 349637: three capability-skill sections were added by the domain
@@ -1059,7 +1108,16 @@ PLUGIN_TOOL_SCHEMA_CHAR_LIMIT = 72940
 # 545582 -> 545712 (2026-11-12): design-orchestration's quality bar had three items, so its new fourth line
 # (direction options shown as rendered images) enters the capability row's first-four slice (+130, only that
 # row, 3915 -> 4045); measured from the producer against main 2fcbef29f. No headroom.
-FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 545712
+# 545712 -> 545683: twenty descriptions end their situation clause inside Hermes' 60-character index
+# window, the detail moved after the colon (-29 across those rows); measured from the producer. No headroom.
+# 545683 -> 549541: one `skill-eval` capability row plus its separator; dropping only that row
+# reproduces 545683. Measured from the producer.
+# 549541 -> 549528: model-compression's description says "smaller or cheaper via its weights" in place of
+# "smaller by changing its weights: cheaper through" (-13); measured from the producer. No headroom.
+# 549528 -> 549751 (2026-11-20): OpenAI's GPT-6.2 Codex guide lines: dag-ulw's node-prompt line briefs like a
+# colleague and names `review_focus` (+161), agent-instructions' infer-from-code rule enters its first-four
+# quality-bar slice (+62); only those two rows. Measured from the producer against main c5a909c6b. No headroom.
+FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 549751
 FULL_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 9000
 # 100000 -> 102070: the same three domain workflows each add one standalone
 # capability row, again measured on the merged tree; warranted growth for three
@@ -1171,7 +1229,9 @@ FULL_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 9000
 # separator (+947); the procedure stays in the skill body.
 # 145471 -> 146418: one 945-character standalone `model-compression` row plus
 # separator (+947); the method stays in its on-demand reference.
-STANDALONE_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 146418
+# 146418 -> 147355: one 935-character standalone `skill-eval` row plus
+# separator (+937); the lift method stays in its on-demand reference.
+STANDALONE_CAPABILITY_SKILL_SECTION_CHAR_LIMIT = 147355
 STANDALONE_CAPABILITY_SKILL_ITEM_CHAR_LIMIT = 2200
 # ULW fold context ceiling (issue #954, PR D). The limit is the pre-D measured
 # value of the full profile's `skill_body` chars on `main` @ acb9a060, in the

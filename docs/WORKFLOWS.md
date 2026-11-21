@@ -229,6 +229,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Keep the practical small-loop recipe visible: test as stop signal, plan -> execute -> verify, one task at a time.
   - Surface verification_gap, comprehension_debt, and cognitive_surrender as warnings before a loop starts looking self-steering.
   - Before a loop launches, or when asked whether one will hold, load `references/loop-design-review.md`: a finish line written beside the fence of files the loop may not edit, a judge other than the builder, and the pre-launch failure check.
+  - When a measured loop compares variants of code or config on branches (training runs, evals, sweeps), load `references/experiment-tree.md`: one fixed run command for every node, results freeze a node, a small fan of siblings per decision, then descend onto the winner.
   - Session-bound host_observed resumable_goal plus explicit coding ownership prepares one executor goal. Otherwise use native `/goal` and `/goal gate add`. Never prepare two controllers.
   - Ingest bounded snapshots via `omh loop goal-driver-observe`. External state guides recovery, not checkpoint decisions; native turns still require activation and contiguous same-session evidence.
   - Treat ticks as preparation only. Advance one legal role phase through loop_phase_transition/v1 only after its named gate has observed evidence.
@@ -872,7 +873,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### web-research
 
-[omh] Current technical or business fact to cite from web: web lookup lane - settle a current-facts question in one cited retrieval round with retrieval dates and source-quality notes; for pre-spec grounding across reference implementations use `research`.
+[omh] Current tech or business fact to cite from web: web lookup lane - settle a current-facts question in one cited retrieval round with retrieval dates and source-quality notes; for pre-spec grounding across reference implementations use `research`.
 
 - Category: `research`
 - Phase: `web-evidence`
@@ -1060,6 +1061,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Separate candidate preparation, observed link, observed download, file hash, text extraction, license check, verification, and downstream selection.
   - Attach observation provenance before treating any acquisition state as evidence.
   - For `paper` candidates, when Hermes' bundled `arxiv` skill is available, search through it - by topic, author, category, or paper id - and record each entry it returns as `link_observed` with `hermes_tool` provenance. A search result is an observed link and nothing more: download, text extraction, and verification stay unclaimed until their own run is observed. Without the skill, a paper candidate stays `candidate_prepared` until a link is observed another way.
+  - When the candidates are scholarly papers, load `references/literature-retrieval.md`: pick arXiv, OpenAlex, bioRxiv or PubMed by topic, scale follow-up rounds to a stated difficulty within the plan's cap, dedupe by id, DOI, then title, and keep only papers a host result returned.
   - Vary search angles across official docs, academic work, implementations, datasets, and criticism within the plan's budget (3 queries, 10 external attempts and one follow-up for an explore search), and name the source kinds still without candidates when the budget ends.
   - Recommend the next downstream workflow without pretending that downstream work already ran.
 - Completion checklist:
@@ -2497,7 +2499,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### img-summary
 
-[omh] Infographic card for meeting notes, a report, or PR: image prompt cards - turn meetings, reports, PRs, issues, research, and releases into domain-aware image prompt cards.
+[omh] Infographic card for meeting notes, a report or PR: image prompt cards - turn meetings, reports, PRs, issues, research, and releases into domain-aware image prompt cards.
 
 - Category: `materials`
 - Phase: `visual-prompt-card`
@@ -2597,7 +2599,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### apple-design
 
-[omh] Designing or reviewing an iOS, macOS, or Apple-style UI: prepare native Apple UI or Apple marketing product-visual direction, review, and improvement briefs with evidence-backed remediation handoffs.
+[omh] Designing or reviewing an iOS, macOS or Apple UI: prepare native Apple UI or Apple marketing product-visual direction, review, and improvement briefs with evidence-backed remediation handoffs.
 
 - Category: `materials`
 - Phase: `apple-design`
@@ -2935,7 +2937,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - For first-time UI creation, name the initial generation branch, reference direction, reusable primitives, state coverage, and required visual QA path.
   - Cover responsive layout, empty/loading/error states, hover/focus/active states, CJK text, accessibility, and performance expectations.
   - For a new page or a redesign, load `references/editorial-layout.md` before choosing the layout.
-  - For a surface people use on a phone, load `references/mobile-density-gate.md`; measure with `toolkit/scripts/phone_check.py` when a browser is available, otherwise the measurement is `not_observed`.
+  - For a surface people use on a phone, load `references/mobile-density-gate.md`; measure with `toolkit/scripts/phone_check.py` (setup in `toolkit/README.md`: `skill_view(name='omh-frontend', file_path='toolkit/README.md')`) when a browser is available, otherwise the measurement is `not_observed`.
   - When the surface reads or writes remote data, load the `frontend-refactor` skill's `omh-frontend-refactor/references/state-discipline.md` (sections 1 and 4-6) before writing the component: server state lives in a query cache, each mutation names the query keys it invalidates, and an optimistic write ships with its rollback.
   - When the surface has a form, a text composer, or a dialog, load `references/forms-and-input.md` before writing it: labelled controls, errors shown after the user commits a value, server field errors mapped onto their fields, one submit in flight, an Enter-to-send that waits for IME composition, and focus returned when a dialog closes.
   - Check the browser-support target before using a newer platform feature: a feature newer than the target (by default, anything only Baseline Newly available) needs feature detection plus a fallback, or a deliberate target change; suggest recording the target in the repository's agent instruction file (`omh-agent-instructions` owns that file).
@@ -2944,6 +2946,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Keep field and lab apart: a p75 claim needs field data, a lab audit is a diagnostic sample on one device profile, and a lab pass is never a statement about real users.
   - While building, look at each change that affects what renders: after it, capture the affected surface and read the capture before the next change, for a 3D or canvas scene the default camera and each declared preset; a change not looked at is not done (`references/screenshot-loop.md`, section `During implementation`).
   - After implementation lands on a web surface, load `references/screenshot-loop.md` and require the screenshot iteration loop live-environment-first: capture the running UI at 1440/768/375px, compare against the supplied target or DESIGN.md, list every difference triaged Blocker/High/Medium/Nit with its capture attached, fix, and recapture until the difference list is empty.
+  - Judge each capture against the reference at the size and density people will see it (the real viewport, the real icon size such as a 24 px toolbar slot), not only a large render; exercise an interactive result with the actions it supports before calling it done.
   - Prefer native UI controls, stable dimensions, and realistic content over decorative cards, blobs, and placeholder-heavy screens.
   - When the handoff asks for component or interaction tests, load `skill_view(name='omh-verification-gate', file_path='references/test-authoring.md')` and name the seam each test drives: assert through what a user perceives (role, accessible name, visible text) across the frontend_component_state_inventory/v1 states, never class names or component-internal state, and fake only at the boundaries the shared page lists (network, clock, randomness).
   - Keep implementation, browser verification, accessibility/performance checks, visual QA, and deployment as observed-only evidence.
@@ -3446,6 +3449,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - When a product surface is composed into a larger frame (promo, poster, slide, end card), measure it against the frame: a look-alike of a UI that exists, in place of its real renderer's output, is BLOCK, while an unbuilt UI labeled concept or a brief-requested stylised treatment labeled as such is not; with no subtitles a product-led shot is full-bleed, the full frame minus a 46 px edge inset (at least about 988 px tall at 1080p) with platform-UI zones still clear, and with subtitles it fills at least 90% of the width and height of the body safe area with the subtitle band clear; text rows are at least 2% of the frame's shorter side; a logo or identity mark keeps at least one of its own text rows from the frame and window edges, intentional crops excepted; meta text the product does not render (window title, dimension label, invented path) is removed; every count agrees with its noun in each plural category of the content locale. Each miss is one `differences` entry.
   - Combine objective capture/diff evidence, hotspot review, alpha/transparent-background checks, and human-readable visual findings.
   - Capture interaction, click-path, and motion states when the UI has transitions or controls that change state.
+  - Compare against the reference at the size and density people will see it: the real viewport, the real icon or toolbar size (a 24 px toolbar slot), the real slide or card dimensions, not only an enlarged render, where detail that reads at large size can vanish. An interactive result is exercised with the actions it supports (click, type, scroll, key) before any verdict.
   - For a 3D or canvas scene, capture the first frame exactly as booted, each camera preset, and every time of day the scene advertises; a claim in its own title or HUD that its first frame does not show, a small animated object that does not read as what it is, and flat light are each one `differences` entry (`omh-frontend/references/rendered-scene-craft.md`).
   - A game or interactive scene passes only when captures show it boots (first frame neither blank nor one flat colour), answers its declared input (the frame after a key, click or touch differs from the frame before it where the input should move something), keeps running (frames seconds apart differ while idle, background-only animation not counting) and logs zero console errors across boot and input; a missing capture is BLOCK, reading code never passes it, and a run without a WebGL context is recorded as `environment: no_webgl`, not judged blank (`references/playable-check.md`).
   - Separate design-system consistency, functional integrity, visual fidelity, responsive behavior, accessibility visibility, and CJK/text precision.
@@ -3719,9 +3723,11 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Convert remediation into explicit follow-up workflows instead of silently patching.
   - Verdict: GO only when all nine rows are observed, BLOCK when any row failed an observed check, else HOLD naming the rows lacking evidence.
   - Evidence floor: rollback = command exercised, restore tested, RPO/RTO; performance = load result at peak; observability = alerts to a named on-call with a runbook; security_privacy = secrets store, least privilege, cert expiry.
+  - End the result with a `Not checked` list: every file, path, behavior, or environment in scope that was not examined or could not run, each with a one-line reason. Write `Not checked: none` only when coverage was complete; never leave the list out, because a report that lists only findings reads as if everything else were clean.
 - Completion checklist:
   - Each of the nine matrix rows reads observed, failed, or missing, with its evidence id, and the verdict follows the GO, BLOCK, HOLD rule.
   - The rollback plan names signals, owner, threshold, and recovery path; OMH deployed and scanned nothing.
+  - The result ends with a `Not checked` list, one reason per entry, or `Not checked: none` when coverage was complete.
 - Recovery notes:
   - If build or CI evidence is missing for the target release, retain the evidenced readiness_matrix/v1 rows, mark readiness unresolved, and hand back release_gate_verdict/v1 on HOLD with the missing evidence list.
   - If rollback owner, health thresholds, or recovery path is missing, retain the evidenced readiness_matrix/v1 rows, mark rollback readiness unresolved, and hand back rollback_and_monitoring_plan/v1 with the exact gaps.
@@ -3792,10 +3798,12 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Take the required set from the repository, not from what happened to run: branch protection or ruleset required status checks (a repository that uses rulesets has none: `gh api repos/{owner}/{repo}/branches/{base}/protection/required_status_checks` answers 404 there; read `gh api repos/{owner}/{repo}/rules/branches/{base}` and take the contexts of its `required_status_checks` rule), the CI workflow, and the contributor docs; name which source defined required. Then compare those contexts with the results (`gh pr view <n> --json statusCheckRollup`): a required context with no result is missing evidence, not a pass. `gh pr checks --required` lists only checks that already exist, so it can read green while a required check has not started.
   - Return PASS only when required checks pass and stale or missing evidence is resolved; PASS never stands beside a failing required check, whatever its origin. A required check that fails `pre_existing` is HOLD worded as not charged to the change, naming the merge-base run that proves it, and only when the failing run's scope still covered the change: a failure that stopped the check before it exercised the change, such as a collection or import error, leaves that check as missing evidence. `unknown` is HOLD with the merge-base run named as the missing evidence (for a failing test, the failure rate at head and at the merge-base).
   - Keep fixes, reruns, review, CI, and merge as separate observed states.
+  - End the result with a `Not checked` list: every file, path, behavior, or environment in scope that was not examined or could not run, each with a one-line reason. Write `Not checked: none` only when coverage was complete; never leave the list out, because a report that lists only findings reads as if everything else were clean.
 - Completion checklist:
   - The scenario, expected behavior, observed result, and pass/fail basis are named.
   - Proposed fixes are separated from observed QA evidence.
   - Missing or failed verification routes back to `plan`, fix, or a narrower test.
+  - The result ends with a `Not checked` list, one reason per entry, or `Not checked: none` when coverage was complete.
 - Recovery notes:
   - If a required check fails with an unknown origin, keep the other fresh results, mark the claim unresolved on HOLD, and hand back the same check rerun at the merge base as the missing evidence.
   - If a fix test has only a fresh green result, retain that result within its scope, mark the claim unresolved on HOLD with regression_witness_missing, and hand back the required pre-fix red witness and its source.
@@ -4387,7 +4395,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Map overlap, missed-run, retry, backfill, and failure-pause onto what Hermes cron does natively and say which choices it cannot honour, so nobody is asked for a policy the runtime ignores; the map is in `references/recurring-surface-choice.md`.
   - After activation, read status from Hermes, not from the blueprint: `cronjob_manage` list (state, last_status, next_run_at), `hermes cron runs`, and open `hermes cron incidents` (detected or alerted).
   - Expose whether a no-agent watchdog is a candidate without claiming it exists or ran.
-  - When the person asks to watch a Slack or Discord channel and be told first when a post matches a condition, follow `references/channel-watch.md`: confirm where, what, how often, and where it reports in one line, then install the collector from `toolkit/`, write its config, and create the job yourself.
+  - When the person asks to watch a Slack or Discord channel and be told first when a post matches a condition, follow `references/channel-watch.md`: confirm where, what, how often, and where it reports in one line, then install the collector from `toolkit/` as `toolkit/README.md` describes (`skill_view(name='omh-automation-blueprint', file_path='toolkit/README.md')`), write its config, and create the job yourself.
   - List host automation, gateway delivery, source retrieval, and no-agent execution as not evidence until observed.
 - Completion checklist:
   - Confirm the workflow target, evidence boundary, and stop condition are named.
@@ -5101,7 +5109,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Lifecycle stage: `canonical`
 - Preferred usage: Use as an installed Hermes workflow skill when this explicit workflow is the clearest user-facing handle.
 - Handoff policy: Hermes may frame and summarize review evidence; fixes or code mutations found during review should be delegated to the selected coding executor.
-- Why this exists: `code-review` exists to make review bug-first and evidence-grounded: findings must cite concrete files, diffs, commands, or artifacts before any summary or fix proposal.
+- Why this exists: `code-review` exists to make review bug-first and evidence-grounded: findings must cite concrete files, diffs, commands, or artifacts before any summary or fix proposal. Its Hermes Bug Hunter discipline keeps only findings that can be shown step by step, drops intended or unreachable behavior, and ends every review with what was not checked.
 - Use when: Use for review-shaped requests; findings come first and must cite concrete evidence.
 - Do not use when:
   - The user asks to implement the fix rather than review existing code or claims.
@@ -5131,6 +5139,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - A read, parse, or hash that failed means unknown, never empty, none, or equal: keep what was read before, and a list that guards access fails closed, so a failed read of an allowlist denies instead of allowing.
   - Judge maintainability findings against the named baseline in `omh-code-review/references/smell-baseline.md`: a baseline smell is a judgement call to argue from evidence, never an automatic finding, and the reviewed repository's own standards override the baseline wherever they conflict.
   - Close with two lists beside the verdict: what was checked and found clean, and what could not be assessed with the reason. An absent finding is evidence only when the closing says the surface was actually checked.
+  - End the result with a `Not checked` list: every file, path, behavior, or environment in scope that was not examined or could not run, each with a one-line reason. Write `Not checked: none` only when coverage was complete; never leave the list out, because a report that lists only findings reads as if everything else were clean.
   - Require structured `spec_axis`, `could_not_assess` (empty allowed), and unranked `verification_gaps` (empty allowed) under the dispatch schema; gaps carry `path`, `line_range`, and `evidence`, never finding priority or confidence. Check actual reads, revision, bounds, ordered ranges, and claim truth separately from shape.
   - Select depth by changed risk, not diff size; record selected and omitted checks, reasons, actual coverage, and budget. Deduplicate candidates by root cause and validate before final findings; retain unresolved protected risks separately. Say `independent validation unavailable` when no different reader participated.
   - Hermes handles two parts of a review itself; load `omh-code-review/references/native-review-contract.md` for both. When `delegate_task` is in your tool list or tool_search finds it, pass the findings schema as the reviewer task's `output_schema`. The host validates the return, but its `schema_valid` record reaches you only when the call returns its results in the same turn; a result that arrives later as a completion message carries none, so check that summary against the schema yourself and never read `completed` as validated. A return that fails the contract is `not_observed`, never a pass. Inside a kanban review worker, `no_ship` becomes the request-changes transition that `sdlc-review` makes.
@@ -5142,6 +5151,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Both axes appear in the report: correctness/risk findings, and a spec-axis verdict naming its Claim source or the `not_assessed` reason.
   - No-issue reviews still name residual risk, missing tests, and independent review evidence if unavailable.
   - The closing carries the checked-and-clean list and the could-not-assess list, each naming its surfaces.
+  - The result ends with a `Not checked` list, one reason per entry, or `Not checked: none` when coverage was complete.
   - The dispatch schema matches the return, candidate validation states remain distinct, and selected checks are not reported as observed coverage.
   - Fix implementation, architecture follow-up, and CI/merge claims stay separate from the review result.
   - A reply to the person uses plain words: the verdict as whether anything found blocks the change (blocking issues found / nothing blocking found), the spec axis as whether the change does what was asked, gaps as what could not be checked and why; `ship`, `no_ship`, `not_assessed`, `spec_axis`, `verification_gaps`, and `could_not_assess` stay out of it. A dispatched reviewer's structured return keeps those schema fields.
@@ -5153,7 +5163,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - When findings arrive for work you own, load `omh-code-review/references/review-response.md` before changing anything.
   - For maintainability judgement calls, load `omh-code-review/references/smell-baseline.md`; it finds the repository's standards files first, then names the twelve baseline smells with their fixes and the repo-standards-override rule.
   - Load `omh-code-review/references/risk-selection.md` to select depth; when additional lenses are justified, load `omh-code-review/references/review-lenses.md` and run only those selected as separate passes.
-  - Before final findings, load `omh-code-review/references/finding-validation.md` for candidate confirmation, rejection, and unresolved-risk handling; load `omh-code-review/references/architecture-delta.md` when ownership, contracts, dependencies, or shared-code extraction change.
+  - Before final findings, load `omh-code-review/references/finding-validation.md` for its drop gate and candidate confirmation, rejection, and unresolved-risk handling; load `omh-code-review/references/architecture-delta.md` when ownership, contracts, dependencies, or shared-code extraction change.
 - Required inputs:
   - diff or files
   - expected behavior
@@ -5315,7 +5325,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### tech-debt-audit
 
-[omh] Accumulated tech debt or architecture deepening to rank: build the severity-by-effort debt ledger from observed repo evidence - orient, audit the named dimensions with file:line citations, rank fixes and quick wins - and reconcile RESOLVED/NEW/CARRIED on rerun.
+[omh] Accumulated tech debt or architecture deepening: rank it; build the severity-by-effort debt ledger from observed repo evidence - orient, audit the named dimensions with file:line citations, rank fixes and quick wins - and reconcile RESOLVED/NEW/CARRIED on rerun.
 
 - Category: `maintenance`
 - Phase: `tech-debt-audit`
@@ -6130,10 +6140,11 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Verify: re-inspect the allowlisted Hermes config metadata and report a completion checklist covering every applicable item.
   - Chain interview: when the user wants the per-category model chains changed, first show the current state (`omh model-chains show`), then interview one category at a time with numbered options — keep current first, the shipped default only when the current chain differs from it, the Ultrafast tier only when a chain member has a known `-ultrafast` id, and a custom entry (직접 입력) last — and apply each outcome with `omh model-chains set <category> "model[:effort], ..."` or by editing ~/.omh/routing/model-chains.json directly; close by re-reading the file and showing the resulting chains with their origins.
   - Treat each Hermes model alias, semantic category, and external owner as an independent prerequisite/diagnose/recommend/apply unit instead of one combined change.
-  - Explain the shipped recommendations as editable editorial defaults, not benchmarks or allowlists: ultrabrain prefers Claude Fable 5.2, GPT-6 Astra, then Claude Opus 5.5 at xhigh; deep prefers Claude Opus 5.5, GPT-6.1 Sol, then Kimi K3.1 Pro at high; architect prefers Claude Opus 5.5, GPT-6 Astra, Claude Fable 5.2, then Kimi K3.1 Pro at xhigh; unspecified-high prefers GPT-6.1 Sol, Claude Opus 5.5, then Kimi K3.1 Pro; unspecified-low prefers GLM-5.3, DeepSeek V4.1 Flash, GPT-6.1 Sol, then Claude Sonnet 5.5 at low; quick prefers GLM-5.3 Flash, GPT-6 Luna, Claude Haiku 5.5, then Kimi K3.1 Pro at low; writing prefers Claude Opus 5.5, Claude Sonnet 5.5, Kimi K3.1 Pro, then Gemini 4 Argon; visual-engineering prefers Claude Fable 5.2, Claude Opus 5.5, Gemini 4 Argon, then Kimi K3.1 Pro; artistry prefers Gemini 4 Argon, Claude Opus 5.5, Claude Fable 5.2, then Kimi K3.1 Pro; capable prefers Claude Opus 5.5, GPT-6.1 Sol, Claude Fable 5.2, then Kimi K3.1 Pro at medium; simple-work prefers GPT-6 Luna, Claude Haiku 5.5, then DeepSeek V4.1 Flash at low; deep-work prefers Claude Opus 5.5 then GPT-6.1 Sol at max; google-search prefers Gemini 4 Argon, GPT-6.1 Sol, then Claude Opus 5.5 at medium; x-search prefers Grok 4.7, Kimi K3.1 Pro, then Gemini 4 Argon at high; review prefers GPT-6.1 Sol, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; swarm prefers DeepSeek V4.1 Flash, GLM-5.3 Flash, then GPT-6 Luna at low; forensics prefers GPT-6 Astra, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; and synthesize prefers Claude Opus 5.5 and GPT-6.1 Sol at xhigh, then Gemini 4 Argon at high. The last six are opt-in: no role or task scale selects them. Each chain names the current generation of a model line; a superseded generation (Fable 5, Fable 5.1, Opus 5, GLM 5.2, DeepSeek V3.2, GPT-5.6 Luna, GPT-5.6 Sol, GPT-5.6 Terra, GPT-6 Sol, Claude Haiku 4.5, Kimi K3, Grok Code Fast, Gemini 3.1 Pro) or a retired line (Qwen3-Coder) is kept only by a machine-level chain override. Chain customization is a config edit: a category written into ~/.omh/routing/model-chains.json (mixture_chain_overrides/v1, seeded by omh setup) replaces that chain for routing, fallback, and HUD labels without touching code. The interactive omh setup (or, in chat, `omh model-chains provider set <id> <kind>` for one provider; the subscription answer comes only from interactive setup) also records which providers the machine holds and whether it has a Claude Code subscription in ~/.omh/routing/providers.json (provider_entitlements/v1); every chain is then reordered so served entries lead, nothing is removed, and the Claude Code subscription only seeds the Maestro lane's --model preference because Hermes cannot spend it.
+  - Explain the shipped recommendations as editable editorial defaults, not benchmarks or allowlists: ultrabrain prefers Claude Fable 5.2, GPT-6.2 Astra, then Claude Opus 5.5 at xhigh; deep prefers Claude Opus 5.5, GPT-6.2 Sol, then Kimi K3.1 Pro at high; architect prefers Claude Opus 5.5, GPT-6.2 Astra, Claude Fable 5.2, then Kimi K3.1 Pro at xhigh; unspecified-high prefers GPT-6.2 Sol, Claude Opus 5.5, then Kimi K3.1 Pro; unspecified-low prefers GLM-5.3, DeepSeek V4.1 Flash, GPT-6.2 Sol, then Claude Sonnet 5.5 at low; quick prefers GLM-5.3 Flash, GPT-6 Luna, Claude Haiku 5.5, then Kimi K3.1 Pro at low; writing prefers Claude Opus 5.5, Claude Sonnet 5.5, Kimi K3.1 Pro, then Gemini 4 Argon; visual-engineering prefers Claude Fable 5.2, Claude Opus 5.5, Gemini 4 Argon, then Kimi K3.1 Pro; artistry prefers Gemini 4 Argon, Claude Opus 5.5, Claude Fable 5.2, then Kimi K3.1 Pro; capable prefers Claude Opus 5.5, GPT-6.2 Sol, Claude Fable 5.2, then Kimi K3.1 Pro at medium; simple-work prefers GPT-6 Luna, Claude Haiku 5.5, then DeepSeek V4.1 Flash at low; deep-work prefers Claude Opus 5.5 then GPT-6.2 Sol at max; google-search prefers Gemini 4 Argon, GPT-6.2 Sol, then Claude Opus 5.5 at medium; x-search prefers Grok 4.7, Kimi K3.1 Pro, then Gemini 4 Argon at high; review prefers GPT-6.2 Sol, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; swarm prefers DeepSeek V4.1 Flash, GLM-5.3 Flash, then GPT-6 Luna at low; forensics prefers GPT-6.2 Astra, Claude Opus 5.5, then Kimi K3.1 Pro at xhigh; and synthesize prefers Claude Opus 5.5 and GPT-6.2 Sol at xhigh, then Gemini 4 Argon at high. The last six are opt-in: no role or task scale selects them. Each chain names the current generation of a model line; a superseded generation (Fable 5, Fable 5.1, Opus 5, GLM 5.2, DeepSeek V3.2, GPT-5.6 Luna, GPT-5.6 Sol, GPT-5.6 Terra, GPT-6 Sol, GPT-6 Astra, GPT-6.1 Sol, Claude Haiku 4.5, Kimi K3, Grok Code Fast, Gemini 3.1 Pro) or a retired line (Qwen3-Coder) is kept only by a machine-level chain override. Chain customization is a config edit: a category written into ~/.omh/routing/model-chains.json (mixture_chain_overrides/v1, seeded by omh setup) replaces that chain for routing, fallback, and HUD labels without touching code. The interactive omh setup (or, in chat, `omh model-chains provider set <id> <kind>` for one provider; the subscription answer comes only from interactive setup) also records which providers the machine holds and whether it has a Claude Code subscription in ~/.omh/routing/providers.json (provider_entitlements/v1); every chain is then reordered so served entries lead, nothing is removed, and the Claude Code subscription only seeds the Maestro lane's --model preference because Hermes cannot spend it.
   - For X/Twitter scraping or trend analysis, keep x_platform_data as a domain affinity rather than a role alias: prefer confirmed-active Grok, then Kimi K3.1 Pro, then Gemini, without removing the rest of the route or overriding an explicit model.
-  - When a recommendation head is missing, choose the first confirmed-active owner-compatible candidate in that chain. Only after every selected category, role-slot, and domain chain is exhausted, consult the shared final order Claude Opus 5.5 then GPT-6.1 Sol. If no candidate is confirmed active anywhere, keep the selector on its owner's native default model and let the rest of OMH setup finish without a model-config write.
+  - When a recommendation head is missing, choose the first confirmed-active owner-compatible candidate in that chain. Only after every selected category, role-slot, and domain chain is exhausted, consult the shared final order Claude Opus 5.5 then GPT-6.2 Sol. If no candidate is confirmed active anywhere, keep the selector on its owner's native default model and let the rest of OMH setup finish without a model-config write.
   - Give provider-specific native next actions without claiming provider readiness: use installed Hermes flows for OpenAI OAuth/OpenAI Codex, Anthropic or an existing Claude provider, Qwen OAuth or Alibaba, Gemini/Google/Vertex, Grok/xAI, Kimi, GLM/Z.AI, DeepSeek, or an already-working custom provider; preserve working alternatives.
+  - Onboarding mode: when the conversation opens with OMH's onboarding message (the person ran `omh setup` and accepted model setup), run these steps in order, one question at a time: (1) inventory Hermes' main model, configured providers, credential pools, and the provider key environment variable NAMES that are present, never values; (2) ask which of those to use and whether to add one; (3) for a provider with no key, name the exact command for another terminal (`hermes auth add <provider>`, or `hermes model` for OAuth/login), wait until the person says done, then re-check; (4) set the main model and at most one fallback with `omh setup --model-setup ... --fallback-model <provider>/<model>`, previewed and digest-bound like aliases (no fallback when only one provider exists); (5) set the category chains from the shipped recommendations, ordered to the providers present, with `omh model-chains provider set` and `omh model-chains show`; (6) show one combined preview, apply only after a yes, then re-read the configuration and show it; (7) close by saying that to change any of this later, the person can just say it in chat. The rules above still hold: no secrets in chat, diff approval, no network probes.
   - Closing step: once model routing/chains are confirmed, ask once whether the user also wants to set up coding delegation (the `maestro` lane) for an external coding CLI -- do not ask before model setup is done and never auto-enable it. Point at `omh coding executor-skills --profile <profile>` for skill-set discovery, `~/.omh/routing/dispatch-models.json` for an optional per-owner model preference, and the `ulw-maestro` skill for the handoff itself; name Codex and Claude Code neutrally rather than favoring either.
 - Completion checklist:
   - If a prerequisite is unmet, mark that item "not applicable" and continue with the rest of the guide instead of blocking or guessing.
@@ -6143,7 +6154,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Every requested write was previewed, explicitly approved, digest-checked, and re-verified; unresolved model items did not block unrelated setup.
 - Recovery notes:
   - If discovery is absent, truncated, unreadable, or layout_unverified, name that source state and continue with manual confirmed-active input instead of scanning more broadly.
-  - If a provider serves only dated snapshot ids (`gpt-6.1-sol-YYYY-MM-DD`), confirm the dated id as active and keep it as served: OMH reads a trailing `-YYYY-MM-DD` as the base alias for recommendation chains, HUD labels, prices, and calibration, so the base's chain position applies without renaming the id; a date on a base no chain names still resolves nothing.
+  - If a provider serves only dated snapshot ids (`gpt-6.2-sol-YYYY-MM-DD`), confirm the dated id as active and keep it as served: OMH reads a trailing `-YYYY-MM-DD` as the base alias for recommendation chains, HUD labels, prices, and calibration, so the base's chain position applies without renaming the id; a date on a base no chain names still resolves nothing.
   - If a preferred Kimi, Claude, OpenAI, GLM, DeepSeek, Grok, or Gemini candidate is missing, preserve it as inactive and try the next confirmed-active compatible editorial candidate; do not substitute for an explicit unavailable choice.
   - If no compatible model is confirmed active, record owner_default, finish applicable OMH setup without a model-config write, and name the relevant Hermes-native provider/auth or user-override next action.
   - If the diagnosed Hermes config cannot be read, report the read failure and stop before proposing a diff; if the config digest changes or the user rejects the diff, do not apply it.
@@ -6820,7 +6831,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### app-debugging
 
-[omh] Application code misbehaves -- a wrong value, a flaky test, a lost update: reproduce it first, form competing hypotheses, discriminate them with the cheapest observation, and only then fix the demonstrated root cause.
+[omh] Application code misbehaves: a wrong value, a flaky test, a lost update; reproduce it first, form competing hypotheses, discriminate them with the cheapest observation, and only then fix the demonstrated root cause.
 
 - Category: `verification`
 - Phase: `app-root-cause`
@@ -6862,6 +6873,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Load `references/hypothesis-and-race-method.md` for the hypothesis table, flaky-test tactics, and race patterns instead of improvising them.
   - Pick the next observation by cost and by how many hypotheses its result eliminates, and record the eliminations.
   - Keep reproduction, root cause, fix, and verification as separate observed states.
+  - Size the effort to the depth and name it: a quick survey of one area runs at medium; tracing one suspected cause across several systems runs at high (category `deep`); several causes that may interact run at xhigh (category `forensics`). Finished means the reported symptom's root cause is shown by an observation and the fix passes the same reproduction; be exhaustive in the hypothesis table and its eliminations, not in reading code no hypothesis touches.
   - Count a fix as failed when an executed run of the same reproduction command still shows the original symptom or shows a new symptom the fix caused rather than unmasked; planned runs and other commands do not count. After the third failed fix, prepare no fourth; re-examine the architecture assumptions every fix shared, per the method reference, and offer the user the next step as a question.
   - Before the fix handoff names a regression test, load `skill_view(name='omh-verification-gate', file_path='references/test-authoring.md')` for the seam, the shapes of tests that guard nothing, fakes only at system boundaries, and the no-correct-seam outcome.
   - When Hermes' bundled `systematic-debugging` skill is loaded for the same bug, follow its phases and write this skill's records at each; a breakpoint read through `python-debugpy` or `node-inspect-debugger` is one discriminating observation. Load `references/debugging-skill-composition.md` for the mapping.
@@ -6905,7 +6917,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### commit-pr-authoring
 
-[omh] Commit message or pull-request body to write for a change: draft it in the repository's own convention, with `Tested:` listing only commands observed to run and everything prepared but not run under `Not-tested:`.
+[omh] Commit message or pull-request body to write: draft it for the change in the repository's own convention, with `Tested:` listing only commands observed to run and everything prepared but not run under `Not-tested:`.
 
 - Category: `verification`
 - Phase: `commit-pr-authoring`
@@ -6981,7 +6993,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### git-workflow
 
-[omh] Git branch in trouble -- a merge conflict, a commit that broke something, history to repair: plan the resolution, the bisect, or the rewrite, name what is already pushed first, and force-push only with `--force-with-lease`.
+[omh] Git branch in trouble: a merge conflict, a commit that broke something, history to repair; plan the resolution, the bisect, or the rewrite, name what is already pushed first, and force-push only with `--force-with-lease`.
 
 - Category: `verification`
 - Phase: `git-repair`
@@ -7057,7 +7069,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### relational-db
 
-[omh] Database work on a relational store -- a slow query, an index to size, a migration on a big table, a lock taken during deploy, N+1 queries: plan it with the checks that prove it safe, and never call a migration ready without its lock behaviour and rollback.
+[omh] Database work on a relational store: a slow query, an index to size, a migration on a big table, a lock taken during deploy, N+1 queries; plan it with the checks that prove it safe, and never call a migration ready without its lock behaviour and rollback.
 
 - Category: `planning`
 - Phase: `relational-db`
@@ -7137,7 +7149,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### security-event-response
 
-[omh] Security event on the code already shipped -- a CVE in a dependency, a secret committed to the repo, a license question, an advisory: triage reachability and severity, contain in order, and never close a leaked secret before its rotation is observed.
+[omh] Security event on the code already shipped: a CVE in a dependency, a secret committed to the repo, a license question, an advisory; triage reachability and severity, contain in order, and never close a leaked secret before its rotation is observed.
 
 - Category: `review`
 - Phase: `security-event-response`
@@ -7215,7 +7227,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### agent-instructions
 
-[omh] Agent instruction file for a repo -- AGENTS.md, CLAUDE.md, a Cursor rule: write or update what an agent cannot derive from the code, inside a marked region, with every command verified or marked unverified and no counts that drift.
+[omh] Agent instruction file for a repo: AGENTS.md, CLAUDE.md, or a Cursor rule; write or update what an agent cannot derive from the code, inside a marked region, with every command verified or marked unverified and no counts that drift.
 
 - Category: `planning`
 - Phase: `agent-instructions`
@@ -7251,6 +7263,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Quality bar:
   - Inventory every instruction file first and respect closest-file-wins nesting.
   - Load `references/instruction-file-method.md` for the section order, the marker convention, the verified and unverified command form, and the drift rules instead of recalling them.
+  - Keep a line only if an agent cannot infer it from the code, tests or docs; keep the workflows the project depends on, and leave routine how-to decisions out.
   - Record each pitfall with what it cost, so a reader can tell a scar from a preference.
   - Pair every generated file with its source, its regenerate command, and the gate that checks it.
   - Keep prepared, verified, and written as separate states for every command and section.
@@ -7288,7 +7301,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### iac-change
 
-[omh] Infrastructure-as-code change -- Terraform, OpenTofu, Pulumi, a Kubernetes manifest, a Helm chart: read the drift, the blast radius and the cost delta from the saved plan, then stage the apply behind a health gate with a rollback per stage.
+[omh] Infrastructure-as-code change: Terraform, OpenTofu, Pulumi, a Kubernetes manifest, a Helm chart; read the drift, the blast radius and the cost delta from the saved plan, then stage the apply behind a health gate with a rollback per stage.
 
 - Category: `planning`
 - Phase: `iac-change`
@@ -7365,7 +7378,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### data-pipelines
 
-[omh] Data pipeline work -- an ETL or streaming job, a backfill or replay, duplicate events, a schema change downstream, a lineage question, a data-quality regression: make every rerun idempotent, bound every replay, and gate each load on observed checks.
+[omh] Data pipeline work on an ETL or streaming job: a backfill or replay, duplicate events, a schema change downstream, a lineage question, a data-quality regression; make every rerun idempotent, bound every replay, and gate each load on observed checks.
 
 - Category: `planning`
 - Phase: `data-pipelines`
@@ -7440,7 +7453,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### model-finetuning
 
-[omh] Fine-tuning a model on your own data -- SFT, DPO, RLVR or a LoRA adapter: decide first whether prompting or retrieval already closes the gap, choose the method from the data you have, and promote a checkpoint only when it beats the untuned baseline on a held-out eval.
+[omh] Fine-tuning a model on your own data: SFT, DPO, RLVR or a LoRA adapter; decide first whether prompting or retrieval already closes the gap, choose the method from the data you have, and promote a checkpoint only when it beats the untuned baseline on a held-out eval.
 
 - Category: `planning`
 - Phase: `model-finetuning`
@@ -7516,7 +7529,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### mobile-release
 
-[omh] Releasing an iOS or Android app through the stores -- signing, the privacy manifest, a TestFlight or Play beta, a staged rollout, a hotfix: prepare each gate the store enforces, and plan the halt and the next build before the rollout starts, because a store release cannot be rolled back.
+[omh] Releasing an iOS or Android app through a store: signing, the privacy manifest, a TestFlight or Play beta, a staged rollout, a hotfix; prepare each gate the store enforces, and plan the halt and the next build before the rollout starts, because a store release cannot be rolled back.
 
 - Category: `planning`
 - Phase: `mobile-release`
@@ -7667,7 +7680,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### data-share-review
 
-[omh] Before data leaves the team -- a dataset, log, ticket export or transcript excerpt bound for a vendor, a public issue, a model provider or a training corpus: classify every field, minimize first, pseudonymize with the mapping kept local, and call it redacted only after an observed residual scan.
+[omh] Before data leaves the team: a dataset, log, ticket export or transcript excerpt bound for a vendor, a public issue, a model provider or a training corpus; classify every field, minimize first, pseudonymize with the mapping kept local, and call it redacted only after an observed residual scan.
 
 - Category: `review`
 - Phase: `data-share-review`
@@ -7742,7 +7755,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### release-cut
 
-[omh] Shipping a versioned release -- tag it, stage it behind a canary, or roll back the last deploy: decide what goes in, the version, the rollout stages, and a rollback with its trigger and exact command before it is needed.
+[omh] Shipping a versioned release: tag it, stage it behind a canary, or roll back the last deploy; decide what goes in, the version, the rollout stages, and a rollback with its trigger and exact command before it is needed.
 
 - Category: `planning`
 - Phase: `release-cut`
@@ -7818,7 +7831,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### spend-gate
 
-[omh] Spending money on the user's behalf -- a card checkout, an HTTP 402 or pay-per-request call, a wallet transfer, a booking, a paid data endpoint: show a pre-spend card (payee, total with fees, cap, refund terms, approver) first, and call it done only on an observed receipt.
+[omh] Spending money on the user's behalf: a card checkout, an HTTP 402 or pay-per-request call, a wallet transfer, a booking, a paid data endpoint; show a pre-spend card (payee, total with fees, cap, refund terms, approver) first, and call it done only on an observed receipt.
 
 - Category: `spend-control`
 - Phase: `pre-spend`
@@ -7919,8 +7932,9 @@ These surfaces are generated command references, not installed Hermes workflow s
   - When the conversation holds a plan the user accepted (from `plan`, `ralplan` or `refactor-plan`), build the graph from it instead of re-planning: each task becomes a node with its id, depends_on and write scope, its done check goes into VERIFY and STOP WHEN, and its closing verification task becomes the `role: verify` node; plan only what it leaves open.
   - Plan the graph and call `omh_dag action=define` with the complete run `goal` and each node's id, label, category, prompt, depends_on, write_scope and role (`build` by default; `baseline`, `verify`, `review`); fix every refusal and read the lint before going on. Never `delegate_task` before `define` returns its calls. The saved goal reaches every native task; local VERIFY does not replace goal acceptance.
   - Keep the plan todo as the run's layers in ONE tool: `todo_list` when `todo_list` is in your tool list or tool_search finds it (OMH mirrors it), else `omh_todo`; an accepted plan stays in `omh_todo`. One item per layer, named for what it delivers, never a list of its nodes (the panel draws those); advance it as each layer settles.
-  - For each call `omh_dag` returns, run its route (`omh_delegate_route`, set or fallback as given), then `delegate_task` with the tasks unchanged; never more calls than it returned. A call whose route names a `backend` (Hermes' model_map or profile_routes) runs no route tool: its tasks already carry what that backend takes. Then end the turn with one status line; never wait or poll.
-  - On each completion read the node's handoff file and call `omh_dag action=settle` (accepted, failed, or blocked; a provider error is failed with provider_error); a verify node with criteria is accepted only when every `CRITERION` line says met, failed when one is unmet, blocked when one could not be checked here. Dispatch what it returns in the same turn.
+  - Before defining nodes, read `omh_role action=list` and compare built-in and custom identity responsibilities equally. User instructions and project ownership win. Read suitable definitions with `action=read identity=REFERENCE`; record the choice in each node's optional `identity` (`builtin:name` or `custom:name`). Omit it when none fits. Identity is prompt guidance; `role` remains build/baseline/verify/review and `category` describes the work.
+  - For each call `omh_dag` returns, run its route (`omh_delegate_route`, set or fallback as given), check that it succeeded (a refusal or exhausted chain stops dispatch), then `delegate_task` with the tasks unchanged; never more calls than it returned. A call whose route names a `backend` (Hermes' model_map or profile_routes) runs no route tool: its tasks already carry what that backend takes. Then end the turn with one status line; never wait or poll. When `delegate_task` returns the children's results inside the call (a one-shot or other finite session), settle them and dispatch what settle returns in the same turn instead: no completion comes back as a later turn there.
+  - On each completion read the node's handoff file and call `omh_dag action=settle` (accepted, failed, or blocked; a provider error is failed with provider_error); a verify node with criteria is accepted only when every `CRITERION` line says met, failed when one is unmet, blocked when one could not be checked here. A handoff with an `ESCALATE:` line is settled `escalated`, that question as the reason; never answer it yourself and accept. Dispatch what it returns in the same turn.
   - When the run reports done, check each node against its SCOPE and the goal criteria: extend the run when work is missing, otherwise report.
 - Use when: Use when the request is a job of several parts that can run in parallel or in an order (a feature across modules, a migration, a broad cleanup, research then build then verify), or when the person says dag ulw.
 - Do not use when:
@@ -7941,12 +7955,13 @@ These surfaces are generated command references, not installed Hermes workflow s
   - When adapting an existing capability, load `skill_view(name='omh-verification-gate', file_path='references/adaptation-quality.md')` before accepting a plan, dispatching work, or claiming completion; carry its criteria and comparisons into tasks and evidence.
   - Split for work that can run side by side: every child pays a start, a read of the repo and a handoff before its work counts, so a small step that only follows another (wiring, the docs for it) belongs in the node it follows, and parts that share a write scope or a judgement are one node. Several parts with nothing to run side by side are still a graph (baseline, one build node, verify), not a reason to skip it.
   - Climb the difficulty ladder `quick` -> `unspecified-low` -> `unspecified-high` with a one-line reason per climb. When one build node's judgement decides the run (a design decision, a root cause, a contested trade-off), give it `ultrabrain` where your routes serve it, at most one; a graph whose every node is `deep` or `deep-work` is a routing failure. A `role=review` node takes category `review` where your routes serve it; a `role=baseline` node stays `quick` or `unspecified-low`; a `role=verify` node judges the run goal and baseline exemptions, so climb the ladder for it; it is not the `ultrabrain` node.
-  - Write every node prompt self-contained, in order: TASK, DELIVERABLE, SCOPE (what it may read and write), VERIFY (the literal command and expected result), STOP WHEN.
+  - Write every node prompt self-contained, as you would brief a colleague who knows the project but not this conversation, in order: TASK, DELIVERABLE, SCOPE (what it may read and write), VERIFY (the literal command and expected result), STOP WHEN. Give a build node `review_focus`: what you will look for when you read its work.
   - `depends_on` only orders nodes; data moves through the handoff files `omh_dag` names, never through the parent's memory.
   - Before full-suite verification, run a `baseline` node before changes and record in its handoff each failure's test id, assertion/error signature, command, environment and revision; make verification depend on it and exempt only those signatures re-executed under a comparable command at the pinned base and candidate revisions. Never exempt a changed same-id failure, missing evidence, skipped or reduced coverage, collection/exit errors, or security/mandatory gates; disclose genuine baseline failures as pre-existing rather than calling a full-suite-green goal met.
   - End every run with a `role: verify` node that depends on every producer, runs the real command, and is never the node that built the work; with criteria it writes one `CRITERION` line per criterion.
   - Completion is a claim: report the goal met only when `omh_dag` says `verdict: verified`, and first check each node against its SCOPE in both directions, nothing owed missing and nothing beyond it done. The reply states the result in plain words (the goal is confirmed; part is not, and which; a check could not run here, and why; how many criteria were met; name a criterion by what it says, not its id); verified, unverified, needs_repair, blocked, settle and node ids are record words, not reply wording.
   - Goal loop: verify, repair, extend, verify. A failed check gets repair nodes (`omh_dag action=repair`, two cycles per node, the last re-plans); when every node passed but the goal check finds work missing, add it to the same run (`omh_dag action=extend`, two rounds per run). Past either limit, report what is still open.
+  - A familiar re-run of the same goal may pass `carry_forward` (the base revision) at define: nodes an earlier run at that base accepted unchanged are carried, not run again, and listed; the verify node always runs.
   - Unknown path: scout first; see 'When the path is unknown' in `references/run-loop.md`.
   - On a messenger, each completion turn's reply is the run's one status line, and dispatch goes one call per layer and category so the posts stay bounded; load `references/run-loop.md` for the messenger, repair, extend and export details.
   - A mid-run user message is an interjection, not a stop: answer it briefly and, in the same reply, continue the run — re-read the phase todo when one is active and dispatch or advance the next pending step, or name the armed wait it is waiting on -- handle, bound completion signal, deadline -- instead of re-reading status. Only the user's explicit stop or cancel, or the engine's own completion gate, ends the run; when the interjection changes scope, say so and update the declared plan or todo instead of silently abandoning it. A mid-run message is the latest steering for the active task, not automatically a replacement objective: it replaces the objective when the user says so and steers the current one otherwise.
@@ -8723,6 +8738,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - If the reel is captured from a game or simulation instead of authored from static assets, read `references/game-capture.md` before capture and timeline authoring: run the simulate → capture → timeline.json → finish edit pipeline with `timeline.json` as the single source of truth for events, SFX cues and titles, pin and record the source game data version/build, map every gameplay event that needs SFX to a cue in timeline.json (an unmapped event is HOLD), apply the shorts defaults (1080x1920, black letterbox bars, centered white title, fade-in, tuned BGM start offset) only as brief-overridable defaults, and record voice provenance (source clip URL, sha256, excerpt range) for any real voice — never synthesizing an impersonation of a real voice actor or person and labeling timbre-alike or synthetic voice methods honestly in credits, with performer/IP permissions handled in the existing assets-and-rights flow.
   - If the selected concept is kinetic typography for a hype launch or teaser, read `references/kinetic-type.md` before beat-sheet and scene authoring; this opt-in lane never applies to explainers or evidence films.
   - If the selected concept is a 60-120 s launch film of a product the team can run and capture, read `references/launch-film.md` before the act sheet and scene authoring; a promo of 15 s or less keeps the one-scene rule.
+  - If the film is a cut-driven sequence written as a shot contract for a builder or a text-to-video generator, or a remake of a supplied reference video, read `references/cut-sheet.md` before writing shots: contract line, subject lock, one row per cut, sound with the rows, measured reference timing, numbered FIX rounds; it does not override the brief, rights or one-scene rule.
 - Use when: Use when a user wants a video authored from an idea or a product: an explainer of how something works, motion graphics or kinetic type, a logo or title intro, a 3D scene, a data-viz animation, a music visual, a short or vertical version, or a product, launch or work showcase, from the brief to a rendered, measured MP4, localized variants and source delivery.
 - Do not use when:
   - Only a static infographic or summary card is needed; use `img-summary`.
@@ -9022,7 +9038,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### model-compression
 
-[omh] Making a model smaller or cheaper by changing its weights: quantization (GPTQ, AWQ, GGUF, bitsandbytes, FP8, quantization-aware training), pruning, or distillation into a smaller student, sized to the target hardware, calibrated on the task's own data, and kept only when it holds quality on the person's own eval.
+[omh] Making a model smaller or cheaper via its weights: quantization (GPTQ, AWQ, GGUF, bitsandbytes, FP8, quantization-aware training), pruning, or distillation into a smaller student, sized to the target hardware, calibrated on the task's own data, and kept only when it holds quality on the person's own eval.
 
 - Category: `planning`
 - Phase: `model-compression`
@@ -9094,6 +9110,68 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Do not distill from a teacher whose terms forbid training on its outputs, or publish a compressed copy the model's license does not permit.
   - OMH compresses nothing, loads no model, and runs no eval; every size, speed, and score comes from observed output or is marked unverified.
 
+### skill-eval
+
+[omh] Agent skill to check before shipping it: run `omh skill-eval` on the folder to see, host by host, whether Hermes, Claude Code, Codex, OpenClaw, OpenCode and Copilot CLI load it, load it degraded, or skip it, and fix each finding at its source.
+
+- Category: `operations`
+- Phase: `skill-eval`
+- Hermes role: `operator`
+- Quality tier: `evidence-gated`
+- Reasoning demand: `light`
+- Exposure: `direct_skill`
+- Install visibility: `true`
+- Docs visibility: `primary_workflow_skill`
+- Compatibility alias: `false`
+- Lifecycle stage: `canonical`
+- Preferred usage: Use as an installed Hermes workflow skill when this explicit workflow is the clearest user-facing handle.
+- Handoff policy: Hermes runs `omh skill-eval`, reads its rows and proposes the fixes. Edits to the skill's files follow the user's normal review; a with/without lift run uses `delegate_task` on the session's own model and only with the user's go-ahead.
+- Why this exists: `skill-eval` exists because a skill that reads well can still be skipped or cut by the host that loads it: the wrong root, a description past the listing window, a catalog over its budget, a file the agent cannot open. The check is offline and cites the host fact behind each finding, so the fix lands before users do.
+- First steps:
+  - Ask which folder to check and where it will be installed, then run `omh skill-eval <dir>` with `--install-root` when the path does not show it.
+  - Report the host rows and the final count line first, then the fixes for not_loaded rows before degraded ones.
+- Use when: Use when a SKILL.md folder or a folder of skills is about to be shared or installed and the question is whether each agent host will find, list and read it; `omh skill-eval` reads files only, with no key, no network and no model call.
+- Do not use when:
+  - The ask is a dashboard of the whole skill portfolio's drift, stale surfaces or pending amendments; use `skill-health`.
+  - The ask is finding an existing skill to adopt before writing one; use `skill-scout`.
+  - The ask is comparing coding agents or models on the same task; use `agent-evaluation`.
+  - OMH itself is not installed or its skills do not appear at all; use `doctor`.
+- Strong routing signals: `skill-eval`, `skill eval`, `evaluate my skill`, `is my skill any good`, `skill harness check`, `will my skill load`, `skill compatibility`, `스킬 평가`, `스킬 점검`, `스킬 호환성`
+- Good example:
+  - Prompt: I wrote a skill in ./my-skills/pdf-tables. Will it load in Claude Code and Codex?
+  - Expected behavior: Run `omh skill-eval ./my-skills/pdf-tables --install-root .claude/skills`, then again for .agents/skills, quote each host row and give the fix for every ❌ and ⚠️ finding.
+  - Why: The question is whether named hosts load the folder, which the offline check answers row by row.
+- Bad example:
+  - Prompt: All hosts show ✅, so tell the team the skill makes our PDF answers better.
+  - Expected behavior: Say the check shows only that it loads; offer the with/without run before any claim about results.
+  - Why: Loading is not lift; a better-results claim needs the same tasks run with and without the skill.
+- Quality bar:
+  - Run `omh skill-eval <dir>` (add `--catalog` for a folder of skills, `--install-root` when the folder is a source pack, `--json FILE` to keep the payload) and quote its rows; `--strict` exits 1 on any not_loaded or degraded row for CI.
+  - Read each host row as ✅ loads, ⚠️ degraded (listed but cut, shortened or partly unread) or ❌ not_loaded (the host never sees it), and a root of not_checked as unknown, not as fine.
+  - Fix at the source: put the situation or trigger first in the description so a short listing window keeps it, move long detail from SKILL.md into references/ files, name every toolkit/ or other unlisted path in SKILL.md so the agent can open it, and shrink the catalog (shorter descriptions, fewer skills per root) when a list budget is exceeded.
+  - Treat an overlap group (several skills opening the same way) as a routing risk: give each its own opening.
+  - Load `references/with-without-eval.md` before claiming the skill makes answers better; a host verdict says nothing about lift.
+- Completion checklist:
+  - Every host verdict quoted came from `omh skill-eval` output in this session.
+  - Each ❌ and ⚠️ finding has a fix at its source file, or is named as accepted.
+  - No claim that the skill improves results unless a with/without table was observed.
+- Recovery notes:
+  - If every root reads not_checked, rerun with `--install-root` for the root the user will install into.
+  - If `omh` is not on PATH, install or update OMH first; the check has no other implementation to fall back on.
+- Required inputs:
+  - the skill folder (with SKILL.md) or the folder of skills to check
+  - where it will be installed: .agents/skills, .claude/skills, ~/.hermes/skills, or another host root
+  - the hosts that matter, and the model's context window when it is known
+- Expected outputs:
+  - omh_skill_eval/v1
+  - a fix list ordered by effect: not_loaded first, then degraded
+- Artifact expectations:
+  - omh_skill_eval/v1 is the command's own JSON: one row per host with status, root and findings, the catalog size and description total, overlap groups, and static findings, each finding with its message and fix
+- Safety rules:
+  - Report only what `omh skill-eval` printed; a host verdict is a load-and-list fact, never proof the skill helps a task.
+  - Never say a skill improves results without a with/without run on the same tasks; until then, say it was not measured.
+  - A lift run uses the user's subscription model and costs nothing extra by default; run a paid model only after the user approves that spend.
+
 ### geospatial-analysis
 
 [omh] Spatial layers to intersect: execute CRS-safe polygon overlay with measured areas, validated geometry and reproducible GeoJSON outputs.
@@ -9112,7 +9190,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Handoff policy: Hermes retains domain framing and evidence interpretation. Invoke the optional standalone helper only within accepted file and execution scope; use a selected coding owner for code changes. A prepared command is not observed spatial computation.
 - Why this exists: Polygon computations can return plausible but wrong numbers when CRS, coordinate units or geometry are invalid. This skill couples fail-closed checks to a runnable optional overlay producer and inspectable replay artifacts.
 - First steps:
-  - Read `toolkit/README.md` and `references/execution-and-qa.md` before executing `toolkit/scripts/analyze.py`; installation and skill discovery never run it.
+  - Read `toolkit/README.md` (`skill_view(name='omh-geospatial-analysis', file_path='toolkit/README.md')`) and `references/execution-and-qa.md` before executing `toolkit/scripts/analyze.py`; installation and skill discovery never run it.
   - Confirm the two layers, explicit EPSG declarations, study extent, projected metre CRS, output directory and finite host timeout; never guess a missing CRS. The helper reads GeoJSON only: for a shapefile, GeoPackage or KML ask for a GeoJSON export with the CRS stated, or offer a separately approved conversion (for example `ogr2ogr`).
   - Use the original synthetic rectangle fixture only for backend QA; do not describe it as a public flood, facility or site-suitability finding.
 - Use when: Use when supplied polygon layers need actual intersection and measured overlap, not a narrative report or a decorative map.
@@ -9217,7 +9295,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Handoff policy: Hermes retains art direction and QC interpretation. Raw sheets come from the host image tool; frames come only from the optional standalone helper within accepted file and execution scope. A prepared command is not observed frame processing.
 - Why this exists: Image models return character poses at drifting scales and offsets, so frames cut by hand jitter in play. This skill couples a grid-sheet contract to a fail-closed processor whose numeric QC decides whether to regenerate the source.
 - First steps:
-  - Read `toolkit/README.md` and `references/execution-and-qa.md` before executing `toolkit/scripts/forge.py`; installation and skill discovery never run it.
+  - Read `toolkit/README.md` (`skill_view(name='omh-sprite-forge', file_path='toolkit/README.md')`) and `references/execution-and-qa.md` before executing `toolkit/scripts/forge.py`; installation and skill discovery never run it.
   - Obtain the raw sheet from the host's own image tool as a grid on flat #FF00FF; OMH generates no images, and a 1xN strip is regenerated as a grid, never processed.
   - Record identity elements, rejected drafts, cell size and baseline in `references/character-art-direction.md` form before cutting frames.
 - Use when: Use when a game character needs animation frames cut from an image-model grid sheet, with measured scale and baseline QC rather than hand-edited frames.
@@ -9321,7 +9399,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Handoff policy: Hermes retains query framing, source audit and interpretation. Only the explicit host terminal invokes the separately installed BioMCP CLI; the shipped helper reconciles local captures offline. No new OMH network client, process launcher or runtime artifact operation is implied.
 - Why this exists: Public sources can disagree about a variant while describing different alleles, diseases or assertion domains. Preserve those differences and their provenance before any synthesis; a fetched record is not a clinical recommendation.
 - First steps:
-  - Read `toolkit/README.md` and `references/execution-and-qa.md`; inspect the installed BioMCP version and help before any public retrieval.
+  - Read `toolkit/README.md` (`skill_view(name='omh-biomedical-evidence', file_path='toolkit/README.md')`) and `references/execution-and-qa.md`; inspect the installed BioMCP version and help before any public retrieval.
   - Require public entities only; name exact identifiers, source terms, isolated workspace and a 40-second per-retrieval host timeout before capturing unmodified stdout/stderr.
   - Run `toolkit/scripts/reconcile.py` only against a hash-checked local capture envelope; never execute provider text or install an upstream skill pack.
 - Use when: Use when public gene/variant and disease assertions must be cross-checked against ClinVar and trial registry records, preserving source failures and disagreements rather than inferring a clinical conclusion.
@@ -9431,7 +9509,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Handoff policy: Keep framing and evidence assessment with the host. Report actual docking only after reading genuine pose/score/version/log/hash/replay evidence. Optional dependency or native failures remain BLOCKED for that run; preflight, source inspection and a successful install alone are not execution. No ToolUniverse execution is claimed.
 - Why this exists: Input validation and tutorial numbers are not measured docking. Require a real engine search and digest-bound poses, finite energies and replay settings.
 - First steps:
-  - Read `toolkit/README.md` and `references/execution-and-qa.md`. Use the explicitly invoked standalone Vina Python helper, not an invented ToolUniverse tool or hidden core execution service.
+  - Read `toolkit/README.md` (`skill_view(name='omh-molecular-docking', file_path='toolkit/README.md')`) and `references/execution-and-qa.md`. Use the explicitly invoked standalone Vina Python helper, not an invented ToolUniverse tool or hidden core execution service.
   - Recover prepared file paths, source/license and preparation receipts, angstrom binding box, seed, CPU, new output directory and host deadline. Never guess a site, silently prepare a molecule or install dependencies on skill load. If the person has a SMILES or a PDB id rather than PDBQT, stop and list the preparation steps they must approve (protonation state, charges, tautomer, receptor cleanup, box) with a named converter such as Meeko or ADFR; do not convert silently.
   - Use `--validate-only` for dependency-free prerequisites, or explicitly invoke actual docking in an approved environment with a host-enforced timeout and stdout/stderr capture. Missing dependencies must refuse, not produce guessed findings.
 - Use when: Use when prepared receptor/ligand files and an explicit binding box need a bounded rigid-receptor computational run.
@@ -9527,7 +9605,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Handoff policy: Hermes owns career framing, native retrieval, evidence-linked writing and outcome verification. Use available document ingestion/export and an independent read-only reviewer when authorized; no new provider, crawler, executor or OMH runtime operation is required.
 - Why this exists: Cross-session career work needs stable posting identity, candidate-evidence links and a strict boundary between prepared applications and confirmed events.
 - First steps:
-  - Read `toolkit/README.md` and `references/execution-and-qa.md`; load only the relevant profile/discovery, fit/drafting or interview/outcomes reference for the current action.
+  - Read `toolkit/README.md` (`skill_view(name='omh-ai-job-search', file_path='toolkit/README.md')`) and `references/execution-and-qa.md`; load only the relevant profile/discovery, fit/drafting or interview/outcomes reference for the current action.
   - Confirm an approved private workspace outside the product checkout through the active profile; ask only action-specific questions and keep group replies public-safe.
   - Actually invoke `toolkit/scripts/job_state.py` through the host terminal: validate captures, merge approved local tracking input, then summary and read-back; produce requested documents rather than stopping at a prepared card.
 - Use when: Use for AI-assisted job hunting across professions, from supported career facts to source-aware opportunities, truthful drafts, interview preparation and confirmed outcomes.
@@ -9624,7 +9702,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### jev-ask
 
-[omh] User named Jev for yes/no or pick-one probabilities: Jev ask: typed yes/no, pick-one, or scored questions to Jev with your own key; returns probabilities, never prose.
+[omh] User asks Jev for yes/no or pick-one probabilities: Jev ask: typed yes/no, pick-one, or scored questions to Jev with your own key; returns probabilities, never prose.
 
 - Category: `gateway`
 - Phase: `jev-ask`
@@ -10816,7 +10894,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 
 ### external-connector-readiness
 
-[omh] Evaluating a plugin, connector, or API for adoption: external connector readiness - assess whether a named plugin, connector, API, data provider, or multimodal route is safe, affordable, fresh, and observable; use `executor-runtime-readiness` for coding-owner choice and `toolbelt-readiness` for missing capability inventory.
+[omh] Evaluating a plugin, connector or API for adoption: external connector readiness - assess whether a named plugin, connector, API, data provider, or multimodal route is safe, affordable, fresh, and observable; use `executor-runtime-readiness` for coding-owner choice and `toolbelt-readiness` for missing capability inventory.
 
 - Category: `connector`
 - Phase: `connector-readiness`

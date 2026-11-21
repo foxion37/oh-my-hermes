@@ -5,6 +5,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+test.skip(true, "chat-mode CLI sessions replaced by bot threads (2026-11-16: terminals kept)");
+
 const MOCK = Number(process.env.OMHER_MOCK_PORT || 5308);
 const SHOTS = process.env.OMHER_SHOTS || "";
 const TAG = process.env.OMHER_SHOT_TAG || "after";
@@ -30,7 +32,7 @@ async function running(page: Page, theme: string) {
   await page.addInitScript((t) => {
     localStorage.setItem("omher.theme", t);
     localStorage.removeItem("omher.sessions.recent");
-    (window as unknown as { __omherPickFolder: string }).__omherPickFolder = "/Users/you/code/omher";
+    (window as unknown as { __omherPickFolder: string }).__omherPickFolder = "/home/you/code/omher";
   }, theme);
   await page.goto("/");
   await page.getByTestId("session-new").click();

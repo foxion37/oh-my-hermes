@@ -6,12 +6,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Automation, Bot } from "../lib/protocol";
 import { useStore } from "../state/store";
 import { t } from "../i18n";
+import { RunOnce } from "./RunOnce";
 import { holdImeEnter } from "../lib/ime";
 import { Avatar, PlusIcon, SourceIcon } from "../ui";
 import { Seg } from "../chat/model/Seg";
 import { AskBox, BotChip, errorLine, PageHead, Toggle, atWords, dateWords, nextWords, toSec } from "./kit";
 import { scheduleWords } from "./schedule";
-import { PLATFORM_NAME, reasonWords, watchOf, watchSentence, whereOf, WATCH_EVERY, type WatchInfo } from "./watch";
+import { isBrief, PLATFORM_NAME, reasonWords, scheduleOf, watchOf, watchSentence, whereOf, WATCH_EVERY, type WatchInfo } from "./watch";
 
 const OK = new Set(["ok", "success", "done", "completed", "delivered"]);
 type Status = "ok" | "failed" | "never" | "paused";
@@ -265,7 +266,7 @@ function Row({ a, on, busy, onOpen, onToggle }: { a: Automation; on: boolean; bu
       <Avatar bot={a.bot} size={26} />
       <button type="button" className="au-main" onClick={onOpen} aria-current={on ? "true" : undefined}>
         <span className="au-name">
-          {w && <span className="au-tag" data-testid="watch-tag">{t("watch.line")}</span>}
+          {w && <span className="au-tag" data-testid="watch-tag">{t(isBrief(a) ? "brief.line" : "watch.line")}</span>}
           {a.name}
         </span>
         {w ? (
@@ -278,8 +279,8 @@ function Row({ a, on, busy, onOpen, onToggle }: { a: Automation; on: boolean; bu
         )}
       </button>
       <span className="au-when">
-        <span className="au-sched" title={a.schedule}>
-          {scheduleWords(a.schedule)}
+        <span className="au-sched" title={a.schedule} data-testid={`auto-sched-${a.id}`}>
+          {scheduleOf(a)}
         </span>
         <small>{t("auto.next", { when: !a.paused && next ? nextWords(next) : t("auto.nextNone") })}</small>
       </span>
@@ -328,7 +329,7 @@ function Detail({
       </div>
       <div className="au-k">{t("auto.when")}</div>
       <div className="au-v">
-        <span title={a.schedule}>{scheduleWords(a.schedule)}</span>
+        <span title={a.schedule}>{scheduleOf(a)}</span>
         {!a.paused && next && <span className="au-quiet"> · {t("auto.next", { when: nextWords(next) })}</span>}
       </div>
       {w ? (
@@ -376,9 +377,6 @@ function Detail({
         </div>
       ) : (
         <div className="pg-btns au-btns">
-          <button type="button" className="pg-btn pri" onClick={onRun} data-testid="auto-run">
-            {t("auto.run")}
-          </button>
           <button type="button" className="pg-btn" onClick={onEdit} data-testid="auto-edit">
             {t("auto.edit")}
           </button>
@@ -388,6 +386,8 @@ function Detail({
           <button type="button" className="pg-btn danger" onClick={() => setConfirm(true)} data-testid="auto-delete">
             {t("auto.delete")}
           </button>
+          {/* outside the schedule, so quiet and one step more: never the button that asks to be pressed */}
+          <RunOnce label={t("auto.run")} onRun={onRun} resetKey={a.id} testId="auto-run" />
         </div>
       )}
       <p className="au-note" data-testid="auto-note">{t(w ? "watch.note" : "auto.note", { bot: botName, name: a.name })}</p>

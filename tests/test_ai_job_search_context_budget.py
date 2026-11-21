@@ -70,9 +70,19 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         # 13416 -> 13506 and the digest re-derived: model-compression adds one
         # index line (+90 with its newline); dropping only that line reproduces
         # 4b82ff50...d5ca5 / 13416.
-        self.assertEqual(_digest(legacy), 'a1761286649df00a74f79cd49acb7284e6ea4480e2cdc9bf3e1cf6c45f2d05af')
-        self.assertEqual(len('\n'.join(legacy)), 13506)
-        delta = len('\n'.join(lines)) - 13506
+        # Digest re-derived at the same size: twenty situation clauses were
+        # shortened to end inside the 57-character window, so those index lines
+        # change text at the same cut; the pin before it was a1761286...05af.
+        # 13506 -> 12894 and the digest re-derived: the producer cuts each line
+        # at a word boundary the way Hermes' `clip_skill_description` does, not
+        # at a fixed 57 characters; the pin before it was 7c4f6dc6...b33a.
+        # skill-eval then adds one index line; dropping only that line
+        # reproduces 40241e3b...ba76 / 12894.
+        # 12975 -> 12978 and the digest re-derived: model-compression's clause says "smaller or cheaper" again
+        # (+3 in its index line); the pin before it was c370d495...0d2c.
+        self.assertEqual(_digest(legacy), '934f22855f11c51758742087aea63159916dba0b7532ad208ed5a436d3b623b4')
+        self.assertEqual(len('\n'.join(legacy)), 12978)
+        delta = len('\n'.join(lines)) - 12978
         self.assertGreater(delta, 0)
         self.assertLessEqual(delta, INDEX_DELTA_CAP)
         # A catalog ratchet is exact; do not carry the old row's unused slack.
@@ -190,11 +200,20 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
             # FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT); no other row moved, and the pin before it was d09dd42e...786f.
             # Digest re-derived at the same size: agent-evaluation's row names paired_run_decision/v2 where it named
             # v1; no other row moved, and the pin before it was 2da9f59b...f6c9.
-            (skill_capabilities, 542640, FULL_ROW_DELTA_CAP,
-             'bc66d6c09d24ee56ed41248e0a613be24079be3310898968b0c8be3e67adeb7d',
+            # Digest re-derived: twenty rows' descriptions now end their situation clause inside the Hermes index
+            # window (the detail moves after the colon), 542640 -> 542611; the pin before it was bc66d6c0...eb7d.
+            # skill-eval then adds one row to each producer; dropping only that row reproduces
+            # bc088218...5df4 at 542611 and 57ef3e89...0794e at 145483.
+            # 546469 -> 546456 and the digest re-derived: model-compression's description says "smaller or
+            # cheaper" again (-13); no other row moved, and the pin before it was db592e21...1ccc6.
+            # 546456 -> 546679 and the digest re-derived: OpenAI's GPT-6.2 Codex guide lines move the dag-ulw row
+            # (+161) and the agent-instructions row (+62, itemized at FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT); no
+            # other row moved, and the pin before it was 59c3f3d0...38b0.
+            (skill_capabilities, 546679, FULL_ROW_DELTA_CAP,
+             '8e3f5c83774996722ca3e5380fb393091eb113ecd5270ef4f6ef39f0f18dd898',
              release.FULL_CAPABILITY_SKILL_SECTION_CHAR_LIMIT),
-            (standalone_skill_capability_items, 145483, STANDALONE_ROW_DELTA_CAP,
-             '57ef3e89e97c4ed9dc45338c18f01ce384842bad7cfa16b37fb9a4e5a7d0794e',
+            (standalone_skill_capability_items, 146420, STANDALONE_ROW_DELTA_CAP,
+             '7bf537036d7224bf9054e4fc91773dc033d063546267031ea8bbec7f1872578d',
              release.STANDALONE_CAPABILITY_SKILL_SECTION_CHAR_LIMIT),
         ):
             with self.subTest(producer=producer.__name__):
@@ -237,15 +256,19 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         # 33564 -> 33802 and the digest re-derived: model-compression adds its
         # 217-byte trigger row and a 21-byte planner token (+238); dropping both
         # reproduces d32edf22...e34ea5 / 33564.
-        self.assertEqual(_digest(legacy), '4be90d470edd9238c5b375c0318ad20dc49544621d79b43f44b5b446a96ee2fa')
+        # 33802 -> 34006 and the digest re-derived: skill-eval adds its 190-byte
+        # trigger row and a 14-byte tracker token (+204); dropping both
+        # reproduces 4be90d47...e2fa / 33802.
+        self.assertEqual(_digest(legacy), '6f986a7057d335efc62b98083e0d3ee7210822c2710a2b38a13afe94d625d8f7')
         baseline = len(''.join(legacy).encode())
-        self.assertEqual(baseline, 33802)
+        self.assertEqual(baseline, 34006)
         # 33_100 -> 33_318: main's ru pack and repro-audit (+222 over 32874) used
         # the gate's room and sprite-forge adds its 221-byte row and token; each
         # side alone fit, the merged tree measures 33317. The gate stays exact.
         # 33_318 -> 33_594: systematic-review's 276 bytes; the gate stays exact.
         # 33_594 -> 33_803: model-compression's 238 bytes; the gate stays exact.
-        self.assertLess(baseline, 33_803)  # The existing content keeps its old gate.
+        # 33_803 -> 34_007: skill-eval's 204 bytes; the gate stays exact.
+        self.assertLess(baseline, 34_007)  # The existing content keeps its old gate.
         self.assertLessEqual(len(registry.encode()) - baseline, REGISTRY_DELTA_CAP)
 
     def test_repeated_growth_is_only_mandatory_rails_and_existing_bodies_survive(self) -> None:
@@ -511,7 +534,38 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         # agent-evaluation moves, and the pin before it was 9ec3df67...56b2.
         # automation-blueprint's quality bar then points at the channel-watch recipe; only automation-blueprint
         # moves, and the pin before it was e5dfad8f...8749.
-        self.assertEqual(_digest(legacy_hashes), 'b1141bcf81c0ffbfd6c227ddfe0a3cede39e86130fcef81e6d47e70fb41ff0ee')
+        # dag-ulw's when-to-use then names a listed backlog of code changes and its run loop settles joined children
+        # in the same turn; only dag-ulw moves, and the pin before it was b1141bcf...f0ee.
+        # model-setup's chain sentence then names GPT-6.2 Astra and GPT-6.2 Sol in every GPT-6 Astra and GPT-6.1
+        # Sol slot and lists both among the superseded generations; only model-setup moves, and the pin before
+        # it was 9cecce5a...a605.
+        # dag-ulw's when-to-use then drops the listed backlog of code changes, which is made in the session instead;
+        # only dag-ulw moves, and the pin before it was 58106a4e...4542.
+        # dag-ulw's run-loop then names the common built-in/custom identity directory, the `identity` node
+        # field and its per-node retry position; only dag-ulw moves, and the pin before it was aa31d519...d31a1.
+        # Then dag-ulw's settle step names `escalated` (an ESCALATE: line in the handoff); only dag-ulw moves, and
+        # the pin before it was 26bd1012...f890.
+        # model-setup's quality bar then gains the onboarding-mode line; only model-setup moves, and the pin
+        # before it was ad310846...698b.
+        # Twenty skills' frontmatter descriptions then end their situation clause inside the Hermes index window;
+        # only those twenty bodies move, and the pin before it was 4eaeeb79...958f.
+        # The seven other toolkit owners then name `toolkit/README.md` with its skill_view call; only those
+        # bodies move, and the pin before it was 5bddd1d2...440d.
+        # Re-derived for skill-eval: its body joins the legacy set; no existing body moves.
+        # Merged with main: code-review, production-audit and verification-gate then end with a `Not checked`
+        # list, and code-review's opening names the Hermes Bug Hunter discipline; only those three move. This
+        # branch's pin was 9b9505bb...aad3, and main's was bd2eeb27...409b.
+        # Merged with main again: show-reel then gains the cut-sheet lane pointer; only show-reel moves. This
+        # branch's pin was fd5cef40...10fe, and main's was fbe730f4...88bf.
+        # model-compression's description says "smaller or cheaper" again; only its body moves, and the pin
+        # before it was 280bbdfb...7cee74.
+        # Merged with main a third time: dag-ulw then gains the opt-in `carry_forward` quality-bar line; only
+        # dag-ulw moves. This branch's pin was a92e709f...a555, and main's was 2d788500...c459.
+        # OpenAI's GPT-6.2 Codex guide lines then reach visual-qa, frontend, app-debugging, agent-instructions
+        # and dag-ulw; only those five bodies move, and the pin before it was 891b61cd...f061.
+        # Merged with the OpenResearch references branch: loop and source-finder gain reference pointers
+        # (experiment-tree, literature-retrieval); this branch's pin was 7c051fb0...7aaf, and main's was 66929abd...07a7.
+        self.assertEqual(_digest(legacy_hashes), 'a55761860310b5121f357c3ac03de780ed7f565da860711b6bab90ff448f5b9c')
         legacy = _skill_context_cost_profile('full', legacy_templates, refs)
         current = _skill_context_cost_profile('full', templates, refs)
         # Main's search guidance adds 305; repro-audit's mandatory rails 1,943.
@@ -536,7 +590,8 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         # 92262 -> 83098: every body's reply-voice paragraph became one line pointing at the shared rail.
         # model-compression's Workflow Lane rail adds 341 to main's 83098.
         # 83439 -> 91443: the one reply line takes back the turn-ending rule (+276 in each repeated section).
-        self.assertEqual(legacy['repeated']['bytes'], 91443)
+        # 91443 -> 91785: skill-eval's Workflow Lane rail adds 342.
+        self.assertEqual(legacy['repeated']['bytes'], 91785)
         delta = current['repeated']['bytes'] - legacy['repeated']['bytes']
         self.assertEqual(delta, len(sections['Workflow Lane']) + len(sections['Runtime Evidence']))
         self.assertLessEqual(delta, REPEATED_DELTA_CAP)
@@ -560,12 +615,12 @@ class AiJobSearchContextBudgetTests(unittest.TestCase):
         # are covered by test_per_turn_budgets, not funded from career slack.
         from omh.maintenance.drift import budget_metrics
         expected = {
-            'skill_index_line_max_chars': 100,
-            'plugin_tool_schema_chars': 72940,  # Parked DAG waits (+429), delegation backends (+245), six routing-recipe categories (+213), opt-in omh-lsp tools (+2187), opt-in lsp_diagnostics (+396), identity argument (+143), dag node role (+85), dag node owner (+70), dag node local (+37) less the route fallback sentence (-1), then the ultrabrain head in the route example (+5), then omh_dag goal criteria (+226), then the criteria parameter's keep-the-condition description (+95), said in the positive form (+8), then dag node read_only (+45).
+            'skill_index_line_max_chars': 99,  # Word-boundary cut matching Hermes' clip_skill_description (-1).
+            'plugin_tool_schema_chars': 63954,  # Parked DAG waits (+429), delegation backends (+245), six routing-recipe categories (+213), opt-in omh-lsp tools (+2187), opt-in lsp_diagnostics (+396), identity argument (+143), dag node role (+85), dag node owner (+70), dag node local (+37) less the route fallback sentence (-1), then the ultrabrain head in the route example (+5), then omh_dag goal criteria (+226), then the criteria parameter's keep-the-condition description (+95), said in the positive form (+8), then dag node read_only (+45), then the observation parameter's field descriptions and the home-override wording trimmed (-9616), then four tool descriptions said in fewer words (-1225), then unified identities: the omh_dag identity reference (+122), omh_delegate_route `attempt` and identity description (+303), omh_role directory and `identity` argument (+220), then omh_dag escalation (+224), then omh_dag carry_forward (+188), then omh_omher_terminal (+668), then the omh_dag node review_focus (+130).
             'pre_llm_call_context_chars_max': 5977,  # The pi-family runtime rename (+6), the route-hint dedup (-154), then the console choices line (+409).
-            'pre_llm_call_context_fallback_chars_max': 7529,  # The same rename (+6), the human-voice primer sentence (+116), the route-hint dedup (-154), then the console choices line (+409).
-            'awareness_primer_markdown_chars': 4051,  # Human-voice reply sentence (+110), full skill names in the checkpoint (+55), then loadable labels there (+49), on the card and cue lines (+239) and in the lane keys (+78).
-            'awareness_primer_context_chars': 1560,  # The same sentence (+120).
+            'pre_llm_call_context_fallback_chars_max': 7646,  # The same rename (+6), the human-voice primer sentence (+116), the route-hint dedup (-154), then the console choices line (+409), then the mid-turn steer sentence (+117).
+            'awareness_primer_markdown_chars': 4170,  # Human-voice reply sentence (+110), full skill names in the checkpoint (+55), then loadable labels there (+49), on the card and cue lines (+239) and in the lane keys (+78), then the mid-turn steer line (+117).
+            'awareness_primer_context_chars': 1677,  # The same sentence (+120), then the mid-turn steer line (+117).
             'awareness_workflow_context_chars_max': 1500,
             'role_context_chars_max': 2600,
             'full_capability_skill_item_chars_max': 9000,

@@ -235,6 +235,20 @@ Rules, all applied at freeze time:
   the prepared ceiling on what one unit may read; it is not evidence that the
   unit read the range, stayed within the budget, or covered it.
 
+Any unit may also declare an optional `review_focus`: one string, at most 150
+UTF-8 bytes after whitespace collapse (one sentence; about 50 Hangul
+characters). It never pushes the unit prompt over its 8,000-byte ceiling:
+when the whole focus would, it is cut at a character boundary to the bytes
+left and ends in an ellipsis, or dropped when not even its label fits, and a
+prompt already over the ceiling without it is sent exactly as it would be
+without it. It says what the reviewer will check in
+the unit's result. The executor prompt states it right after the numbered
+criteria as `Review focus (what the reviewer will check): <text>`. A unit
+that declares none (or an empty string) carries no key: its contract is
+byte-identical and its prompt gains no focus block (every unit prompt does
+carry the shared-machine line, which is separate). A review focus is prepared guidance, not evidence
+of review.
+
 ## Dispatch bridge semantics
 
 - **Concurrency is fixed by default and adaptive only when requested.** The
@@ -370,7 +384,10 @@ Rules, all applied at freeze time:
   DETECTED at dispatch/readiness time in the fixed host-candidate order declared
   in `src/coding/fanout_dispatch.py` — first on PATH wins, no personal stack is
   hardcoded, and the selected host is visible in the planned argv and the probed
-  command. The pi-family surface was validated in a live bridge dispatch; the
+  command. The pi fork host comes after pi and its distribution host and
+  before opencode; its argv has no permission preset (that host has none, and
+  its default approval mode applies) and puts the prompt after `--`. The
+  pi-family surface was validated in a live bridge dispatch; the
   opencode template is prepared from its verified flags and validates on first
   live dispatch (claude-template precedent). Profiles without a template
   (hermes, omx/omc runtimes, generic, unassigned) are reported
@@ -797,11 +814,11 @@ Rules, all applied at freeze time:
   so a frozen contract names the exact basis it was resolved from; the
   file's presence is the opt-in, and codex/claude-only contracts stay
   byte-identical across machines that have not created it. The built-in
-  `codex` table names `gpt-6.1-sol` in every category GPT-6 Astra does not
-  head; the Codex client repository's model catalog lists 0.153.0 as its
-  minimum client version (official-client, openai/codex `models.json`, read
-  2026-10-01), so run Codex CLI 0.153.0 or later for those rows or override
-  them. Edit it with
+  `codex` table names `gpt-6.2-sol` in every category GPT-6.2 Astra does not
+  head; Codex CLI 0.169.0's served model catalog lists both GPT-6.2 ids and
+  names no minimum client version for them (official-client, read
+  2026-11-18), so run a Codex CLI whose catalog lists them, or override
+  those rows. Edit it with
   `omh coding category-maestro set <profile> <category> <model[:effort]>...`
   (the tail after the last colon is the effort only when it is a known level
   — off/minimal/low/medium/high/xhigh/max/auto — so colon-tagged model ids

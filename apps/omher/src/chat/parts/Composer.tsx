@@ -7,10 +7,13 @@ import { AttachButton, Chips, chipsFor, pluginName, useDropZone, type Chip } fro
 import "./attach.css";
 import { CommandPicker, SkillPicker, mirrorText } from "./Skills";
 import { SIGIL, findTokens, fragmentAt, leadRow, matchSkills } from "./skillTokens";
-import { commandQuery, matchCommands, pickText, type AgentCommand } from "./commands";
+import { THREAD_CMD, threadCommand, threadFragment } from "./threadCommand";
+import { ThreadPicker } from "./ThreadPicker";
+import { commandQuery, matchCommands, parseCommands, pickText, type AgentCommand } from "./commands";
 import { getDraft, setDraft } from "../../app/drafts";
 import { t, tx } from "../../i18n";
 import { composing as imeComposing } from "../../lib/ime";
+import { newer, older, onFirstLine, onLastLine, type Recall, type Step } from "./promptHistory";
 
 const MAX_H = 200;
 
@@ -20,7 +23,10 @@ const MAX_H = 200;
  * next message points the bot at that thread (omher posts nothing). With `skills`, `$` at the start or after a
  * space opens the bot's skills, anywhere in the message, and only while one matches; a `$name` token is drawn as a
  * gray pill by a mirror layer under the textarea (same font, padding and wrapping, scrolled with it), and goes out
- * hoisted to the front as `/name` (store `send`). `/name` and `./name` go out as typed. */
+ * hoisted to the front as `/name` (store `send`). `/name` and `./name` go out as typed, except `./thread` at the start
+ * when `onNewThread` is given: `./` opens a one-row picker for it, and a send makes a new thread of this bot with the
+ * rest of the message as its first message (threadCommand.ts); the token never reaches the bot.
+ * ArrowUp on the first line and ArrowDown on the last walk the person's earlier prompts of this chat (promptHistory.ts). */
 export function Composer({
   bot,
   running,
@@ -39,6 +45,8 @@ export function Composer({
   action,
   foot,
   heldNote,
+  onNewThread,
+  history,
 }: {
   bot: Bot;
   running: boolean;
@@ -68,6 +76,10 @@ export function Composer({
   /** A quiet line shown while the box holds unsent text or files that the draft will not send (a New session that
    *  opens as a terminal). */
   heldNote?: string;
+  /** `./thread [text]`: a new thread of this bot, `text` its first message (absent: `./thread` goes out as typed). */
+  onNewThread?: (first: string) => void;
+  /** The person's earlier prompts of this chat, oldest first (promptHistory.ts): ArrowUp/ArrowDown recall them. */
+  history?: string[];
 }) {
   // unsent text survives switching chats and restarts (drafts.ts; the composer is keyed by its chat)
   const [text, setText] = useState(() => getDraft(bot.name));
@@ -83,6 +95,16 @@ export function Composer({
   const good = chips.filter((c) => !c.reason);
   const has = text.trim().length > 0 || good.length > 0;
   const store = useStore();
+  // where an ArrowUp/ArrowDown walk through `history` stands (promptHistory.ts)
+  const recall = useRef<Recall>(null);
+  // leaving this chat mid-walk keeps the text typed before the walk as the draft, not the prompt on show
+  useEffect(() => () => void (recall.current && setDraft(bot.name, recall.current.draft)), [bot.name]);
+  /** Every text change but a recall (typing, a pick, a plugin, Edit / Ask in chat, a send) goes through here: the
+   *  text is the person's own again, so the walk ends and a later ArrowUp keeps this text as the draft. */
+  const edit = (next: string) => {
+    recall.current = null;
+    setText(next);
+  };
 
   const listPlugins = store.pluginsList;
   const readPlugins = useCallback(() => listPlugins(bot.name), [listPlugins, bot.name]);
@@ -91,7 +113,7 @@ export function Composer({
     const lead = t("att.usePlugin", { plugin: pluginName(p) });
     const next = text.startsWith(lead) ? text : lead + text;
     placeCaret.current = next.length;
-    setText(next);
+    edit(next);
     ref.current?.focus();
   };
 
@@ -114,7 +136,22 @@ export function Composer({
     };
   }, [wantSkills, skills, loadSkills, bot.name]);
   const names = useMemo(() => (skills ?? []).map((s) => s.name), [skills]);
-  const tokens = useMemo(() => findTokens(text, names), [text, names]);
+  const threadCmd = onNewThread ? threadCommand(text) : null;
+  const tokens = useMemo(() => {
+    const found = findTokens(text, names);
+    return threadCmd ? [{ name: "thread", start: threadCmd.start, end: threadCmd.end }, ...found.filter((k) => k.start >= threadCmd.end)] : found;
+  }, [text, names, threadCmd?.start, threadCmd?.end]); // eslint-disable-line react-hooks/exhaustive-deps
+  // `./` at the start: the built-in ./thread row (no skill list needed; skills are `$name`)
+  const tFrag = onNewThread ? threadFragment(text) : null;
+  const [tDismissed, setTDismissed] = useState<string | null>(null);
+  const threadPicking = tFrag !== null && focused && tDismissed !== text;
+  const tPop = useRef<HTMLDivElement>(null);
+  const pickThread = () => {
+    const next = `${THREAD_CMD} `;
+    placeCaret.current = next.length;
+    edit(next);
+    ref.current?.focus();
+  };
   const frag = skills && caret !== null ? fragmentAt(text, caret) : null;
   const fragKey = frag ? `${frag.start}:${frag.query}` : null;
   const items = useMemo(() => (frag && skills ? matchSkills(skills, frag.query) : []), [skills, fragKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,13 +160,28 @@ export function Composer({
   const at = active === null ? leadRow(items, frag?.query ?? "") : Math.min(active, items.length - 1);
   useEffect(() => setActive(null), [fragKey]);
 
+  // a bot chat has no agent command list of its own: ask the bridge for what Hermes answers here, the first time
+  // the box starts with `/` (a SESSIONS chat passes its own list instead, and keeps it)
+  const [slash, setSlash] = useState<AgentCommand[] | null>(null);
+  const wantSlashes = !commands && skillsOn && /^\/[\w:-]*$/.test(text);
+  const loadSlashes = store.slashCommands;
+  useEffect(() => {
+    if (!wantSlashes || slash) return;
+    let live = true;
+    void loadSlashes(bot.name).then((rows) => live && setSlash(parseCommands(rows)));
+    return () => {
+      live = false;
+    };
+  }, [wantSlashes, slash, loadSlashes, bot.name]);
+  const menu = commands ?? (slash?.length ? slash : undefined);
+
   // an agent's own commands: `/` or `$` at the start of the box opens them; typing narrows the list
-  const cq = commands?.length ? commandQuery(text) : null;
+  const cq = menu?.length ? commandQuery(text) : null;
   const cqKey = cq ? `${cq.prefix}${cq.query}` : null;
-  const cmd = useMemo(() => (cq && commands ? matchCommands(commands, cq.prefix, cq.query) : null), [commands, cqKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cmd = useMemo(() => (cq && menu ? matchCommands(menu, cq.prefix, cq.query) : null), [menu, cqKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [cmdActive, setCmdActive] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState<string | null>(null);
-  const cmdOpen = !!cmd && focused && cqKey !== cmdDismissed;
+  const cmdOpen = !!cmd && cmd.total > 0 && focused && cqKey !== cmdDismissed;
   // no popup when no skill matches (`$20`, `$HOME` send on the first Enter); the agent's own menu wins
   const picking = !!frag && focused && fragKey !== dismissed && items.length > 0 && !cmdOpen;
   const cmdAt = cmd ? Math.min(cmdActive, Math.max(cmd.shown.length - 1, 0)) : 0;
@@ -141,8 +193,26 @@ export function Composer({
   const pickCommand = (c: AgentCommand) => {
     const next = pickText(c);
     placeCaret.current = next.length;
-    setText(next);
+    edit(next);
     setCmdDismissed(`${c.prefix}${c.name} `);
+  };
+
+  /** A recalled prompt (or the draft back) fills the box, caret at the end; a picker its text would open stays shut,
+   *  so the next arrow keeps walking. */
+  const showRecalled = (el: HTMLTextAreaElement, step: Step) => {
+    recall.current = step.recall;
+    const next = step.text;
+    const f = fragmentAt(next, next.length);
+    setDismissed(f ? `${f.start}:${f.query}` : null);
+    const q = commandQuery(next);
+    setCmdDismissed(q ? `${q.prefix}${q.query}` : null);
+    setTDismissed(next);
+    setCaret(next.length);
+    if (next === text) el.setSelectionRange(next.length, next.length);
+    else {
+      placeCaret.current = next.length; // the layout effect puts it there once the text renders
+      setText(next);
+    }
   };
 
   /** The mirror follows the textarea's box and scroll (its width leaves out a scrollbar). */
@@ -200,7 +270,7 @@ export function Composer({
     const next = text.slice(0, frag.start) + put + text.slice(end).replace(/^ /, "");
     placeCaret.current = frag.start + put.length;
     setCaret(frag.start + put.length);
-    setText(next);
+    edit(next);
   };
 
   useLayoutEffect(() => {
@@ -211,7 +281,7 @@ export function Composer({
   const draft = store.ui.draft;
   useLayoutEffect(() => {
     if (!draft || draft.bot !== bot.name) return;
-    setText(draft.text);
+    edit(draft.text);
     // text the app put here (Edit's old message too) does not open the command menu; typing in it does
     const q = commandQuery(draft.text);
     setCmdDismissed(q ? `${q.prefix}${q.query}` : null);
@@ -246,16 +316,22 @@ export function Composer({
 
   const send = async () => {
     if (!has || offline || sending) return;
+    if (threadCmd && onNewThread) {
+      if (good.length) return setErr(t("thread.cmdFiles"));
+      edit("");
+      onNewThread(threadCmd.first);
+      return;
+    }
     if (!good.length || !onSendFiles) {
       onSend(text);
-      setText("");
+      edit("");
       return;
     }
     setSending(true);
     setErr(null);
     try {
       await onSendFiles(text, good);
-      setText("");
+      edit("");
       setChips((cur) => cur.filter((c) => c.reason)); // red chips stay: they were never sent
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -266,8 +342,10 @@ export function Composer({
 
   // one line above the box while it holds a single `/word` or `$word`. "sigil": a bot chat's `/` is a command, a
   // skill is `$name`. "none": there is no list to pick from (a bot without skills, a bridge without skills.list),
-  // so the whole name goes at the start with a slash. A chat with its agent's own menu shows that instead.
-  const lead = commands ? undefined : /^([/$])[\w-]*$/.exec(text)?.[1];
+  // so the whole name goes at the start with a slash. A chat with its agent's own menu shows that instead; a bot
+  // chat's `/` menu (Hermes' commands) shows instead only while it is open, so `/pl` with no command left still
+  // says skills take `$`.
+  const lead = commands || cmdOpen ? undefined : /^([/$])[\w-]*$/.exec(text)?.[1];
   const hint: "sigil" | "none" | null = !lead
     ? null
     : !skillsOn
@@ -282,6 +360,7 @@ export function Composer({
   return (
     <div className="cw" ref={wrap}>
       {overlay}
+      {threadPicking && <ThreadPicker bot={bot.display_name} active onPick={pickThread} popRef={tPop} />}
       {picking && <SkillPicker items={items} active={at} onPick={pick} onHover={setActive} popRef={pop} />}
       {cmdOpen && cmd && <CommandPicker items={cmd.shown} more={cmd.total - cmd.shown.length} active={cmdAt} onPick={pickCommand} onHover={setCmdActive} popRef={cmdPop} />}
       {hint && (
@@ -351,7 +430,7 @@ export function Composer({
               aria-label={t("cmp.message", { bot: bot.display_name })}
               data-testid="composer"
               onChange={(e) => {
-                setText(e.target.value);
+                edit(e.target.value);
                 trackCaret(e.target);
               }}
               onSelect={(e) => trackCaret(e.currentTarget)}
@@ -366,6 +445,19 @@ export function Composer({
               }}
               onKeyDown={(e) => {
                 const composing = imeComposing(e);
+                if (threadPicking && !composing) {
+                  // Enter or Tab puts `./thread ` in; Enter on a finished `./thread` sends (a new empty thread)
+                  if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && tFrag !== "thread")) && !e.shiftKey) {
+                    e.preventDefault();
+                    pickThread();
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setTDismissed(text);
+                    return;
+                  }
+                }
                 if (cmdOpen && cmd && !composing) {
                   const n = cmd.shown.length;
                   if ((e.key === "ArrowDown" || e.key === "ArrowUp") && n) {
@@ -378,8 +470,10 @@ export function Composer({
                     pickCommand(cmd.shown[cmdAt]);
                     return;
                   }
-                  // Enter takes the highlighted command unless the text already names it exactly (then it is sent)
-                  if (e.key === "Enter" && !e.shiftKey && n && text !== `${cmd.shown[cmdAt].prefix}${cmd.shown[cmdAt].name}`) {
+                  // Enter takes the highlighted command unless the text already names it exactly, or (a bot chat, whose
+                  // menu lists Hermes' commands only) names one of the bot's skills the Hermes way: then it is sent
+                  const named = text === `${cmd.shown[cmdAt].prefix}${cmd.shown[cmdAt].name}` || (!commands && names.includes(text.slice(1)));
+                  if (e.key === "Enter" && !e.shiftKey && n && !named) {
                     e.preventDefault();
                     pickCommand(cmd.shown[cmdAt]);
                     return;
@@ -407,6 +501,22 @@ export function Composer({
                   if (e.key === "Escape") {
                     e.preventDefault(); // the picker takes Esc, not the running answer
                     setDismissed(fragKey);
+                    return;
+                  }
+                }
+                // shell-like history: an arrow with no line left to move to recalls the person's earlier prompts;
+                // Alt+arrow recalls from any line, so a multi-line draft need not be walked to its edge first
+                const plain = !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey;
+                const alt = e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
+                if ((e.key === "ArrowUp" || e.key === "ArrowDown") && (plain || alt) && history?.length && !composing && !threadPicking && !cmdOpen && !picking) {
+                  const el = e.currentTarget;
+                  const step =
+                    e.key === "ArrowUp"
+                      ? alt || onFirstLine(text, el.selectionStart) ? older(history, recall.current, text) : null
+                      : alt || onLastLine(text, el.selectionEnd) ? newer(history, recall.current) : null;
+                  if (step) {
+                    e.preventDefault();
+                    showRecalled(el, step);
                     return;
                   }
                 }

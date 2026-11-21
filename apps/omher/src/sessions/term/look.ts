@@ -4,6 +4,7 @@ import type { ITerminalOptions, ITheme, Terminal } from "@xterm/xterm";
 import type { TermContrast, TermSettings } from "./settings";
 import { brightIsBrighter, isLightBackground } from "./themes";
 import { finderOf } from "./engine-find";
+import { BUNDLED_FAMILIES } from "./fonts";
 
 const appMono = () => (typeof document === "undefined" ? "" : getComputedStyle(document.documentElement).getPropertyValue("--mono").trim()) || "monospace";
 
@@ -22,15 +23,16 @@ export function termContrast(background: string | undefined, c: TermContrast): n
 
 const GENERIC = new Set(["monospace", "ui-monospace", "serif", "sans-serif", "ui-serif", "ui-sans-serif", "system-ui", "cursive", "fantasy"]);
 
-/** The person's fonts first, omher's monospace stack behind them (a name that is not installed falls through).
- *  Each name is written quoted, whatever quotes it was typed with, so a half-typed list is still valid CSS. */
+/** The person's fonts first, then the bundled JetBrains Mono and Symbols Nerd Font Mono (fonts.ts), then omher's
+ *  monospace stack (a name that is not installed falls through). Each name is written quoted, whatever quotes it was
+ *  typed with, so a half-typed list is still valid CSS. */
 export function termFont(family: string, mono: string = appMono()): string {
   const names = family
     .split(",")
     .map((n) => n.replace(/['"]/g, "").trim().replace(/\s+/g, " "))
-    .filter(Boolean)
-    .map((n) => (GENERIC.has(n.toLowerCase()) ? n.toLowerCase() : `"${n}"`));
-  return names.length ? `${names.join(", ")}, ${mono}` : mono;
+    .filter(Boolean);
+  const all = [...names, ...BUNDLED_FAMILIES.filter((b) => !names.some((n) => n.toLowerCase() === b.toLowerCase()))];
+  return `${all.map((n) => (GENERIC.has(n.toLowerCase()) ? n.toLowerCase() : `"${n}"`)).join(", ")}, ${mono}`;
 }
 
 /** The options a new terminal starts with. */
@@ -53,9 +55,19 @@ export function termOptions(theme: ITheme, s: TermSettings): ITerminalOptions {
     // in its bright slots (Solarized: greys), where bold text keeps its own colour
     drawBoldTextInBrightColors: brightIsBrighter(theme),
     macOptionIsMeta: s.optionIsMeta,
+    // Option+drag selects even while a program reports the mouse (vim, tmux, htop)
+    macOptionClickForcesSelection: true,
+    // a glyph a font draws wider than its cell (ambiguous-width symbols) is squeezed into it by the GPU renderer
+    rescaleOverlappingGlyphs: true,
+    // a program that asks for the Kitty keyboard protocol gets it; one that does not keeps the legacy bytes
+    vtExtensions: { kittyKeyboard: s.kittyKeys },
     theme,
   };
 }
+
+/** The GPU renderer's options: box drawing, blocks, braille and Powerline/Nerd symbols are drawn by the renderer to
+ *  fill their cell exactly (no gaps between rows at any line height), not taken from the font. */
+export const GPU_OPTIONS = { customGlyphs: true } as const;
 
 /** The space around a terminal for a padding setting: the setting is the left side; the top, the bottom and the
  *  right (where the scrollbar already stands off the text) keep the proportions omher's terminal always had. */
@@ -90,6 +102,8 @@ export function applyLook(term: Terminal, theme: ITheme, s: TermSettings): void 
   o.scrollback = next.scrollback;
   o.minimumContrastRatio = next.minimumContrastRatio;
   o.macOptionIsMeta = next.macOptionIsMeta;
+  // the protocol switch reaches open terminals: off, a program that turned it on gets the legacy bytes again
+  o.vtExtensions = next.vtExtensions;
   // the box the terminal sits in: a session's (sessions.css) or the Settings preview's; both read these two
   const wrap = term.element?.closest<HTMLElement>(".term-wrap, .term-pv");
   if (wrap) {

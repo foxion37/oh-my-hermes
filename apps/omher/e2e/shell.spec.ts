@@ -60,11 +60,11 @@ test("sidebar lists the mock bots and search filters them", async ({ page }) => 
   for (const id of ["nav-automations", "nav-plugins"]) await expect(side.getByTestId(id)).toBeEnabled();
   // Kami starts running in the mock -> live ring around its face
   await expect(page.getByTestId("bot-kami").getByTestId("live-ring")).toBeVisible();
-  await page.getByLabel("Search bots and sessions").fill("fri");
+  await page.getByLabel("Search bots and terminals").fill("fri");
   await expect(page.getByTestId("bot-friren")).toBeVisible();
   await expect(page.getByTestId("bot-kami")).toHaveCount(0);
   await expect(page.getByTestId("bot-default")).toHaveCount(0);
-  await page.getByLabel("Search bots and sessions").fill("");
+  await page.getByLabel("Search bots and terminals").fill("");
   await expect(page.getByTestId("bot-default")).toBeVisible();
 });
 
@@ -135,7 +135,7 @@ test("header right holds the model pill and the panel button; name toggles the d
   const right = page.getByTestId("head-right");
   await expect(right.locator(":scope > *")).toHaveCount(2);
   await expect(right).toContainText("Opus 5.5");
-  await expect(right).toContainText("High");
+  await expect(right).toContainText("high");
   // two controls: the model picker's one button and the panel button
   expect(await right.locator("button, a, [role=button], input, select").count()).toBeLessThanOrEqual(2);
   await expect(right.locator(":scope > *").last()).toHaveAttribute("data-testid", "panel-button");

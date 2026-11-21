@@ -4,22 +4,392 @@ All notable changes will be documented here.
 
 ## Unreleased
 
-- **omher: a message you send while the bot is answering waits behind a ↵ mark, and you choose what it does.** It
-  shows as a muted bubble with "Waiting" and goes out on its own after the turn, one per turn, in order, through
-  Hermes' own queue. Click the ↵ for Send now (stops the answer once, this message goes next), Steer (adds it to the
-  running answer through Hermes' `session.steer`, without stopping it), Edit (back into the box) or Delete. A steer
-  whose outcome Hermes could not confirm is never sent twice: the bubble says it might already be in the answer and
-  offers Send or Delete. Waiting messages survive a reload, returning to the box as a draft. SESSIONS chats get the
-  same menu; Steer works for Codex, Claude Code, pi, oh-my-pi and OmO and is off, with the reason, for the others.
+- **omher 1.1.2.** Terminals keep their screen when you switch back, and splits and rows behave as expected.
+  - **Switching back:** a TUI shown again (omh, Codex, OmO, vim, htop) no longer shows a doubled line, a blank band or
+    a misplaced cursor. Showing a terminal now fits it once instead of twice, and when xterm had to reflow it the
+    program is told to redraw. A terminal put back from memory has its cursor where the program left it. (#3053)
+  - **Splits:** when one pane of a split ends, the other pane takes the focus instead of the first terminal in the
+    list. With no split, the next row in the sidebar takes it. Every split row shows its layout glyph; rows of a split
+    out of view show it dimmed. (#3050)
+  - **Rows:** press and drag a TERMINALS row onto another row of its folder to move it there. The order is kept across
+    restarts. (#3050)
+  - **Chat:** the "replied to you" header shows only when an answer covers two or more of your messages. (#3049)
+  - **Keys:** ⌘A selects the whole terminal, also in Claude Code and Codex. (#3050)
+  - **Speed:** saving a long scrollback no longer stalls on trailing blank lines (98 ms to 0.1 ms on the same input).
+    (#3050)
 
-- **A bot can watch a Slack or Discord channel and tell you first.** Ask it in words ("watch #og and tell me first
-  when someone reports an outage"); it confirms where, what, how often (every 5 minutes by default) and where it
-  reports in one line, then sets up a Hermes cron job with a small collector that reads only new posts and wakes no
-  model when there are none. A match reaches you in omher even for a bot you never opened: one "Watch · <name>" line,
-  a notification, an unread and the Dock badge; alerts that piled up while omher was closed become one summary, and a
-  run that found nothing leaves no trace. The alert only reports what happened with a link, never an action taken from
-  the post. Automations lists each watch (where, what, interval, last check, last alert, and "Can't read this
-  channel" when the bot lost access) with Pause, Resume and Delete, and "+ New watch" writes the request for you.
+- **omher reads more naturally in Korean.** A pass over the Korean UI copy: one register (해요체) on every screen
+  instead of 합니다체 in some hints and dialogs, `shell` instead of `셸`, and literal translations replaced with what
+  a Korean developer expects (`회원님의 메시지 N개에 답장` is `내 메시지 N개에 답장`, `붙는 것` is `추가되는 것`,
+  `owner/repo` stays as written). Labels that name a screen use its Korean name (`계획 탭`, `다시 시작`). Only string
+  values changed.
+
+- **omher shows "replied to you" only when an answer covers two or more of your messages.** A one-word message followed
+  by a clarify card used to get a "Replying to you / di" header above the answer, which was noise. With exactly one
+  message the header is now never shown, whatever sits between it and the answer; failed, dropped and held sends still
+  do not count. (apps/omher `chat/parts/answers.ts`)
+
+- **omher's question card lists its choices one per row, numbered.** A choice used to be a chip in a flowing row, and
+  a long one ran past the card's edge. Each choice now takes a full-width row prefixed by its number, "Other…" is the
+  last number, and long text wraps inside the card. While the card has focus, pressing a number picks that row (in an
+  interview, within the focused question; never while you type in a field or an input method composes). A trailing
+  "(Recommended)" or "(권장)" shows as a small badge, and the text before the first " — " is the title with the rest
+  dimmer under it. Only the display changes: the answer sent back to Hermes is the choice as it was given. A
+  single-question card now offers "Other…" too.
+
+- **omher: a bot comes back by itself after its gateway restarts outside omher.** When `hermes update` paused a
+  gateway, or it was relaunched or restarted from a terminal, the bot stayed "not connected" until the person
+  picked it again, and an open chat kept its "not reachable (… Gateway draining: update_paused)" line and showed
+  no earlier history, only the next message sent. The bridge reattached only after its own restart. It now looks
+  for a lost bot's gateway through Hermes' own discovery, which starts nothing (first after 2 s, the wait doubling
+  up to 30 s; not while an update still holds the install), dials only the ready gateway it found, and tells the
+  app as after its own restart, so the open chat re-reads its history and the stale line goes; a bot the person's
+  next message reconnects, or that a request attached during a Restart that then failed, says so too. Two requests
+  at once no longer make two Bot Chats.
+  BOUNDARY rule 39.
+
+## 5.0.0 - 2026-11-21
+
+- **A mise-managed `codex` or `python3` runs again in `omh coding run`.** mise links every tool it manages to one
+  `mise` binary and picks the tool from the name it was started by. The fanout fence, the dispatcher's own checks and
+  the Codex/Claude session probe resolved each command to its real file and ran that, so argv[0] was `mise`, mise ran
+  as itself, and the unit or check exited 2 (the session probe read mise's version). The real file is still what gets
+  hashed and fenced; it is now started under the command's own name (`exec -a`, through a `/bin/bash` that reads no
+  rc and no `$BASH_ENV`), and the session lane runs the PATH link while it still points at the observed file. The fix
+  for #1822 had been reverted with #1826. Reported by #3014.
+
+- **omher 1.1.1.** Terminal keys, menu and splits as in Orca and iTerm2, and copy and paste that work in Claude Code.
+  - **Paste and copy:** ⌘V and ⌘C work again in a Claude Code or Codex terminal. These programs turn on the Kitty
+    keyboard protocol, which sent ⌘V to them as a key code instead of pasting. On macOS every ⌘ key now stays the
+    app's. A pasted screenshot reaches Claude Code as `[Image #1]`. A program's own copy (tmux, Neovim, SSH via OSC
+    52) lands on the clipboard; Settings › Terminal › Programs may copy turns it off. (#3031, #3037, #3042)
+  - **Keys:** ⌘= / ⌘- / ⌘0 change the terminal font size. ⌘← / ⌘→ / ⌘⌫ / ⌘⌦ and ⌥← / ⌥→ edit the line. ⌘K clears the
+    terminal. ⌘Home / ⌘End scroll to the top and bottom of the scrollback. Off macOS, Ctrl+Shift+C/V copy and paste.
+    (#3031)
+  - **Splits:** ⌘D / ⌘⇧D split at once with a new Shell, without asking. Drag a TERMINALS row onto a terminal to put
+    it on that side. Each pane has a grip to drag it or open its menu. ⌘W closes a terminal that is not split, with
+    undo, instead of the window. (#3031)
+  - **Right-click menu:** Copy, Paste, Select all, Find, Clear, Reset and Split right / down. (#3031)
+  - **Fixes:** Korean input no longer flickers or hides the syllable being typed, and a 50–100 ms stall every 30 s is
+    gone. (#3031)
+
+- **omher on Windows no longer reads a terminal's status file through a link.** The bridge reads
+  `<omher_home>/terminals/<id>.json` for the status a main-chat message's `omher://terminal/` link carries. It
+  refused a link only through `O_NOFOLLOW`, which Windows lacks, so there a link planted in that folder was
+  followed. It now checks for the link itself before opening, as the folder-chat record reader does.
+
+- **omher: no console window from the Tasks page, and a question keeps the words before it.** On Windows each
+  GitHub or GitLab read in Tasks started `gh`/`glab` with a console of its own, so a window flashed and took the
+  focus on every query; those reads now start hidden, like the bridge's. A bot's question card used to arrive alone,
+  because the words written right before the ask were dropped with the other commentary beside tool calls; they now
+  show as a row above the card, and a reopened chat (an app restart while the question waits, too) keeps that row
+  once. By jundev0001 (#3028).
+
+- **omher: `/` in a bot chat lists the commands Hermes answers there.** Typing `/` opens a menu of Hermes' own slash
+  commands with a one-line description and the arguments each takes, read from Hermes' command registry, so it lists
+  what the gateway dispatches. A CLI-only command is listed only when its gateway gate is on in that bot's config. A
+  skill typed the Hermes way (`/plan`) still sends as typed on Enter even when the menu shows a command that mentions
+  it; `$` keeps the skill picker. An older Hermes without the registry shows no menu. By jundev0001 (#3029).
+
+- **A closed terminal no longer loses the OMH session: it comes back by itself, in any terminal and in omher.**
+  Each OMH TUI now records how its session ended in `<omh_home>/tui/live-sessions.json`. `/exit`, Ctrl+D or moving
+  to another session is *closed* and never reopens. A closed window, SIGHUP, a crash, a kill, a reboot or a lost
+  gateway is *dropped*. A bare `omh` in that terminal (else, outside omher, the same folder) reopens the dropped
+  session at once, as `omh --resume <id>` would, and says so in one line. `omh --new`, `OMH_AUTO_RESUME=0` and
+  `omh auto-resume set --mode off` open a new one. `omh auto-resume status` shows the mode, the hooks and what waits.
+  - A new terminal can reopen it with nothing typed, after an opt-in: `omh auto-resume shell install` (zsh, bash,
+    PowerShell) or a Yes to `omh setup`'s new question (default No). It adds one marked block to the shell rc that
+    starts no process while nothing waits. `omh auto-resume shell remove` gives the file back byte for byte. The
+    hook notices a TUI killed outright, also one an earlier OMH started, and on Linux a reboot.
+  - A launch claims only from a Hermes home it opens and reopens the session in the home it was recorded in. It
+    decides whether the TUI's own runtime home can open it without writing, so a launch that reopens a shared-gateway
+    session leaves that home's files alone. When the own home cannot open after all, a dropped shared session still
+    reopens.
+  - omher: an `omh` terminal that was running when omher closed starts again in its own session
+    (`OMHER_TERMINAL_LINK`, rule 11), and folder chats come back through the bridge's `folder.resume`. Only a chat
+    omher recorded when it opened it can be reattached (rule 3). Records stay under a lock every bridge shares, and a
+    chat reattached while another bot's record write waits keeps its record.
+
+- **Measured loops keep variants comparable, and paper searches pick the right corpus.** `loop` gains `references/experiment-tree.md`: every node runs one fixed command and environment, a node freezes once a run answers it, the options of one decision are siblings and the next round descends onto the winner, and each finished run ends in repair, refill, promote or stop. `source-finder` gains `references/literature-retrieval.md`: arXiv, OpenAlex, bioRxiv or PubMed chosen by topic, follow-up rounds scaled to a stated difficulty inside the existing search cap, cross-corpus dedupe by id, DOI and title, and no paper id that a host result did not return. Both adapt alphaXiv/OpenResearch practices (MIT) in OMH wording.
+
+- **Code in the OMH TUI reads in more than one colour, and the default accent is violet.** An edit's diff painted every code line in one turquoise, and
+  the default `omh` look gave fenced code only turquoise shades, so keywords, strings and comments blurred together.
+  Diff lines now take the same syntax colour as fenced code, chosen by the file's extension, over their green or red
+  band, and a colour that would not read on a band is brightened there. The default look's code colours become one
+  hue per kind: keywords pink, strings yellow-green, numbers orange, comments grey. The other looks keep their own
+  code colours. Hermes' own terminal reads the same `omh` skin, so its code colours follow. The default `spectrum`
+  launch look's accent, which paints a tool call's rail, the working row's spinner and the card's labels, moves from
+  orange to a soft violet; the other looks keep theirs.
+- **Asking Hermes to review a diff or PR now runs the code-review discipline instead of a memory skill.** A review
+  task that said its files were "under context/" dispatched `memory-sync`, because the folder name counted as a memory
+  word; a word inside a file path no longer does. "review this diff for bugs", "can you review my PR?", "does this
+  change introduce a bug?", "check this patch for regressions", "이 diff 리뷰해줘" and "이 PR 버그 있는지 봐줘" used to
+  stop at a clarification and now go straight to `code-review`. Only a sentence that is wholly such a request counts:
+  "review this PR and merge it", "review my essay" or "review the change to our refund policy" keep their old route,
+  and "fix this bug" still goes to coding.
+- The OMH TUI draws a prompt queued behind the running turn in the chat, as Claude Code does: right above the working
+  row, on the prompt band, dim, with its images' labels and previews under it, and `⎿ Queued · ctrl+enter to send
+  now · ↑ to edit` under the oldest. The `⧗` rows over the composer and the `⧗ from queue` tag are gone. A prompt with
+  images that Ctrl+Enter sends now shows its images while it waits for the stopped turn, and a steer sent before it
+  that the stopped turn had not read goes with it, ahead of its text, instead of being dropped behind it.
+
+- **A delegation route is no longer refused for a Hermes config that opens with `%YAML 1.1` or lists a key's
+  items at column 0.** `omh_delegate_route` answered `config_unreadable` for a valid `config.yaml` that starts with a
+  `%YAML 1.1` line and `---`, or that writes a list such as `fallback_providers:` with its `- ` items at the left
+  edge, though Hermes' loader reads both. The route guard now reads those two shapes; a second directive, a
+  directive without `---`, `%YAML 1.2` or `%TAG`, a second document, and a column-0 list under `delegation`, `model`
+  or a root model key, or after a key that already has a value, are still refused. Reported by @mazzy89 in #2917.
+
+- **omher reaches a Hermes on a Windows computer over SSH, and the composer copies and recalls your prompts.** Remote
+  machines found Hermes only under `~/.hermes`, so a Windows computer whose OpenSSH login shell is Git Bash, MSYS2 or
+  Cygwin answered "no Hermes" although the Windows app had installed it under `%LOCALAPPDATA%\hermes`; the remote side
+  now looks there, reads the interpreter from the `hermes.exe` launcher (an account name outside ASCII included) and
+  falls back to `venv\Scripts\python.exe`. The bridge reads a bot's config with Hermes' own YAML reader when that
+  Hermes has one (0.22 and later ship without PyYAML, where every config read came back empty), and the Tasks page's
+  Linear check counts `enabled: n` as off the way that reader does. A message you sent now has the same quiet copy
+  button as an answer. In a bot's chat and its threads, Up on the first line of the box and Down on the last walk
+  that chat's earlier prompts, newest first, and back to the unsent draft, which also stays the draft when you
+  switch away mid-walk; Alt+Up and Alt+Down do it from any line, and an open picker keeps its arrows. Settings ›
+  General › While it answers chooses whether a message sent during an answer waits for the turn to end (the
+  default) or is steered into it at once, the same as pressing its Steer; a message behind another waiting one
+  still waits its turn. Contributed by @jundev0001 (#3017).
+
+## 4.0.9 - 2026-11-20
+
+- **Codex units can write inside the fanout fence on Linux and macOS.** `codex exec` is read-only by default, and
+  `workspace-write` cannot start Codex's own sandbox inside an enforced bwrap or sandbox-exec fence, so every write
+  a codex unit tried was refused. When the fence is enforced with one of those backends, the codex argv now gets
+  `--sandbox danger-full-access` before the prompt and the fence stays the write boundary. An explicit sandbox choice
+  in the argv is kept; unfenced runs, other owners and native Windows (#2471) are unchanged.
+
+- **omher: terminal splits without a title bar per pane.** A split pane no longer carries a bar with its name, path
+  and x, and the focused pane no longer gets an accent frame (the others an inset shade). Panes sit flush like
+  Ghostty or iTerm splits: a 1px line is the only edge, the cursor and the dim show which pane has the keyboard, and a
+  pane's zoom and x appear in its top right corner while the pointer is over it. The bottom panel's panes lose the
+  same frame and shade.
+
+- **The OMH TUI runs on native Windows, not only under WSL.** Bare `omh` on Windows used to open Hermes' own terminal
+  every time, because the OMH TUI needed termios. Where there is no termios its terminal layer now enters the Windows
+  console instead: VT input and output modes with UTF-8 code pages (all put back on exit, a failed start included),
+  console input records read on a thread and handed on as the same UTF-8 escape bytes a POSIX terminal sends, the
+  window size polled in place of SIGWINCH, and a closed console ending the session as a hung-up pty does (closing the
+  window or Ctrl+Break arrives as SIGBREAK, which now unwinds: console restored, gateway reaped). The
+  gateway's wake pipe now holds at most one byte, so it never blocks without the non-blocking mode Windows pipes lack
+  before Python 3.12, and the console peeks at it instead of select. `omh doctor` reports the real OMH TUI state on
+  Windows. It needs Windows Terminal or a VT-capable console (an old conhost falls back with one line saying why); a
+  Windows user still has to try it.
+
+- **omher: ideas from kasaterm.** Behaviour and numbers borrowed from 2rami/kasaterm (MIT), code written fresh.
+  - **Undo a closed terminal.** Closing a running TERMINALS row can be undone for 10 seconds: the row leaves at
+    once, a toast offers Undo (⌘Z / Ctrl+Shift+Z), and the same terminal comes back with its program and scrollback,
+    in its split if it was in one. Settings › Terminal › Undo window after closing: Off / 5 s / 10 s (default 10 s).
+  - **Quieter notifications.** Only approvals, questions and ends that went wrong ring, and the body is the bot's
+    own first sentence (greetings skipped, code and markdown removed, paths shortened to their name, URLs to their
+    host). A turn error only marks its chat; Settings › General › Also notify on errors (off by default) brings the
+    note back. A clean exit 0 only marks its row, and so does the bell of a plain shell (tab completion, a stray
+    `\a`); a terminal's bell notifies only while a coding agent runs in it. A wordless ring waits 8 s so the texted
+    question that follows replaces it.
+  - **Disk space warning.** When the disk holding your home folder drops under 20 GB (Settings › General › Warn
+    when disk space is below: 5/10/20/50 GB or Off), a sidebar chip shows the free space and one notification goes
+    out. omher checks once a minute with one system call and never deletes anything. The terminal agent mark also
+    reads a node/python program's command line about 4× less often (60 → 13 reads a minute).
+  - **Close keeps omher running.** Closing the window hides omher to the menu bar / notification area (on by
+    default; Settings › General › When the window closes). Terminals and agents keep working; reopen from the tray
+    icon or the Dock, quit from the icon's Quit omher or ⌘Q.
+  - **Keep awake while agents work.** omher keeps the computer from idle-sleeping while a TERMINALS agent prints or a
+    bot answers, until a minute after (on by default; Settings › General). Closing the lid still sleeps the computer.
+  - **Chat and split view.** Chats get a Jump to bottom pill when you scroll up (with "· N new"; End or ⌘↓ /
+    Ctrl+End also jump), and your last message stays pinned as one line at the top while you read a long answer. A
+    zoomed terminal split now follows focus, and splitting, closing or moving a pane un-zooms, so typing never goes
+    to a hidden pane.
+  - **Shell picker.** The TERMINALS `+` menu's Shell row has a Shell ▸ list of the shells installed on this computer
+    (Windows PowerShell, PowerShell 7, Command Prompt, Git Bash and WSL on Windows; the login shell and `/etc/shells`
+    on macOS and Linux). Settings › Terminal › Default shell sets the one a plain Shell row opens, a row keeps its
+    shell after a restart, and a missing shell falls back to the default with a note.
+  - **Theme import (macOS only).** Settings › Terminal › Import from… brings the colours and font of an iTerm2 or
+    Apple Terminal profile into omher as your own terminal theme. It reads the other app's prefs once when you press
+    it, keeps a copy, and never changes the other app.
+
+- **show-reel's cut-sheet lane checks a remake's genre and pace by numbers.** Remaking a supplied reference now
+  starts by naming its genre from a 5 fps sheet and 30 fps strips (the material, the motif that survives every cut,
+  art piece or promo), and measures pace on the reference and each render: cuts per second, mean frame difference,
+  motion inside shots and near-still share, with the targets written into the contract. The page also lists the
+  devices that carry pace (2-4 frame bursts, scale motion with ease-out, shard or smear frames from the outgoing
+  image, exit glitches, speed ramps, re-framed sub-shots), asks that a recurring motif act at every appearance, and
+  says to add real feature chapters, not stretched shots, when a film gets longer.
+
+- **A bot answers a mid-turn message before it acts on it.** A message sent while the bot works (a steer) used to
+  change only its next command, with nothing said, so the person could not tell it was read. OMH's reply line, which
+  every session carries once in its system prompt, now asks for one line before the next tool call: what was taken
+  from the message and what changes. The primer grows by 117 characters (compact rail 1550 -> 1667).
+
+- **The run summary shows how much of the prompt came from cache.** `omh_run_summary` adds a line after the token
+  count, such as `Prompt cache: 62% of input read from cache (1,234,567 tokens)` (en/ko/ja/zh), and
+  `breakdown.cache_read_share`. The share is cache reads over uncached input plus cache reads, which is how Hermes
+  stores them. No line appears when nothing was read from cache.
+
+- **A one-line list of three code changes is answered in the session, like a listed backlog.** "migrate the store to
+  sqlite, update the three callers, and add tests" or "프론트 버튼 추가랑 백엔드 엔드포인트랑 테스트 다 해줘" used to land on a
+  lane picked from one word (toolbelt-readiness, browser-operator, backend). They now get the `code_backlog` answer:
+  make the changes here, one after another, not as a dag-ulw graph. One bug's symptoms, one feature's fields, a list
+  of questions, an errand list with a single code word, and work the request itself splits keep their routes.
+
+- **A dag-ulw node can say what the parent will look for in its work.** A node takes an optional `review_focus`, one
+  line of up to 400 characters such as "the 24px toolbar icon is still recognizable". The node's task shows it right
+  after the prompt, and a verify node's task lists each producer's focus so the verifier judges the same things. A
+  build node that writes code without one gets a `no_review_focus` lint, which is advice only. Every build node with a
+  write scope is also told that other agents share the machine: run only the builds and tests it needs at once, and
+  before it stops, stop the background jobs it started and remove the temporary files it created.
+
+- **A dag-ulw node that writes files is told to commit only its own paths.** Its task text now says to stage the
+  paths in its SCOPE by name and never to run `git add -A`, `git add .`, `git commit -a` or `git stash`, so parallel
+  nodes in one checkout stop committing each other's work. Verify, review and read-only nodes get no such line. This
+  is guidance; the write-scope guard on file tools stays the enforcement.
+
+- **Coding handoffs and fanout units pick up four lines from OpenAI's GPT-6.2 Codex guide.** A fanout unit may declare
+  `review_focus` (one sentence, at most 150 UTF-8 bytes; it is cut to fit rather than ever push the prompt over its
+  byte ceiling), which its prompt
+  states right after the numbered criteria; when it is absent, the contract is byte-identical and no focus block is
+  added. A `handoff_contract/v1` may declare `parts[]` (`id`, `title`,
+  `depends_on`). With two or more parts that depend on nothing, the Codex prompt lists them and adds "Use subagents as
+  needed", the guide's trigger phrase; Claude Code and Hermes prompts never get that line. Every handoff with acceptance criteria
+  ends its Expected result with one line saying what counts as finished, with no keep-going wording. Every unit
+  prompt carries a new shared-machine line after tool batching (limit concurrent builds and tests; stop your own
+  background jobs and delete your own temp files). It stays out of the frozen shared head, so the unit prompt golden
+  digests move.
+
+- **The pi-family coding lane runs on the omp CLI too.** With only `omp` on PATH, a pi-family coding unit now runs
+  `omp --print --no-session [--model <id>] [--thinking <level>] -- <prompt>`; when `pi` or its distribution host is
+  also installed, those still win. omp has no `--permission-preset`, so no approval flag is passed (omp's default
+  applies) and writes stay fenced by the worktree and fan-out confinement as for every host. Model discovery also reads
+  `~/.omp/agent/sessions`. omp keeps its sign-in in a SQLite store, so its login marker reads `absent`; that does not
+  block dispatch.
+
+- **Five skills take guidance from OpenAI's "Prompting GPT-6.2 in Codex" guide.** `visual-qa` and `frontend` judge
+  a capture against the reference at the size people will see it (the real viewport, a 24 px toolbar icon), not only a
+  large render, and exercise an interactive result with the actions it supports before a verdict. `app-debugging` sizes
+  effort to the investigation: a quick survey at medium, one cause traced across systems at high (`deep`), several
+  interacting causes at xhigh (`forensics`), and says what counts as finished. `agent-instructions` keeps a line only
+  when an agent cannot infer it from the code, tests or docs, and leaves routine how-to out. `dag-ulw` briefs each
+  node like a colleague who knows the project and gives build nodes a `review_focus`.
+
+- **Hermes Bug Hunter: code review keeps only findings it can show, and every review says what it did not check.**
+  `code-review`'s finding validation gains a drop gate: a candidate stays out of the findings when it cannot be traced
+  step by step from a concrete input to a wrong result, when the behaviour is intended or documented, when its trigger
+  needs a privilege the user cannot have, when the harm is only theoretical, or when it is a style nit dressed as a
+  bug. `code-review`, `production-audit` and `verification-gate` now end every result with a `Not checked` list (each
+  entry with its reason, or `Not checked: none` only after full coverage), so a short findings list no longer reads as
+  "the rest is clean".
+
+- **Qwen4-Max is onboarded.** Alibaba released it on 2026-11-16. Before this, every Qwen4 id (`qwen4-max`,
+  `qwen/qwen4-max`, `qwen4-max-preview`) classified `unknown` and got generic discipline; they now classify `qwen`.
+  `qwen4-max` has an exact contract read from docs.qwencloud.com: 1M context, hybrid thinking on by default, and a
+  `low` / `high` / `xhigh` ladder with `high` as the default. The vendor maps `minimal`, `medium` and `max` onto those
+  three without an error, so OMH raises nothing and the contract records the table. Cost estimates use the Singapore
+  list price, $1.50 / $4.50 per million tokens with cached input at $0.075. The Qwen calibration is now
+  version-aware: the family block still describes the non-thinking Qwen3-Coder, and Qwen4-Max gets its own block
+  that does not forbid thinking. That block is editorial and unmeasured. No shipped chain names Qwen4-Max, because
+  Qwen3.8-Max held no slot either; to try it, use `omh model-chains set <category> "qwen4-max:high, ..."`. The Token
+  Plan preview is recognized only, with no contract and no price. Hermes through origin/main `fe8b920cae` sends no
+  effort on its DashScope profiles, so the model runs at `high` there whatever effort is routed.
+
+- **A cheap dag-ulw node that hits a hard judgement asks for a stronger model instead of guessing.** When a node's
+  child cannot settle a design choice or a root cause, it stops before editing and writes `ESCALATE: <question>` into
+  its handoff; the node is settled `escalated` and offered again one category up (quick, unspecified-low,
+  unspecified-high, ultrabrain), at most twice, briefed with the question the first child stopped on. Nodes already on
+  ultrabrain, review or deep never get the option, nor does a node pinned to an identity, which keeps that
+  identity's own model chain.
+
+- **Hermes Bug Hunter: a trap benchmark counts the bugs a reviewer invents.** `benchmarks/review-false-alarms`
+  holds 11 traps (changes that look wrong and are correct: SQL built from a constant allowlist, `eval` over a literal
+  table, an index guarded two lines up, a lock the caller holds) and 6 controls with one real, reachable bug each. A
+  reviewer ends with `VERDICT: clean` or `VERDICT: bug <path>:<line>`; a control counts as hit only within ±3 lines,
+  and a missing or garbled verdict is its own column, never clean. The table prints the false-alarm rate and the hit
+  rate side by side for `omh-on` and `omh-off`, and OMH wins only with fewer false alarms and no fewer hits.
+  `bench.py --dry-run` grades a recorded fixture with no model; live runs use `hermes -z` on two profiles.
+
+- **The Start Guide lists long-term memory among the main features.** It moves from the closing list to a fourth card
+  in "What OMH does" (owner request, 2026-11-18): nothing is remembered silently, and the next session gets only the
+  memories that fit its task, within a token budget. The closing list is now one row of three.
+- **A fail-closed leak guard keeps private identifiers out of the public repo (Hermes Bug Hunter).** CI now scans
+  every tracked file on each pull request and main push against a committed denylist of sha256 hashes, so the list
+  never carries the names it protects. A hit prints `path:line` and the hash; a missing or empty denylist fails the
+  job instead of passing. `tools/qa/identifier_guard.py --staged` runs the same check as a pre-commit hook, and
+  `--hash "name"` prints the line to add (see CONTRIBUTING.md).
+
+- **AGENTS.md and CLAUDE.md are about half their size; the detail moved to docs.** Every agent session loads both
+  files. The full text of each scoped exception now lives in `docs/IMPLEMENTATION-BOUNDARIES.md`, the long pitfall
+  list and working style in `docs/ENGINEERING-PITFALLS.md`, omher's repository rules in `apps/omher/README.md`, the
+  TUI frame-language rule in `docs/OMH-TUI-BOUNDARY.md` and the CodeGraph evidence note in `docs/CODEGRAPH.md`, all
+  moved verbatim. The two instruction files keep what an agent cannot infer from the code: product boundaries,
+  delivery grain, PR report shape, commit trailers, the gates and the generated-artifact map, with one pointer line
+  per moved part.
+- **Four OMH tool descriptions are shorter, and the model still picks the same calls.** `omh_todo`, `omh_loop`,
+  `omh_document_plan` and `omh_delegate_route` say the same rules in fewer words, so each costs fewer tokens the
+  first time Hermes loads it (24,943 -> 23,718 characters together; the registered OMH schemas 63,324 -> 62,099).
+  An A/B of the first tool call on 11 scenarios (Claude Haiku and Sonnet, 3 runs per arm) passed 33/33 on both the
+  old and the new text. A first draft that also cut "a route set in an earlier turn runs on the previous model" and
+  "OMH mirrors each todo_list write" lost passes and was restored.
+
+- **Seven vendor coding clients reviewed against OMH; model notes gain their catalog facts.** Codex CLI 0.169.1,
+  Claude Code 2.1.329, Gemini CLI 0.70.0, Qwen Code 0.28.0, Kimi CLI 1.52.0, ZCode 3.18.2 and DeepSeek Harness
+  (master 2e39e704) were each read at a pinned tag, commit or binary hash. The new `docs/VENDOR-HARNESS-REVIEW.md`
+  lists, per vendor, what OMH already does, what it adopts, and what it leaves out and why. Every client's
+  keep-going push stays out, because a measured +5,419 tokens per instance bought no extra passes. MODEL_OPTI.md
+  records each client's catalog where it adds a fact: GPT-6.2 Astra and Sol share one Codex prompt, Claude Code
+  aliases older ids on third-party clouds, and Gemini CLI has no Gemini 4 id yet. Five prompt gaps are listed as
+  follow-ups; this entry changes no prompt text.
+
+- **Gemini prices re-read ahead of Google's two increases.** Google's pricing page, re-read on 2026-11-18, still
+  lists Gemini 4 Argon and Gemini 4 Carbon at $2 / $10 per million tokens through 2026-11-30 and $4 / $20 from
+  2026-12-01, and Gemini 3.8 Flash and 3.6 Flash at $0.75 / $3.75 through 2026-12-31 and $1.50 / $7.50 from
+  2027-01-01, cached input moving with each. Hydrogen stays at $1.50 / $7.50. Cost estimates keep today's prices
+  until each date; the price rows now point at the current page, and Argon's row is pinned by the same list-price
+  test as Carbon's.
+
+- **A dag-ulw re-run can skip the nodes the last run already confirmed, and only when asked.**
+  `omh_dag action=define` takes an opt-in `carry_forward` with the base revision. A node an earlier run of the same
+  goal at that base accepted, with the same id, prompt, write scope and dependencies and its handoff still on disk, is
+  recorded `carried` and not handed out; its dependents read the earlier handoff. Verify nodes, nodes that failed or
+  were blocked, changed nodes and anything after a node that runs again always run. define and status list each
+  carried node with the run it came from, the status line says `carried N of M nodes from <run>`, and the goal
+  verdict still waits on the verify node, which is told which nodes were carried.
+
+- **omher.app has a Start Guide at `/guide/`, linked beside Docs in every header** (owner request, 2026-11-18). One
+  page for someone new, with plain section titles that say what each part covers: what OMH does in three cards (a model per kind of work, `dag-ulw`, expert skills), install in
+  three commands (`curl … | sh`, `omh setup`, `omh model`), categories and fallback shown on three real chains, plan
+  versus `dag-ulw` as a to-do list versus a flowchart (an animated graph: two steps at once, fix, test, a separate goal
+  check, and the loop back when it fails), how OMH stays current (a new model is checked before it joins a chain, the
+  plugin loads into stable and main Hermes every night, reconstructed skills record the upstream commit they were
+  reviewed against), the `omh` TUI, and omher desktop as an ADE for bots with a terminal panel. Everything else
+  (`ulw-maestro`, memory, evidence labels, LSP) sits in one short list at the end. It reads in English, Korean,
+  Japanese and Chinese through the site's language switch. The model names on the page come from the shipped
+  recommendation catalog through `tools/render_site_guide.py`, which Pages re-runs on every deploy, so a model
+  onboarding never leaves the guide naming a retired model; `tests/test_site_guide.py` pins the sections, the
+  installer commands, four-language coverage of every key, the header links and the catalog match.
+- **GPT-6.2 Astra and GPT-6.2 Sol take every slot GPT-6 Astra and GPT-6.1 Sol held** (OpenAI released both on
+  2026-11-17; owner decision, 2026-11-18). In the Hermes chains, the Codex lane table and the shared final order
+  (Claude Opus 5.5, then GPT-6.2 Sol), each new id sits where its predecessor sat, at the same effort, and no chain
+  changes order. `ultrabrain` is now Claude Fable 5.2, GPT-6.2 Astra, then Claude Opus 5.5; `forensics` and the Codex
+  `ultrabrain`, `architect`, `deep-work` and `forensics` rows lead with GPT-6.2 Astra, and every Sol slot names GPT-6.2
+  Sol. A child with no route record is labelled by its new pair: GPT-6.2 Astra at `xhigh` reads `forensics`, GPT-6.2
+  Sol at `xhigh` `review`. `omh coding model-contract --model gpt-6.2-sol` (or `gpt-6.2-astra`) prints each record from
+  OpenAI's pages: the API rejects `none`, so a request for `off`, `none` or `minimal` is raised to `low` on record, and
+  tool calling needs the Responses API. Astra lists at $8 / $40 per million tokens against GPT-6 Astra's $10 / $50, Sol
+  at GPT-6.1 Sol's $2 / $10, both with cached input at 5%, and cost estimates use those prices. Both get GPT-6 Astra's
+  calibration text unchanged; OpenAI's "persist until the task is complete" prompts are not used. GPT-6 Astra and
+  GPT-6.1 Sol leave the shipped chains but stay recognized, priced and routable, so a chain you set yourself can still
+  name them. Hermes builds up to origin/main of 2026-11-17 do not know the 6.2 ids yet and clamp `max` to `xhigh` on
+  the Codex route.
+
+- **OMH starts faster in a fresh Hermes process and its tools cost fewer tokens to open.** The chat router no longer
+  imports the whole loop engine for one loop-command check, and the dag-ulw cue patterns compile on first use instead
+  of all at import, so the plugin's start before a one-shot `chat -q`, a cron run or a delegated child's first reply
+  drops by about 70 ms (register, import warm-up and first routed turn together: median 327 -> 254 ms over 10
+  interleaved cold starts against the previous main; the first turn pays about 20 ms of it back compiling the patterns
+  it reads). The OMH tool schemas Hermes loads on a tool's first use shrink from 72,940 to 63,324 characters (-13%):
+  the `observation` field on 20 tools stops describing metadata a model never fills, and the profile-override fields
+  say their refusal in fewer words. No tool, parameter or rule a model acts on changed.
 
 - **An OMH TUI reply no longer hangs on a rail.** The `⚚ Hermes · <model>` header starts at the left edge and the
   reply's text sits two cells in, with no `┃` beside it, so a reply reads apart from your prompts and the tool calls,
@@ -35,10 +405,265 @@ All notable changes will be documented here.
   dispatcher signs the arm setup it reads from disk into each receipt, and fan-in refuses a cell whose setup
   contradicts its arm. New `--provider-base-url`, `--provider-api-mode` and `--provider-key-env` declare a custom
   provider whose key arrives only by environment. Every other Hermes child keeps safe mode.
-- **omher: Plans › Dependencies is one row per task, not one per edge.** Each row is the task with its status, and
-  under it what it waits for, each with that task's own status. An edge another path already implies folds into
-  "+N further up" (a repair edge never folds), so a plan of 8 tasks and 15 edges reads as 6 rows, not 15. Hovering
-  a row lights its box in the drawing above; clicking it opens the node. The heading counts the rows.
+- **A paired-run receipt now says what each cell's child did, not only how long it took.** Before the arm home is
+  removed, the dispatcher reads the child's own rows from that home's `state.db` and signs a metadata-only
+  `cell_trace` into the receipt: API calls, input/output/cache/reasoning tokens, the ordered tool names, how many
+  `skill_view` calls opened which skills, and the system prompt's and first request's size in characters. No prompt,
+  reply or tool argument is kept, a caller cannot supply or keep one, and a store that is missing, locked or holds no
+  row of the child leaves the trace null rather than zero. The execution report lists each cell's verified trace.
+- **`omh_gather_evidence` can check the task's own test, and a run of no tests is no longer a pass.** A unittest probe
+  may now name test modules, classes or methods inside the working directory (`python3 -m unittest tests.test_x`,
+  `tests/test_x.py`), limited to what default discovery would run there, so a repository whose other tests still fail
+  no longer hides whether the change at hand passes. `Ran 0 tests`, and exit 5 from unittest or pytest, now read
+  `passed: false` with `reason: no tests ran`. The tool's line in Hermes' deferred-tool catalog names tests and shows
+  a whole call, so a model looking for a test runner can call it from the listing. Every existing refusal stays.
+- **A paired run can give both arms Hermes' shell tool, and only both at once.** `omh coding paired-run dispatch
+  --arm-toolsets file,skills,terminal` runs both the baseline and the variant with `file,skills,terminal` instead of the
+  default `file,skills`, so an arm whose skills say "run the tests" is no longer measured against an arm that cannot
+  run them. Only `file`, `skills` and `terminal` are accepted, `file` and `skills` are required, and `--yolo` is never
+  passed, so Hermes' dangerous-command approval stays on. The toolsets each cell ran with are signed into its receipt's
+  `arm_setup`; fan-in refuses a cell whose toolsets differ from the run's declared ones and a matrix whose arms differ
+  from each other. Every other Hermes child keeps safe mode and `--toolsets file`.
+- **A paired run can let both arms delegate, so OMH's job decomposition can be timed against Hermes alone.**
+  `--arm-toolsets file,skills,terminal,delegation` gives both arms Hermes' own one-level `delegate_task`. Both arm
+  homes then carry the same child settings (up to 6 children instead of Hermes' one-shot default of 2, no deeper
+  children, no per-child worktree) and run every child on the arm's own model; the variant's OMH routing chains are
+  pinned to that model too. Each cell's signed `cell_trace` now says how many delegate children ran, their API calls,
+  how many ran at once, and which models the cell's sessions used, and fan-in refuses a delegating cell whose trace is
+  missing or names another model. A delegating cell's usage reports no cost rather than one that may count the
+  children twice; tokens and API calls still sum. Without `delegation` nothing changes.
+- **A listed backlog of separate code changes runs as a dag-ulw graph.** A request that hands over four or more list
+  items, each its own change, and asks in its own words for all of them to be made in code ("these six issues are
+  open: fix all of them", "아래 버그들 전부 고쳐줘") is dispatched to `dag-ulw` by the router, and Hermes' per-turn hint
+  starts it with each item as its own build node and a verify node after them. Before, such a backlog went to whatever
+  lane one item's word scored (a "stock" lot took a six-bug job to `live-info-operator`) and the skill's own size cue
+  never ran. A list of three or fewer, one bug, a list to review, prioritize, explain, plan or file as issues, one held
+  or put off, one handed to a named coding agent, a fenced list, failing test files by path, and chores or reading stay
+  where they were. The dag-ulw skill now also says what to do where `delegate_task` returns its children inside the
+  call (a finite one-shot session): settle and dispatch the next layer in the same turn. "current" said of the
+  workspace (the current directory, branch or file) is no longer read as a live-information cue.
+
+- **Another OMH TUI no longer exits when Hermes' gateway restarts, and typing shows while it reattaches.** Where no
+  service runs the gateway, `hermes gateway restart` (also `/gateway restart` from another TUI) stops it as `hermes
+  gateway stop` does, so its record says `stopped` with no restart asked, and starts the new one a few seconds later.
+  Every other TUI attached to it read that record as a stop and left at once with the resume hint. A stopped record is
+  now watched for up to 30 s, with no try: a new live record reattaches the session as a restart run elsewhere, a
+  failed start ends with Hermes' reason, and a record still stopped then leaves as before, so no try ever starts a
+  gateway the person stopped. While any respawn or reattach waits, text and its editing keys go into the composer at
+  once and show on the next frame; before, every key was held unseen until the gateway was back, which read as a
+  frozen TUI. Enter, a paste, a key that opens a list and every key after one of those still wait for the gateway, in
+  order.
+
+- **A request to fix a code defect now gets OMH's debugging method in the turn, not only a skill name.** Hermes'
+  skills index tells a model not to open process skills such as debugging, so `omh-app-debugging` and
+  `omh-verification-gate` stayed closed on exactly the turns they exist for. On a
+  turn that asks to fix code (a change verb such as fix, debug, "make ... pass", 고쳐, with a code object such as a
+  test, a traceback, a source path or a function), the plugin now adds a short block once per session: reproduce
+  first, trace the bad value to where it is produced, try other valid inputs, run the whole suite. Questions,
+  reviews, features and fixes of anything that is not code get nothing new.
+
+- **OMH TUI: Ctrl+Enter with an image attached sends it now.** Before, a prompt with an image never went into a
+  running turn: Ctrl+Enter left it as a `⧗` queued row over the composer until the turn finished. Now Ctrl+Enter
+  stops the turn and sends the prompt with its image the moment the turn ends. Meanwhile it shows above the working
+  row as your prompt, not a queued row. Esc again gives it back to the composer. Enter with an image still queues for
+  the turn's end, and Ctrl+Enter with text alone still steers without stopping anything.
+
+- **OMH TUI: the working spinner stays in the theme colour on terminals that draw `✳` as an emoji.** Zellij Desktop
+  on macOS painted its two `✳` frames as a green emoji, so the spinner flashed green twice a cycle. Those frames now
+  ask for text presentation (U+FE0E) and stay one cell in the accent colour. Contributed by @DanRioDev (#2923).
+
+- **An OMH update asks one restart question, not two.** The TUI still asks once whether to restart on the new
+  version. The reopened TUI no longer opens a second question about Hermes' gateway: when the gateway still runs the
+  old OMH plugin code, it says so in one line and names `/gateway restart`, which loads the new code.
+
+- **What you type while the OMH TUI loses its gateway is never lost.** When the gateway does not come back and the TUI
+  leaves (its restarts spent, a stop it watched, a reattach given up), what you typed and never sent, the draft and
+  anything typed while it waited, is printed under its last line instead of going with the screen.
+
+- **`omh model-chains` and `/omh-model` now look like every other OMH picker.** The chain picker paints through the
+  OMH TUI's theme roles instead of the old skin palette: no selection band, the cursor row is `❯` with its name bold
+  in the menu colour, the rules and the effort bar's filled cells take the launch look's colours, words are neutral
+  greys, and hue is kept for what a cell says (`customized`, `edited`, `enabled`, `disabled`, an effort off its
+  model's list, warnings). It follows `/theme`, the saved launch
+  look, a light background (`COLORFGBG` on the command line, the measured background in the TUI) and the terminal's
+  colour depth. Text, columns and keys are unchanged; only the cursor mark moved from `▍` to `❯`.
+
+- **A code backlog that names a monthly report is no longer read as a schedule.** A period word such as monthly,
+  weekly or nightly counts as a recurring schedule only when it says how often the work runs ("fix these monthly",
+  "rebase them nightly, then report"). Naming a thing ("the monthly report", "a weekly digest module") no longer stops
+  a listed backlog of code changes from running as a dag-ulw graph.
+
+- **DeepSeek coding units write their answer in the shape the task asked for.** The `deepseek` calibration block gains
+  one sentence: the answer file is one JSON object keyed by the task's own field names, not a bare list and not a
+  wrapper key of the model's own. On og `deepseek/deepseek-v4.1-flash-eco` the search tasks of
+  `benchmarks/live-model-tools/v1` had been writing `[...]` or `{"results": [...]}` where the task asked for
+  `locations`; with the sentence the six fixable templates passed 90 / 90 against 76 / 90 for a control run in the
+  same window (3 seeds x 5 reps, gate fixed before the run). The held-out `product-ab` corpus showed no difference
+  either way (19 / 40 against 20 / 40, one run per task). The block also reaches DeepSeek V3.2, V4 Flash and V4 Pro,
+  which were not measured; V4.1 Flash keeps its own override, which gains the same sentence in the entry below.
+
+- **DeepSeek V4.1 Flash units also write their answer in the shape the task asked for.** The V4.1 Flash override
+  replaces the `deepseek` family block, so it did not get the answer-shape sentence the family block gained; it now
+  carries the same sentence verbatim. On og `deepseek/deepseek-flash` the six fixable `live-model-tools` templates
+  passed 85 / 90 with it against 76 / 90 for the shipped override in the same window (3 seeds x 5 reps), at 0.97x
+  the tokens.
+
+- **A subagent that is not part of the running dag-ulw run no longer shows up inside it.** A subagent sent without
+  the run's `[dag:<run>/<node>]` marker (a hand-made repair, a child of an earlier cancelled run) used to sit in layer
+  1 of the DAG pane, where Desktop labelled it "Start node". It now shows below the run as **Outside DAG**: Desktop
+  cards, the text tree and the TUI block alike. Usage and cost still count it, and it no longer holds a finished
+  run's one-line summary open. While a run is active, such a dispatch is stopped once per turn with a pointer to
+  `omh_dag` (ready, settle, repair, extend); sending it again goes through. Contributed by @yqm-307 (#2914).
+
+- **`omh setup` ends by offering a guided model setup in the OMH TUI.** On a terminal, the last question is "Set up
+  your models now?" (default Yes). Yes opens the OMH TUI in a new session with a fixed onboarding prompt as its first
+  turn, and Hermes walks you through providers, keys, a main model and at most one fallback by conversation; if Hermes
+  has no main model yet, your own `hermes model` runs first. No prints how to come back later. The prompt is sent only
+  under the new `omh --onboard model-setup`, never on a resume, and `omh setup --model-setup --fallback-model
+  PROVIDER/MODEL` previews and writes one Hermes `fallback_model` under the same digest-bound approval.
+- **A dag-ulw node can pick a built-in role or a custom identity by name.** `omh_role action=list` now shows
+  built-in roles and custom identity profiles together, and a node sets `identity: builtin:<name>` or
+  `custom:<name>` independently of its `role` and `category`. The chosen definition supplies the child's prompt
+  guidance and its model chain; retries count per node, so two nodes no longer use up each other's place in the chain.
+  A missing, disabled or changed identity stops the dispatch instead of quietly swapping in another one.
+  Contributed by @yqm-307 (#2939).
+
+- **`omh_delegate_route set` refuses a model id pinned to a provider that does not serve it.** A `set` with
+  `model=ANT-claude-opus-5-5 provider=openai-codex` used to reach `config.yaml`, and every delegated child after it
+  died on its first call with HTTP 400 from the vendor. When `routing/model-providers.json` records that exact model
+  id only under other providers, the call now returns an error naming the alias, every provider that serves the id
+  and the two valid ways to route it, and writes nothing. Aliases may still be pinned to another provider, and ids no
+  route records pass unchanged. Contributed by @rafaelmoreiraai (#2915).
+
+- **`omh setup` and `omh uninstall` can edit a config that Hermes' installer just wrote.** Hermes' config template has
+  comment lines with quotes in them (`# order: ["anthropic", "google"]`), and OMH's config editor read those as quoted
+  keys it must not touch. On a fresh Hermes, setup therefore never recorded `plugins.entries.omh.settings.omh_home`,
+  and `omh doctor` warned about it with a fix that hit the same refusal. Uninstall could not take back
+  `plugins.enabled` or `memory.provider`. Comments are now ignored by that check; a quoted key in the YAML itself is
+  still left alone.
+- **dag-ulw waits for a helper Hermes will resume instead of running its node twice** (Hermes 0.23.2
+  `delegation.auto_resume`). Hermes now continues a helper a usage limit or a restart stopped, under the same
+  subagent id and session. The delegation ledger took that second `subagent_start` for a duplicate and dropped it,
+  so the helper kept its old `error` stop and a node whose resumed run finished could not be settled accepted
+  (`child_reported_failure`); after a restart `omh_dag` also marked the node lost and handed it out again beside the
+  resumed helper. A repeated start with the same session now counts as a resume (the old stop is dropped, the
+  process it resumed in is recorded, and only a stop since the resume answers for it), and `omh_dag` reads Hermes'
+  own `resumable_subagents` record read-only: a node whose helper Hermes promised to resume stays running with
+  `waiting_resume` (`at`, `attempt`), is not offered again or named stuck, refuses a settle with
+  `child_resume_pending` until it reports, and every reply says not to dispatch it again. A Hermes without that
+  table, or a helper it gave up on, keeps the restart and failure rules as they were.
+
+- **The OMH TUI can proofread a draft on a local LanguageTool server.** Press Alt+P in the main or clarify text
+  field and issues are underlined; Alt+P on an underlined word offers replacements, Enter applies one (normal Ctrl+_
+  undo), Skip or Esc closes, and nothing is ever sent or rewritten on its own. Automatic checks after 600 ms of quiet
+  are off by default and turn on with `OMH_PROOFREAD=1`. Only plain HTTP to a loopback address is accepted
+  (`OMH_PROOFREAD_URL`, default `http://127.0.0.1:8081/v2/check`); masked fields, commands, code, images and paste
+  chips are never sent. OMH does not install or start LanguageTool (`brew install languagetool`). Contributed by
+  @DanRioDev (#2948).
+
+- **A listed backlog of code changes is made in the session, not split into child agents.** A request that hands
+  over four or more separate code changes and asks for all of them is still recognized, so it no longer lands on an
+  unrelated workflow because of one item's word. It now gets an answer in the same session (`code_backlog`): the
+  changes are made one after another, with no dag-ulw graph and no child agents. In paired runs on a five-part,
+  six-thousand-line job, splitting such a backlog finished later than Hermes alone at the same quality. Asking for
+  dag-ulw by name still runs the list as a graph.
+- **OMH skills load whole on every host they ship to, and `omh skill-eval` checks any skill folder the same way.**
+  Every situation clause now ends inside Hermes' 60-character index window. The portable descriptions
+  (`.agents/skills`, `.claude/skills`) are the situation clause plus the start of what the skill does, with the
+  trigger list kept in the body, so the pack fits Claude Code's and Codex's 8,000-character skill list. A portable
+  body over OpenClaw's read cap moves its Catalog Metadata into `references/details.md`, and the eight toolkit
+  skills name `toolkit/README.md` in SKILL.md itself. Measured with NVIDIA SkillEvaluator 1.0.1 on a5649293 →
+  this branch: Hermes clipped situation clauses 20 → 0; `.agents` pack descriptions 42,581 → 7,442 characters;
+  `.claude` copy 16,474 → 7,442; OpenClaw over-read-cap bodies 7 → 0; toolkit README named 0/8 → 8/8. The new
+  `omh skill-eval PATH` (offline, stdlib) reports per host whether Hermes, Claude Code, Codex, OpenClaw, OpenCode
+  and Copilot CLI load a skill, load it degraded, or skip it, with each finding's source, and marks a row
+  `unverified` when no recorded host fact covers the input (unparsed YAML, say); `--catalog` checks a whole
+  folder, category folders included, and `--strict` exits 1 on any degraded or unverified row. The
+  `omh-skill-eval` skill runs it before a skill ships, and a test now runs the same checker over the three shipped
+  packs (#2995).
+- **`show-reel` has a cut-sheet lane for films written as a shot contract.** A new opt-in reference, `cut-sheet.md`,
+  covers cut-driven sequences of 30 s or less handed to a builder or a text-to-video generator, and remakes of a
+  supplied reference video. It opens with one contract line (ratio, duration, exact cut count, fps, palette), locks
+  the subject in observable markers with a never-redesign clause repeated in every prompt chunk, and writes one
+  timecoded row per cut, each compositionally different from its neighbours with a named exit transition, inside a
+  closed editing vocabulary. Sound is written with the rows (a named peak, a cold ending, SFX onsets aligned to the
+  cut), a remake measures the reference's cut times and audio onsets before any row is written, and a delegated
+  build is reviewed in numbered, measurable FIX rounds. The brief, rights and the short-promo one-scene rule still
+  apply.
+- **The OMH TUI's proofreader keeps a local dictionary.** On a spelling issue, Alt+P now offers Add to dictionary
+  beside the replacements: the word's spelling marks hide in every OMH TUI on that OMH home, and Alt+P on it later
+  offers Remove from dictionary. The picker's Skip row is gone (Cancel and Esc already did the same). Grammar
+  corrections are never hidden by a saved or unsaved spelling, the word list is read and saved off the screen's
+  thread, and a damaged dictionary file is never overwritten. Words are kept in
+  `<omh_home>/proofread/dictionary.txt`; a word with an apostrophe or hyphen gets no dictionary action. Contributed
+  by @DanRioDev (#2996).
+
+- **The OMH TUI's waiting row says what it waits on.** Between turns the row above the composer named nothing
+  (`✻ Waiting… (33m 47s · 1 agent · terminal)`). It now names the longest wait from structure only: a background
+  process by the words in command position of its command (`Waiting for CI` with the PR number, `Deploying`,
+  `Testing`, `Building`, `Installing`, `Rendering`, `Pushing`, `Downloading`, `Sleeping` with the time left), a
+  process woken on a match by its first pattern (`Watching for "READY"`), a dag-ulw run by its name with its nodes
+  done and failed, and a single child as `Reviewing`, `Researching` or `Writing` with its model. Other waits are
+  counted after it (`+1 test run · 1 agent`); a narrow terminal falls back to the old row. As the wait ends, one muted
+  row says so for 3 seconds (`✓ Review finished`, `✗ … failed`, `· Tests ended` for a process, which has no exit
+  code). During a turn, `? waiting on you` now reads `? waiting for your approval` or `? waiting for your answer`.
+
+- **A tool call no longer re-parses an unchanged profile `config.yaml` to bind its OMH home.** Every
+  `pre_tool_call`/`post_tool_call` callback resolves the profile's OMH home, and each resolution ran Hermes' validating
+  parse of the whole `config.yaml`. The plugin now keeps that one validated parse per file, keyed on a SHA-256 of the
+  bytes it read on that call, and reuses it only while the file still holds exactly those bytes and the same host
+  validator is installed. A parse is kept only when Hermes' own YAML reader turns exactly those bytes into the same
+  mapping, so a file swapped and restored while the validator ran (A, then B, then A again) is never remembered as
+  B's parse. An absent or unreadable file, a config backend other than the local file, or a write during the parse
+  goes through Hermes' own validator. Path resolution, the managed and effective config comparison, launch fallback
+  and secret ownership still run on every call. Measured on a Mac16,7 (Apple M4 Pro, macOS 26.6.2, Hermes'
+  CPython 3.11.16) with Hermes' real file-backend validator and a 46,614-byte synthetic `config.yaml`, 12 alternating
+  fresh processes per arm, 20 warm calls each, medians of per-process medians: a warm `resolve_homes()` went from
+  5.76 ms to 0.22 ms, and the two bindings `pre_tool_call` resolves before any gate from 5.75 ms to 0.24 ms; the cold
+  first call, which now also parses the bytes it keyed on with Hermes' reader, went from 19.8 ms to 25.4 ms. The
+  contributor's version, which cached the whole binding, measured
+  0.03 ms warm in the same harness, but it could hand back a stale home after a same-size rewrite or a changed path
+  alias. Thanks @zangetsu787 (#2973).
+
+- **A delegation route write no longer drops a setting saved while it ran.** OMH built the new `config.yaml` from
+  the copy it validated, so a `hermes config set` landing in between (observed: `context_file_max_chars` reset to
+  unset, repeatedly) was overwritten. The route writer now re-reads the file just before replacing it and applies
+  only the three route keys (`delegation.model`, `provider`, `reasoning_effort`) to that read, retrying up to five
+  times while the file keeps changing, and leaves the file untouched when nothing would change. Every check (a
+  fallback's or restore's expected route, the endpoint guard, the unsupported-mapping refusal) runs on that same
+  read; a change to the route keys themselves is refused rather than overwritten, and the baseline put back at turn
+  end is the route the write really replaced. This is best effort: Hermes' CLI takes no OMH lock, so an edit landing
+  in the last moment between OMH's final check and the rename is still lost. Fixes #2998. Reported and first fixed
+  by @OptionalCoin in #2999.
+
+- **Hermes Bug Hunter: the false-alarm benchmark gets traps a strong reviewer actually falls for.** In the first
+  live run (3 runs per case per arm) both arms raised 3 false alarms in 33 trap runs, all on the one trap whose proof
+  sits outside the hunk (a lock the caller holds); the other 10 traps were judged clean every time, so the set could
+  not show a difference. `benchmarks/review-false-alarms` adds 12 traps of that shape across Python, JavaScript and
+  Go, each with the files that prove it safe in `context/` (a sort done two files upstream, an `Atoi` error a regex
+  rules out, a map written only before the server starts, a depth the settings loader bounds), and 4 controls whose
+  bug also shows only with a file outside the hunk, so an over-cautious reviewer still loses hits. The corpus goes
+  from 11 traps and 6 controls to 23 and 10.
+- **The OMH TUI's send-now key reaches a queued prompt with images.** A prompt with an image sent with Enter during a
+  turn queued (`⧗`) with no `ctrl+enter to send now` row under it, and Ctrl+Enter on the empty composer did nothing, so
+  the only way to send it before the turn ended was to retype it. Its queue row now names the send-now key, as Claude
+  Code's `Queued · ctrl+enter to send now` does, and the key (Ctrl+J too) stops the turn and sends the prompt with its
+  images as soon as it ends, the same cut-in Ctrl+Enter already made from the composer. It is never sent as a text-only
+  steer; a queued slash command or `!` line still waits its turn, and so does a second image prompt while one cut-in
+  waits.
+
+- **A parked dag node past its wake time stops spinning under the composer.** A node parked on a background process
+  or a CI run kept its spinner and `until 16:30` hours after 16:30, so a run whose wait was long over read as still
+  moving. Past its `wake_at` the node now reads `due`, with its time since it became due, and its detail row says
+  `due · waits for the parent · since 16:30` instead of the handle it no longer waits on. Its row stops turning, and
+  the layer row, the header and the box view count it `due`, not `parked`. Before its wake time nothing changes.
+
+- **The OMH TUI folds consecutive calls of one tool into one row.** Six `terminal` calls in a row used to take about
+  twenty rows: a rail, a command row and an output row each, two blank rows between them. They now read as one
+  `● terminal · 6 calls  3.1s` row with each call's command and time under it, so the commands stay readable while
+  what each printed waits for Ctrl+O, which unfolds the run into the calls' own rows. A call with an answer under it,
+  a diff or recalled records, or a failed or refused call keeps its own row; a call of another tool ends the run.
+  Resumed sessions fold the same way.
 
 ## 4.0.8 - 2026-11-15
 
@@ -300,6 +925,98 @@ All notable changes will be documented here.
   refused; a plain-HTTP ask never goes through `HTTP_PROXY`, so the key is not
   sent in clear to a proxy; and `typesafe_model` never applies to TypeSafe's
   own host however it is spelled. Thanks @brentkearney. (#2716)
+- **omher 1.1.0.** TERMINALS split into panes and come back after a restart, bots can follow a terminal by its link,
+  and CLI art draws solid.
+  - **Split:** a TERMINALS session splits right (⌘D) or down (⌘⇧D) into up to four panes, with pane keys for close,
+    focus, zoom and even sizes (Ctrl-based on Windows and Linux); unfocused panes dim, Plans shows a clickable minimap,
+    and the split comes back after a restart. The bottom panel splits too, rings and takes dropped files. (#2993, #3000)
+  - **Restore:** Claude Code and Codex terminals that were running when omher quit continue their own conversation
+    after a restart, with the old output shown dimmed above (Settings › Terminal › History). (#2993)
+  - **Terminal links:** every TERMINALS session has an `omher://terminal/<id>` link (row menu or ⌘⇧C) shown as an omher
+    chip with the session's live state. A bot given the link can read the terminal's title, state and last line, and
+    can ask to type a prompt into it; nothing is typed until you press Allow on that request. Off on Windows. (#3000)
+  - **Terminal engine:** xterm 6.1 with Shift+Enter as its own key for Claude Code and Codex, inline images, prompt
+    marks with ⌘↑/⌘↓, folder and progress from the shell, a paste guard for multi-line pastes, and case and regex find.
+    Block art such as Claude Code's mascot draws solid (GPU renderer on Auto), and no dark bar sits under the last
+    row. (#2983, #2993, #3000)
+  - **Chat:** every message shows Read once the bot has it and a steer shows how the bot took it; a Slack briefing
+    sets itself up for a bot with Slack (`omher-brief`). (#2992, #2994)
+  - **Threads:** New thread works on Hermes' current gateway again, and the empty "+ New thread" line under each bot is
+    gone (the bot row's + and `./thread` open one). (#2987, #2990)
+- **omher 1.0.0.** omher is out of beta: a new user's one command installs everything and ends in the bot's chat,
+  threads start from the chat box, and the main screens read right in every language.
+  - **Out of beta:** the install argument is `omher` (`curl -fsSL https://omher.app/omher | sh` is unchanged); the old
+    `omher@beta` still works, because every app up to 0.2.13 sends it from its first-run Install button. (#2956)
+  - **New users:** on a Mac with neither Hermes nor OMH the one-command install (and the app's first-run Install) no
+    longer stops right after Hermes: the installers find Hermes' new packaged layout (no `venv`) through its launcher,
+    as the app does, and finish in about two minutes with the app installed. The last lines say OMH is connected and
+    point at the sign-in line above the chat box; the model menu says the bot has no AI account yet, with a gray dot
+    instead of a green one. (#2962)
+  - **Threads:** `./thread` in the chat box opens a new thread (`./thread <text>` sends the text there as its first
+    message, never to the main chat); each bot's thread list ends in a "+ New thread" line, a hovered bot row shows a
+    new-thread button, and the row menu sets New thread apart from the bot's management items. A thread block the bot
+    quotes inside another code block no longer disappears from its answer. (#2961)
+  - **1.0 usability pass:** sidebar search shows "No bot named …"; model names and profile ids show whole; Korean wraps
+    between words; the side panel, routines and Schedule read in the UI language; leftover SESSIONS wording says
+    Terminals; sidebar previews drop markdown list markers; Settings › Agents entries are no longer offered in
+    TERMINALS. (#2960)
+  - **Automations:** Run now is a quiet text action that asks "Run it now, outside its schedule?" first. (#2966)
+  - **Waiting messages:** a message typed while the bot answers waits with buttons instead of a menu: ↵ steers it into
+    the running answer (or sends it now for an agent with no steer), ↓ puts it back in the box, × drops it; a steered
+    message reads as you typed it after the chat reopens, never in Hermes' model frame. (#2965, #2964)
+- **omher 0.2.14.** Many open terminals stay light, and Codex's terminal rows show the plain OpenAI mark.
+  - **Many terminals:** a hidden terminal's output re-renders only its own TERMINALS row and draws nothing until shown;
+    one hidden and quiet for two minutes gives its scrollback back and comes back exactly as it was (cursor, tab stops,
+    scroll position); one shared thread watches every session's program. With 20 terminals and 19 hidden ones
+    printing, script time over 8 s drops from 1333 ms to 124 ms, and after the park wait memory drops from 205.5 MB
+    to 35.5 MB. A terminal is also fitted again when the GPU renderer arrives late, so it no longer stays a few
+    columns too narrow. (#2945)
+  - **Codex mark:** Codex rows show the bare OpenAI (GPT) mark, and terminal-row marks have no frame around them.
+    (#2949)
+- **omher 0.2.13.** Terminals behave like a real terminal, a routine that keeps failing is one line in the chat, and
+  macOS installs from one Terminal command without the "Not Opened" warning.
+  - **Terminals:** `exit` or Ctrl+D closes a shell row as its x does; when Claude Code, Codex or any CLI ends, the
+    same row goes on as your login shell in that folder and its mark follows what you start next; Korean typed with
+    the macOS 2-Set input source no longer drops or repeats syllables, and a fast Enter keeps the last one; terminals
+    draw in the bundled JetBrains Mono at 13px with Symbols Nerd Font Mono, as Otty does. (#2936)
+  - **Routines:** the same routine failing again updates one line (`Routine · sso-refresh · not delivered ×12 ·
+    03:56–09:37`) with one unread, and Hermes' failure states read as "not delivered" and "blocked by config". (#2932)
+  - **macOS install:** omher.app's macOS button opens a popup with `curl -fsSL https://omher.app/omher | sh` already
+    copied, a `curl` install carries no quarantine flag so the app opens straight away, and the installer opens omher
+    when it ends (`OMH_OMHER_NO_OPEN=1` or `CI` skip it; the Windows installer does the same). (#2929, #2934, #2940)
+  - **Sessions elsewhere stay out of the chat:** answers from the bot's Slack, Discord and cron sessions no longer sit
+    between this chat's messages; the header's "N other places" and the side panel list them, each opens its thread,
+    and Reply there sits on the row. (#2933)
+- **omher 0.2.12.** Terminal sessions come back as TERMINALS with each CLI's logo, a Tasks page brings GitHub, GitLab
+  and Linear issues into the app, and reasoning levels and technical words read as written in every language.
+  - **TERMINALS:** Shell or any CLI with a terminal view starts from the + menu in a folder you pick; rows group by
+    folder with the git branch, show the official logo of the CLI running inside and a live/exit status, BOTS and
+    TERMINALS scroll on their own, and bots scrolled out of view sit in a dock at the bottom. (#2912)
+  - **Tasks:** a sidebar row and a page for GitHub, GitLab and Linear issues and PRs, read-only through your own `gh`
+    / `glab`, with a detail drawer and Start in thread, which hands an issue to a bot. (#2908)
+  - **Removing a thread that still holds waiting messages no longer sends them.** (#2910)
+  - **Reasoning levels read as their own names** (none, low, medium, high, xhigh, max) in the model pill, the picker
+    and Settings in every language. (#2918)
+  - **Technical words and setting values stay in English in Korean, Japanese and Chinese** (permission modes, Steer,
+    Diff, Worktree, exit codes, colour set names); sentences around them stay translated. (#2920)
+- **omher 0.2.11.** Messages typed mid-answer wait behind a ↵ menu, a reply quotes what it answers, work happens in
+  threads under a bot, and a bot can watch a Slack or Discord channel for you.
+  - **A message sent while the bot answers waits behind ↵.** Send now, Steer (joins the running answer), Edit or
+    Delete; a steer Hermes could not confirm is never sent twice, and waiting messages survive a reload. (#2905)
+  - **An answer to several messages quotes each one, Instagram-DM style,** as faint one-line bubbles above it; a
+    click shows that message. (#2901)
+  - **One bubble per turn, in the order things happened;** a message sent while an answer shows stays below it. (#2900)
+  - **Threads under a bot:** right-click a bot for a new thread, live state per thread, and a step another agent ran
+    opens as a read-only chat. (#2906)
+  - **Channel watch alerts arrive as "Watch · <name>",** with a notification, an unread and the Dock badge;
+    Automations lists each watch with its last check and alert. (#2904)
+  - **Settings, Automations and Plugins have a back arrow at the top left.** (#2911)
+  - **A routine that ran fine no longer adds a line to the chat;** only a failed run does, and every run stays on the
+    Automations page. (#2913)
+  - **Plans:** a spinner and seconds on running steps (#2899); Dependencies is one row per task (#2903).
+  - **Approval buttons have colours:** deny red, allow once purple, allow for this session orange. (#2902)
+  - **Attached images show as large tiles** (#2898); **the side panel is resized with the mouse** (#2897); **bots
+    reorder by drag** (#2896).
 - **omher 0.2.10.** Bots on another computer join over SSH, the sidebar starts with one bot and adds the others from
   +, and you can add your own ACP coding agent to SESSIONS, by hand or from a bot's draft.
   - **Connect a Hermes on another computer over SSH.** The sidebar + has "Connect over SSH": pick a host from

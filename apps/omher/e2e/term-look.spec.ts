@@ -55,7 +55,7 @@ async function open(page: Page) {
       for (const k of ["omher.term", "omher.theme", "omher.sessions.recent", "omher.sessions.open", "omher.resume"]) localStorage.removeItem(k);
     }
     const w = window as unknown as { __omherPickFolder: string; __omherMockAgents: string[] };
-    w.__omherPickFolder = "/Users/you/code/web-app";
+    w.__omherPickFolder = "/home/you/code/web-app";
     w.__omherMockAgents = ["claude", "codex", "omh"];
     // the Option row is macOS's: the same page on every machine that runs this spec
     Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
@@ -67,11 +67,9 @@ async function open(page: Page) {
 /** A Claude Code session opened as a terminal, its program's first output on screen. */
 async function terminalClaude(page: Page) {
   await page.getByTestId("session-new").click();
-  await page.getByTestId("session-agent-claude").click();
   await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
-  await page.getByTestId("session-way-terminal").click();
-  await page.getByTestId("session-go").click();
+  await page.getByTestId("session-agent-claude").click();
   await expect(page.getByTestId("terminal")).toBeVisible();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
 }
@@ -144,11 +142,11 @@ test("Dracula picked for dark reaches the open terminal at once and is still the
   expect(now?.wrapBg).toBe("rgb(40, 42, 54)");
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
 
-  // restart: the session comes back not running; resumed, its terminal is made with the pick
+  // restart: a Claude Code terminal continues its conversation by itself (rule 11); opened, its terminal has the pick
   await expect.poll(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem("omher.resume") || "null")))?.sessions?.[0]?.open).toBe("terminal");
   await page.evaluate(() => sessionStorage.setItem("__kept", "1"));
   await page.reload();
-  await page.getByTestId("session-resume").click();
+  await session(page);
   await expect(page.getByTestId("terminal")).toBeVisible();
   await expect(page.locator(".xterm-rows")).toContainText("(mock)");
   expect((await look(page))?.background).toBe("#282a36");
@@ -243,7 +241,7 @@ test("font size 16 changes how many columns fit, and the program is told the new
   await open(page);
   await terminalClaude(page);
   const before = await look(page);
-  expect(before?.fontSize).toBe(12.5);
+  expect(before?.fontSize).toBe(13);
   expect(before!.cols).toBeGreaterThan(40);
 
   await settings(page);

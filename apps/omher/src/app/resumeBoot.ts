@@ -35,12 +35,13 @@ function snapshot(): ResumeSnap {
       session: st.ui.session,
       panelOpen: st.ui.panelOpen,
       panelTab: st.ui.panelTab,
-      runsFull: st.ui.runsFull,
+      runsFull: st.ui.panelMax, // the maximised panel (the key predates it)
       runId: st.ui.runId,
       // a held message (steer queue) lives only in memory: it comes back in its chat's box, never lost
       drafts: heldDrafts(st, allDrafts()),
       sessions: list.map((r) => ({
         id: r.id,
+        ...(r.linkId ? { linkId: r.linkId } : {}),
         agent: r.agent,
         cwd: r.cwd,
         startedAt: r.startedAt,
@@ -61,6 +62,7 @@ function snapshot(): ResumeSnap {
         ...(r.promptTitle ? { promptTitle: r.promptTitle } : {}),
         ...(r.mode ? { mode: r.mode } : {}),
         ...(r.effort ? { effort: r.effort } : {}),
+        ...(r.shell ? { shell: r.shell } : {}),
       })),
       messages: (id) => {
         const key = ss.chatKey(id);

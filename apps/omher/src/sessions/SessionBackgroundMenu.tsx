@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import { openNewSessionMenu } from "./newMenu";
 
-/** A background-only entry to the existing + chooser. Opening either menu starts nothing. */
+/** A background-only entry to the existing + chooser. Opening the menu starts nothing. */
 export function SessionBackgroundMenu({ at, onClose }: { at: { x: number; y: number; focus: HTMLElement }; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ x: at.x, y: at.y });
@@ -45,7 +45,10 @@ export function SessionBackgroundMenu({ at, onClose }: { at: { x: number; y: num
           dismiss();
         } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
           e.preventDefault();
-          ref.current?.querySelector("button")?.focus();
+          const items = [...(ref.current?.querySelectorAll<HTMLElement>("button") ?? [])];
+          const at = items.indexOf(document.activeElement as HTMLElement);
+          const to = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : (at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+          items[to]?.focus();
         }
       }}
     >

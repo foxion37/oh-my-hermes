@@ -88,8 +88,11 @@ DEFINITION = SkillDefinition(
         "`deep` or `deep-work` is a routing failure. A `role=review` node takes category `review` where your routes serve it; a "
         "`role=baseline` node stays `quick` or `unspecified-low`; a `role=verify` node judges the run goal and "
         "baseline exemptions, so climb the ladder for it; it is not the `ultrabrain` node.",
-        "Write every node prompt self-contained, in order: TASK, DELIVERABLE, SCOPE (what it may read and write), "
-        "VERIFY (the literal command and expected result), STOP WHEN.",
+        # OpenAI "Prompting GPT-6.2 in Codex" (read 2026-11-20): brief like a colleague, say what you'll look for.
+        "Write every node prompt self-contained, as you would brief a colleague who knows the project but not this "
+        "conversation, in order: TASK, DELIVERABLE, SCOPE (what it may read and write), "
+        "VERIFY (the literal command and expected result), STOP WHEN. Give a build node `review_focus`: what you "
+        "will look for when you read its work.",
         "`depends_on` only orders nodes; data moves through the handoff files `omh_dag` names, never through "
         "the parent's memory.",
         "Before full-suite verification, run a `baseline` node before changes and record in its handoff each "
@@ -108,6 +111,8 @@ DEFINITION = SkillDefinition(
         "Goal loop: verify, repair, extend, verify. A failed check gets repair nodes (`omh_dag action=repair`, two "
         "cycles per node, the last re-plans); when every node passed but the goal check finds work missing, add it to the same run "
         "(`omh_dag action=extend`, two rounds per run). Past either limit, report what is still open.",
+        "A familiar re-run of the same goal may pass `carry_forward` (the base revision) at define: nodes an earlier "
+        "run at that base accepted unchanged are carried, not run again, and listed; the verify node always runs.",
         f"Unknown path: scout first; see 'When the path is unknown' in `{DAG_ULW_RUN_LOOP_REFERENCE}`.",
         "On a messenger, each completion turn's reply is the run's one status line, and dispatch goes one call "
         "per layer and category so the posts stay bounded; load "
@@ -139,14 +144,22 @@ DEFINITION = SkillDefinition(
         f"{native_tool_presence_clause(NATIVE_TODO_TOOL, code=True)} (OMH mirrors it), else `omh_todo`; an accepted plan stays in `omh_todo`. One item per "
         "layer, named for what it delivers, never a list of its nodes (the panel draws those); advance it as each "
         "layer settles.",
-        "For each call `omh_dag` returns, run its route (`omh_delegate_route`, set or fallback as given), then "
+        "Before defining nodes, read `omh_role action=list` and compare built-in and custom identity responsibilities "
+        "equally. User instructions and project ownership win. Read suitable definitions with `action=read identity=REFERENCE`; "
+        "record the choice in each node's optional `identity` (`builtin:name` or `custom:name`). Omit it when none fits. "
+        "Identity is prompt guidance; `role` remains build/baseline/verify/review and `category` describes the work.",
+        "For each call `omh_dag` returns, run its route (`omh_delegate_route`, set or fallback as given), check "
+        "that it succeeded (a refusal or exhausted chain stops dispatch), then "
         "`delegate_task` with the tasks unchanged; never more calls than it returned. A call whose route names a "
         "`backend` (Hermes' model_map or profile_routes) runs no route tool: its tasks already carry what that "
-        "backend takes. Then end the turn with one status line; never wait or poll.",
+        "backend takes. Then end the turn with one status line; never wait or poll. When `delegate_task` returns "
+        "the children's results inside the call (a one-shot or other finite session), settle them and dispatch what "
+        "settle returns in the same turn instead: no completion comes back as a later turn there.",
         "On each completion read the node's handoff file and call `omh_dag action=settle` (accepted, failed, or "
         "blocked; a provider error is failed with provider_error); a verify node with criteria is accepted only when "
         "every `CRITERION` line says met, failed when one is unmet, blocked when one could not be checked here. "
-        "Dispatch what it returns in the same turn.",
+        "A handoff with an `ESCALATE:` line is settled `escalated`, that question as the reason; never answer it "
+        "yourself and accept. Dispatch what it returns in the same turn.",
         "When the run reports done, check each node against its SCOPE and the goal criteria: extend the run when "
         "work is missing, otherwise report.",
     ),
@@ -235,7 +248,22 @@ def run_loop_reference() -> str:
    on), and a graph of 5+ nodes where at least 80% of its two or more build nodes sit on one chain
    (`serial_graph`; baseline, review and verify nodes do not count: split the build work into parallel
    lanes where it allows, or fold a small step that only follows another into the node it follows).
-2. The result carries `calls`. Each call is one category (and route: a node retried after a provider error
+2. Before defining nodes, call `omh_role action=list`: its bounded common directory includes built-in and custom
+   identities, with omissions disclosed. Compare responsibilities without an origin preference; user instructions
+   and project ownership take precedence. Read a suitable definition with `omh_role action=read identity=REFERENCE`
+   and record `identity: builtin:name` or `identity: custom:name` on its node; omit it when none fits. Keep `role`
+   (build/baseline/verify/review) and `category` independent. Define, repair and extend accept the same identity field.
+   The result carries `calls`. Each call groups category, identity and its own retry position. Run the complete
+   returned route arguments unchanged and dispatch only after success: structured identity calls use `set` with
+   `attempt` (zero-based chain position),
+   so interleaved nodes never use another node's fallback position. A configured chain supplies models; a definition
+   without a chain uses category. The child's verified direct-node binding supplies its prompt through the fenced
+   hook channel before any example markers; continuations retain it, grandchildren do not inherit it. Missing,
+   disabled or changed selections block delivery. `profile_routes` and unknown backends cannot apply a selected
+   identity; DAG external-owner export also refuses selected identities because its contract cannot carry both
+   prompt and model policy. A spent child budget cannot substitute the parent session for a selected identity.
+   Old exports and parent fallback without identity keep their existing behavior.
+   Each call is one category (and route: a node retried after a provider error
    goes in a call of its own): run its `route` with `omh_delegate_route` (`set`, or `fallback`), then one
    `delegate_task` with its `tasks` unchanged. The goal ends with `[dag:<run>/<node>]`; that marker is how
    OMH ties the child to its node. A node after a repaired one is told to read the repair's handoff files.
@@ -248,7 +276,8 @@ def run_loop_reference() -> str:
    normal one; elsewhere the normal one leads. Mark a node `local: true` when its material must not leave the
    machine (customer data, keys, private documents): it runs only on a `model_map` option whose `base_url` is
    on this machine or its private network (or provider `lmstudio`/`llamacpp`), a retry takes the next local
-   one, and with none left it is listed in `held_for_local_model`, never sent to a cloud model. Tell the
+   one. With an identity chain only matching local options in that chain qualify; no unrelated local model
+   substitutes for it. With none left it is listed in `held_for_local_model`, never sent to a cloud model. Tell the
    person; they add a local option or the node is settled blocked.
 3. `calls` never exceeds the free background slots (`slots.free`): a call past them would run blocking.
    In a one-shot session, `calls` also never carries more tasks than the remaining one-shot budget;
@@ -257,7 +286,9 @@ def run_loop_reference() -> str:
    `for_parent: [...]` and the say tells you to do each node yourself, write its handoff at the path
    the say gives, and settle it, without `delegate_task` -- those nodes are never offered to a child again.
    `held_for_slots` also lists ready nodes left for the next turn when no free background slot remains.
-4. End the turn with one status line. Each completion re-enters as a new turn.
+4. End the turn with one status line. Each completion re-enters as a new turn. When `delegate_task` returns the
+   children's results inside the call instead (a finite one-shot session joins them there), nothing re-enters:
+   settle each node from its handoff and dispatch what settle returns in the same turn, until the run is done.
 5. On a completion, read the node's handoff file, then `omh_dag action=settle node=<id> outcome=<...>`.
    `accepted` is refused while the handoff file is missing or when Hermes reported the child failed.
    On a Docker or SSH terminal the handoff files live in that terminal, under its user's home, and OMH
@@ -282,6 +313,12 @@ within 24 hours). The node stays live as `parked`, spends no repair cycle, and c
 At the deadline call `ready`: the same node gets a fresh attempt naming the handle, not replacement
 work. OMH starts no timer or poll. After three parks per node, another park is refused with
 `park_limit_reached`; settle accepted, failed or blocked instead. Cancel turns parked nodes cancelled.
+
+A child that stopped before editing and wrote an `ESCALATE: <question>` line into its handoff asked for a
+stronger model. Settle it `outcome=escalated reason=<that question>` and dispatch what settle returns: the node
+comes back one category up (quick, unspecified-low, unspecified-high, ultrabrain), at most twice, briefed with
+the question. Never answer the question yourself and accept. A node pinned to an `identity` keeps
+that identity's model chain, so it cannot escalate; pick another identity for it instead.
 
 ## Goal criteria
 

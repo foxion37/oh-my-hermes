@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Terminal } from "@xterm/xterm";
-import { applyLook, DARK_BG_MIN_CONTRAST, LIGHT_BG_MIN_CONTRAST, termContrast, termFont, termOptions } from "./look";
+import { applyLook, DARK_BG_MIN_CONTRAST, GPU_OPTIONS, LIGHT_BG_MIN_CONTRAST, termContrast, termFont, termOptions } from "./look";
 import { SAMPLE_COLS, SAMPLE_ROWS, SAMPLE_SELECT, SAMPLE_WIDE_COLS, termSample } from "./look-sample";
 import { TERM_DEFAULTS, type TermSettings } from "./settings";
 import { TERM_THEMES, termThemeById } from "./themes";
@@ -9,10 +9,10 @@ const dark = termThemeById("omher-dark")!.theme;
 const light = termThemeById("omher-light")!.theme;
 
 describe("a terminal's look", () => {
-  it("with nothing changed, a terminal starts with the options it had before there were settings", () => {
+  it("with nothing changed, a terminal starts in the bundled JetBrains Mono at 13px (Otty's), the other options as before", () => {
     expect(termOptions(dark, TERM_DEFAULTS)).toEqual({
-      fontFamily: "monospace",
-      fontSize: 12.5,
+      fontFamily: '"JetBrains Mono", "Symbols Nerd Font Mono", monospace',
+      fontSize: 13,
       lineHeight: 1.2,
       cursorStyle: "block",
       cursorInactiveStyle: "outline",
@@ -22,8 +22,28 @@ describe("a terminal's look", () => {
       minimumContrastRatio: 4.5,
       drawBoldTextInBrightColors: true,
       macOptionIsMeta: true,
+      macOptionClickForcesSelection: true,
+      rescaleOverlappingGlyphs: true,
+      vtExtensions: { kittyKeyboard: true },
       theme: dark,
     });
+  });
+
+  it("Option+drag selects inside a program that reports the mouse; wide glyphs fit their cell; the GPU renderer draws box and Powerline glyphs itself", () => {
+    expect(termOptions(dark, TERM_DEFAULTS)).toMatchObject({ macOptionClickForcesSelection: true, rescaleOverlappingGlyphs: true });
+    // both whatever Option sends
+    expect(termOptions(dark, { ...TERM_DEFAULTS, optionIsMeta: false })).toMatchObject({ macOptionClickForcesSelection: true, macOptionIsMeta: false });
+    expect(GPU_OPTIONS).toEqual({ customGlyphs: true });
+  });
+
+  it("the Kitty keyboard protocol follows its setting, on a new terminal and on an open one", () => {
+    expect(termOptions(dark, { ...TERM_DEFAULTS, kittyKeys: false }).vtExtensions).toEqual({ kittyKeyboard: false });
+    const options: Record<string, unknown> = {};
+    const term = { options } as unknown as Terminal;
+    applyLook(term, dark, { ...TERM_DEFAULTS, kittyKeys: false });
+    expect(options.vtExtensions).toEqual({ kittyKeyboard: false });
+    applyLook(term, dark, TERM_DEFAULTS);
+    expect(options.vtExtensions).toEqual({ kittyKeyboard: true });
   });
 
   it("bold text takes the theme's bright colour, except on a theme whose bright slots are greys (Solarized), where it keeps its own", () => {
@@ -53,7 +73,7 @@ describe("a terminal's look", () => {
       optionIsMeta: false,
     };
     expect(termOptions(light, s)).toMatchObject({
-      fontFamily: '"Menlo", monospace',
+      fontFamily: '"Menlo", "JetBrains Mono", "Symbols Nerd Font Mono", monospace',
       fontSize: 16,
       lineHeight: 1.5,
       cursorStyle: "bar",
@@ -83,13 +103,14 @@ describe("a terminal's look", () => {
     for (const t of TERM_THEMES) expect(termOptions(t.theme, { ...TERM_DEFAULTS, contrast: "auto" }).minimumContrastRatio, t.name).toBe(t.kind === "light" ? 4.5 : 3);
   });
 
-  it("puts the person's fonts first, each quoted, with the app's monospace stack behind", () => {
-    expect(termFont("", "M")).toBe("M");
-    expect(termFont("   ", "M")).toBe("M");
-    expect(termFont("JetBrains Mono", "M")).toBe('"JetBrains Mono", M');
-    expect(termFont(`'Fira  Code' , "Menlo",monospace,`, "M")).toBe('"Fira Code", "Menlo", monospace, M');
+  it("puts the person's fonts first, each quoted, then the bundled fonts, with the app's monospace stack behind", () => {
+    expect(termFont("", "M")).toBe('"JetBrains Mono", "Symbols Nerd Font Mono", M');
+    expect(termFont("   ", "M")).toBe('"JetBrains Mono", "Symbols Nerd Font Mono", M');
+    // a bundled name the person typed is not repeated
+    expect(termFont("jetbrains mono", "M")).toBe('"jetbrains mono", "Symbols Nerd Font Mono", M');
+    expect(termFont(`'Fira  Code' , "Menlo",monospace,`, "M")).toBe('"Fira Code", "Menlo", monospace, "JetBrains Mono", "Symbols Nerd Font Mono", M');
     // a half-typed list is still a valid one
-    expect(termFont('"Fira Co', "M")).toBe('"Fira Co", M');
+    expect(termFont('"Fira Co', "M")).toBe('"Fira Co", "JetBrains Mono", "Symbols Nerd Font Mono", M');
   });
 
   it("applies the look again to an open terminal: every option, the scrollback limit too", () => {
@@ -100,7 +121,7 @@ describe("a terminal's look", () => {
     expect(options).toEqual({
       scrollback: 50000,
       theme: light,
-      fontFamily: '"Menlo", monospace',
+      fontFamily: '"Menlo", "JetBrains Mono", "Symbols Nerd Font Mono", monospace',
       fontSize: 18,
       lineHeight: 1.4,
       cursorStyle: "underline",
@@ -109,6 +130,7 @@ describe("a terminal's look", () => {
       minimumContrastRatio: 4.5,
       drawBoldTextInBrightColors: true,
       macOptionIsMeta: false,
+      vtExtensions: { kittyKeyboard: true },
     });
     applyLook(term, dark, { ...s, contrast: "auto" });
     expect(options.minimumContrastRatio).toBe(3);

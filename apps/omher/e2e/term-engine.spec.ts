@@ -32,7 +32,7 @@ async function open(page: Page, gpu: Gpu) {
     }
     localStorage.setItem("omher.term", JSON.stringify({ gpu: g }));
     const w = window as unknown as { __omherPickFolder: string; __omherMockAgents: string[] };
-    w.__omherPickFolder = "/Users/you/code/web-app";
+    w.__omherPickFolder = "/home/you/code/web-app";
     w.__omherMockAgents = ["claude", "codex", "omh"];
   }, gpu);
   await page.route("**/src/sessions/sessions.ts*", async (route) => {
@@ -47,11 +47,9 @@ async function open(page: Page, gpu: Gpu) {
 /** A new Claude Code session opened as a terminal; returns its session id. */
 async function newTerminal(page: Page): Promise<string> {
   await page.getByTestId("session-new").click();
-  await page.getByTestId("session-agent-claude").click();
   await page.getByTestId("session-folder").click();
   await page.getByTestId("session-choose").click();
-  await page.getByTestId("session-way-terminal").click();
-  await page.getByTestId("session-go").click();
+  await page.getByTestId("session-agent-claude").click();
   const term = page.getByTestId("terminal");
   await expect(term).toBeVisible();
   const id = (await term.getAttribute("data-session")) as string;
@@ -111,7 +109,7 @@ test("gpu off: no canvas, the add-on's chunk is never requested", async ({ page 
   expect(requested).toEqual([]);
 });
 
-test("gpu auto: where the rule says no (a software renderer, or macOS) the standard renderer draws and the chunk is never requested", async ({ page }) => {
+test("gpu auto: where the rule says no (a software renderer, as the test browser has) the standard renderer draws and the chunk is never requested", async ({ page }) => {
   const requested: string[] = [];
   page.on("request", (r) => {
     if (/addon-webgl/.test(r.url())) requested.push(r.url());
@@ -174,7 +172,7 @@ test("20 terminal sessions one after another: none blank, none without its rende
   expect(held).toBe(1);
 });
 
-test("Unicode 11 widths: 한글 😀 表 puts the cursor where Unicode 11 says", async ({ page }) => {
+test("grapheme widths (Unicode 15, xterm's unicode-graphemes): 한글 😀 表 puts the cursor where Unicode 11 did", async ({ page }) => {
   await open(page, "off");
   await newTerminal(page);
   const r = await page.evaluate(async () => {
@@ -184,7 +182,7 @@ test("Unicode 11 widths: 한글 😀 表 puts the cursor where Unicode 11 says",
     return { x: t.buffer.active.cursorX, version: t.unicode.activeVersion };
   });
   // 한 2 + 글 2 + space 1 + 😀 2 + space 1 + 表 2
-  expect(r).toEqual({ x: 10, version: "11" });
+  expect(r).toEqual({ x: 10, version: "15-graphemes" });
 });
 
 test("feed: every done runs once, in order", async ({ page }) => {

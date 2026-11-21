@@ -12,6 +12,7 @@ import { peerDraftsAllowed, stripPeerDrafts } from "../../peers/draft";
 import { AgentChips } from "./AgentChip";
 import { draftsAllowed, stripDrafts } from "./agentDraft";
 import { t } from "../../i18n";
+import { hhmm } from "../../app/time";
 import { QueueMark, type QueueChoice, type QueueOffReasons } from "./QueueMark";
 import type { Quote } from "./answers";
 
@@ -28,14 +29,16 @@ export const Bubble = memo(function Bubble({
   live,
   onEdit,
   editKeepsFiles,
+  from,
   onQueue,
   queueBusy,
   queueOff,
   steeredTo,
+  last,
   quote,
   onQuote,
 }: {
-  item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "skills" | "wait" | "held" | "steered" | "steerUnknown" | "steerUnused">;
+  item: Pick<MessageItem, "kind" | "text" | "error" | "reply" | "files" | "skills" | "wait" | "held" | "steered" | "readAt" | "steerReply" | "steerUnknown" | "steerUnused">;
   streaming?: boolean;
   /** The bot whose face sits beside its bubble; `face` false keeps the indent without repeating it. */
   bot?: string;
@@ -48,12 +51,17 @@ export const Bubble = memo(function Bubble({
   onEdit?: () => void;
   /** The turn Edit takes back changed files: a quiet line beside it says they stay as they are. */
   editKeepsFiles?: boolean;
+  /** A user bubble someone else sent (a parent agent, in a read-only agent-to-agent chat): their small mark and name
+   *  above it. */
+  from?: ReactNode;
   /** A held message (steer queue): its ↵ mark's menu. */
   onQueue?: (c: QueueChoice) => void;
   /** Its steer is on the way: the mark waits. */
   queueBusy?: boolean;
   /** The bot's name a steered message went to, for its line. */
   steeredTo?: string;
+  /** The person's last message in the chat: it carries the "Read" mark. */
+  last?: boolean;
   /** Menu items that are off, with their reasons (a SESSIONS chat's agent). */
   queueOff?: QueueOffReasons;
   /** A bot answer: the message of the person's it replies to, when that is not plain from where it sits; a click
@@ -65,6 +73,11 @@ export const Bubble = memo(function Bubble({
     const held = !!item.held;
     // a SESSIONS chat's waiting message carries the mark too (held by omher, or already with the agent)
     const marked = (held || item.wait === "queued" || !!item.steerUnknown) && !!onQueue;
+    // copy the prompt, as typed (on hover; it takes no room). Not a held one: it is not sent yet, and its ↓ puts it
+    // back in the box; one whose steer never answered may have reached the bot, so it has it (promptHistory.ts)
+    const copy = item.text.trim() && !(held && !item.steerUnknown) && (
+      <CopyButton className="msg-prompt" text={() => item.text} testId="copy-prompt" />
+    );
     return (
       <div
         className={`msg u${item.wait ? ` ${item.wait}` : ""}${held ? " held" : ""}`}
@@ -73,10 +86,16 @@ export const Bubble = memo(function Bubble({
         data-held={held || undefined}
         data-steered={item.steered || undefined}
       >
+        {from && (
+          <div className="msg-from" data-testid="bubble-from">
+            {from}
+          </div>
+        )}
         {(item.text || !item.files?.length) &&
           (marked && onQueue ? (
             // a held message: its ↵ mark before the bubble, on the bubble's first line
             <div className="msg-line">
+              {copy}
               <QueueMark onPick={onQueue} busy={queueBusy} off={queueOff} unknown={!!item.steerUnknown} />
               <div className="b">
                 <SkillText text={item.text} skills={item.skills} />
@@ -85,6 +104,7 @@ export const Bubble = memo(function Bubble({
           ) : (
             <div className="b">
               <SkillText text={item.text} skills={item.skills} />
+              {copy}
             </div>
           ))}
         {item.files?.length ? <SentFiles files={item.files} /> : null}
@@ -103,9 +123,25 @@ export const Bubble = memo(function Bubble({
             {queueBusy ? t("sq.steering") : t("ctl.queued")}
           </div>
         )}
-        {item.steered && (
+        {/* steered, before the bot has it (a reopened row with nothing after it): where it went */}
+        {item.steered && item.readAt === undefined && (
           <div className="msg-wait msg-steered" data-testid="bubble-steered">
             {t("sq.steered", { bot: steeredTo ?? "" })}
+          </div>
+        )}
+        {/* messenger-style receipt: the bot has it (sent, its turn started, or the steer was queued); under the last
+            message only, and under every steered one, so a steer shows it reached the running answer */}
+        {item.readAt !== undefined && (last || item.steered) && (
+          <div className="msg-wait msg-read" data-testid="bubble-read">
+            {item.readAt ? t("bub.readAt", { time: hhmm(new Date(item.readAt)) }) : t("bub.read")}
+          </div>
+        )}
+        {item.steered && item.steerReply && (
+          <div className="msg-wait msg-steer-reply" data-testid="bubble-steer-reply">
+            <span className="msg-steer-arrow" aria-hidden>
+              ↳
+            </span>
+            {item.steerReply}
           </div>
         )}
         {item.steerUnknown && (
@@ -180,7 +216,7 @@ export const Bubble = memo(function Bubble({
             <path d="M9 14 4 9l5-5" />
             <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
           </svg>
-          {quote.lines.length + quote.more === 1 ? t("bub.repliedTo1") : t("bub.repliedTo", { n: quote.lines.length + quote.more })}
+          {t("bub.repliedTo", { n: quote.lines.length + quote.more })}
         </span>
         {quote.more > 0 && <span className="msg-quote-n">{t("bub.quoteMore", { n: quote.more })}</span>}
         {quote.lines.map((l) => (

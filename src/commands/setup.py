@@ -1461,7 +1461,8 @@ def _refresh_tui_home(args: argparse.Namespace) -> dict[str, object] | None:
 
     Unless the OMH home's saved choice is `shared` (None then, so a profile
     left behind by `omh theme runtime shared` is not refreshed), and not on
-    Windows, where the OMH TUI does not run. The plugin bundle the profile
+    Windows, where bare `omh` never builds that profile: it is a tree of
+    symbolic links, which needs Developer Mode there. The plugin bundle the profile
     links moved with this update, and a skill or credential the root gained
     since the last launch is carried now rather than at the next `omh`. A
     failure is noted and never fails the update: the next bare `omh` builds
@@ -3657,11 +3658,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         payload["hermes_profiles"] = steps["hermes_profiles"]
     if args.profile_pack:
         payload["team_profiles"] = steps["team_profiles"]
+    exit_code = _setup_exit_code(payload)
     if _wants_json(args):
         _print_json(payload)
-    else:
-        _print_setup_summary(payload, language=language)
-    return _setup_exit_code(payload)
+        return exit_code
+    _print_setup_summary(payload, language=language)
+    onboarded = _finish_model_onboarding(args, paths, language, exit_code)
+    return exit_code if onboarded is None else onboarded
 
 
 def _noninteractive_rerun_command(argv: list[str]) -> str:
@@ -3867,7 +3870,12 @@ def _will_ask_model_chains_interview(args: argparse.Namespace, paths: OmhPaths) 
     """
     if hasattr(args, "_model_chains_interview_choice"):
         return False
-    return _stdin_is_tty()
+    if not _stdin_is_tty():
+        return False
+    # Where the model-setup conversation can open, it covers the chains too,
+    # so this question stays silent. Decided from the machine alone (not from
+    # the onboarding answer, which comes later), so the `[k/n]` plan holds.
+    return not _model_onboarding_available(paths)
 
 
 def _ask_model_chains_interview(args: argparse.Namespace, paths: OmhPaths, language: str) -> None:
@@ -3905,6 +3913,162 @@ def _ask_model_chains_interview(args: argparse.Namespace, paths: OmhPaths, langu
     from .model_chains import model_chains_interview
 
     model_chains_interview(paths)
+
+
+def _stdout_is_tty() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _model_onboarding_available(paths: OmhPaths) -> bool:
+    """Whether the model-setup conversation can open on this machine.
+
+    Reads only the terminal, the platform, PATH and the OMH TUI's own
+    preconditions (`omh_tui_blocker`), never an earlier answer: both terminal
+    ends, not Windows, `hermes` on PATH, and nothing that would make bare
+    `omh` fall back away from the OMH TUI.
+    """
+    if sys.platform == "win32":
+        return False
+    if not _stdin_is_tty() or not _stdout_is_tty():
+        return False
+    if shutil.which("hermes") is None:
+        return False
+    from ..tui.launch import omh_tui_blocker
+
+    return omh_tui_blocker(sys.stdin, sys.stdout, os.environ, Path(paths.hermes_home)) == ""
+
+
+def _will_ask_model_onboarding(args: argparse.Namespace, paths: OmhPaths) -> bool:
+    """Whether `_ask_model_onboarding_choice` puts a question on screen."""
+    if hasattr(args, "_model_onboarding_choice"):
+        return False
+    # `--interactive` wins the older wizard gate, but never this question: a
+    # `--yes` or `--no-interactive` beside it still means no ask, no launch.
+    if getattr(args, "yes", False) or getattr(args, "no_interactive", False):
+        return False
+    return _model_onboarding_available(paths)
+
+
+def _ask_model_onboarding_choice(args: argparse.Namespace, paths: OmhPaths, language: str) -> None:
+    """Ask, at most once, whether to open the model-setup conversation after setup.
+
+    Only reached from the interactive wizard (`_setup_should_interact`), so
+    `--yes`, `--no-interactive`, `--json`, `--dry-run` and every flag in that
+    gate's list never see it and never launch anything. The answer is only
+    recorded here; `_finish_model_onboarding` acts on it once the apply phase
+    and the summary are done.
+    """
+    if not _will_ask_model_onboarding(args, paths):
+        if not hasattr(args, "_model_onboarding_choice"):
+            args._model_onboarding_choice = None
+        return
+    args._model_onboarding_choice = _ask_yes_no(
+        tr(language, "model_onboarding_prompt"),
+        default=True,
+        use_color=_use_color(),
+        note=tr(language, "model_onboarding_note"),
+        language=language,
+    )
+
+
+_MODEL_ONBOARDING_NAME = "model-setup"
+
+
+def _hermes_main_model_set(hermes: str, env: dict[str, str], *, run: Callable[..., Any]) -> bool:
+    """Whether Hermes names a main model, asked through `hermes config get model`.
+
+    Never reads config.yaml itself. A string `model:` or a non-empty
+    `model.default` counts; anything unreadable counts as none, which only
+    means the person is offered Hermes' own picker.
+    """
+    try:
+        completed = run(
+            [hermes, "config", "get", "model", "--json"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if completed.returncode != 0:
+        return False
+    try:
+        value = json.loads(completed.stdout or "null")
+    except json.JSONDecodeError:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        default = value.get("default")
+        return isinstance(default, str) and bool(default.strip())
+    return False
+
+
+def _run_foreground(argv: list[str], env: dict[str, str]) -> int:
+    """Run the OMH TUI in this terminal and return its exit code.
+
+    A foreground child rather than `os.exec*`, which INVARIANT 1 forbids in
+    `src/`: the person sees the same thing, and setup only waits.
+    """
+    return int(subprocess.run(argv, env=env, check=False).returncode)
+
+
+def _launch_model_onboarding(
+    paths: OmhPaths,
+    language: str,
+    *,
+    run: Callable[..., Any] = subprocess.run,
+    exec_: Callable[[list[str], dict[str, str]], int] = _run_foreground,
+) -> int | None:
+    """Open the OMH TUI on the model-setup conversation; None when it did not open.
+
+    With no main model in Hermes yet, the person's own `hermes model` runs
+    first in this terminal (stdio inherited, no shell); the conversation opens
+    only when a main model exists afterwards. Every Hermes call acts on the
+    home setup targeted.
+    """
+    hermes = shutil.which("hermes")
+    if not hermes:
+        print(tr(language, "model_onboarding_no_model"))
+        return None
+    hermes_env = {**os.environ, "HERMES_HOME": str(paths.hermes_home)}
+    if not _hermes_main_model_set(hermes, hermes_env, run=run):
+        print(tr(language, "model_onboarding_running_hermes_model"))
+        try:
+            run([hermes, "model"], env=hermes_env, check=False)
+        except (OSError, KeyboardInterrupt):
+            # A picker that would not start or that the person left with
+            # Ctrl+C is answered by the re-check below, which says so.
+            print("", flush=True)
+        if not _hermes_main_model_set(hermes, hermes_env, run=run):
+            print(tr(language, "model_onboarding_no_model"))
+            return None
+    argv = [
+        sys.executable, "-P", "-m", "omh.cli",
+        "--omh-home", str(paths.omh_home),
+        "--hermes-home", str(paths.hermes_home),
+        "--onboard", _MODEL_ONBOARDING_NAME,
+    ]
+    return exec_(argv, {**os.environ, "OMH_LANG": language})
+
+
+def _finish_model_onboarding(args: argparse.Namespace, paths: OmhPaths, language: str, exit_code: int) -> int | None:
+    """Act on the wizard's model-onboarding answer after the summary.
+
+    Yes on a setup that succeeded opens the conversation and returns the OMH
+    TUI's exit code; No prints where to find it later. Not asked, or a failed
+    setup, does nothing.
+    """
+    choice = getattr(args, "_model_onboarding_choice", None)
+    if choice is None:
+        return None
+    if not choice:
+        print(tr(language, "model_onboarding_later"))
+        return None
+    if exit_code != 0:
+        return None
+    return _launch_model_onboarding(paths, language)
 
 
 # The candidate sources that are not an env-var name. Both come from the
@@ -4541,6 +4705,22 @@ def _wizard_question_groups() -> tuple[_WizardQuestion, ...]:
             _will_ask_update_check,
             _ask_update_check_choice,
         ),
+        # The shell-rc hook for path B of auto-resume: the one answer that writes outside OMH's and Hermes' homes,
+        # so it defaults to No and sits after every answer about the install itself.
+        _WizardQuestion(
+            "auto_resume_shell",
+            "wizard_step_auto_resume_shell",
+            _will_ask_auto_resume_shell,
+            _ask_auto_resume_shell_choice,
+        ),
+        # After every answer that configures the install: a Yes hands the
+        # terminal to the OMH TUI once the apply phase and summary are done.
+        _WizardQuestion(
+            "model_onboarding",
+            "wizard_step_model_onboarding",
+            _will_ask_model_onboarding,
+            _ask_model_onboarding_choice,
+        ),
     )
 
 
@@ -4770,6 +4950,65 @@ def _ask_update_check_choice(args: argparse.Namespace, paths: OmhPaths, language
     args._update_check_mode = mode
     write_update_check_policy(paths, mode=mode)
     print(tr(language, "update_check_recorded", mode=mode))
+
+
+def _auto_resume_shell_offer() -> tuple[str, Path] | None:
+    """The shell and rc the auto-resume hook question would offer: the default shell's rc, when it exists and has
+    no block yet (`tui/shell_hook.offer`); None when there is nothing to offer."""
+    from ..tui.shell_hook import offer
+
+    return offer(os.environ)
+
+
+def _auto_resume_shell_terminal() -> bool:
+    """Both terminal ends, read here and not through `_stdin_is_tty`/`_stdout_is_tty`: a scripted wizard that opens
+    those seams must never reach a question whose Yes writes the person's real shell rc."""
+    try:
+        return stdin_is_tty() and bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _will_ask_auto_resume_shell(args: argparse.Namespace, paths: OmhPaths) -> bool:
+    """Whether `_ask_auto_resume_shell_choice` puts a question on screen: on a terminal, never beside `--yes` or
+    `--no-interactive`, and only while the default shell's rc exists without the block. Reads the rc, never an
+    earlier answer."""
+    if hasattr(args, "_auto_resume_shell_choice"):
+        return False
+    if getattr(args, "yes", False) or getattr(args, "no_interactive", False) or not _auto_resume_shell_terminal():
+        return False
+    return _auto_resume_shell_offer() is not None
+
+
+def _ask_auto_resume_shell_choice(args: argparse.Namespace, paths: OmhPaths, language: str) -> None:
+    """Ask, at most once and defaulting to No, whether to add the auto-resume block to the shell rc.
+
+    A Yes installs it at once through `tui.shell_hook.install` (the same path as `omh auto-resume shell install`);
+    a No writes nothing. Either way `omh auto-resume shell install|remove` changes it later.
+    """
+    offer = _auto_resume_shell_offer() if _will_ask_auto_resume_shell(args, paths) else None
+    if offer is None:
+        if not hasattr(args, "_auto_resume_shell_choice"):
+            args._auto_resume_shell_choice = None
+        return
+    shell, rc = offer
+    args._auto_resume_shell_choice = _ask_yes_no(
+        tr(language, "auto_resume_shell_prompt"),
+        default=False,
+        use_color=_use_color(),
+        note=tr(language, "auto_resume_shell_note", rc=str(rc)),
+        language=language,
+    )
+    if not args._auto_resume_shell_choice:
+        return
+    from ..tui.shell_hook import ShellHookError, install
+
+    try:
+        result = install(shell, paths.omh_home, os.environ)
+    except (ShellHookError, OSError) as error:
+        print(tr(language, "auto_resume_shell_failed", error=str(error)))
+        return
+    print(tr(language, "auto_resume_shell_installed", rc=str(result.rc)))
 
 
 def _ask_yes_no(
@@ -6969,14 +7208,25 @@ def _add_top_level_commands(sub) -> None:
         help="Preview one editable Hermes model alias. Repeat for multiple aliases.",
     )
     setup.add_argument(
+        "--fallback-model",
+        action="append",
+        default=[],
+        metavar="PROVIDER/MODEL",
+        help=(
+            "Preview one Hermes fallback_model (with --model-setup). Applied only by "
+            "--apply-model-config with the preview's digest; replaces a fallback chain "
+            "with this single entry."
+        ),
+    )
+    setup.add_argument(
         "--apply-model-config",
         action="store_true",
-        help="Apply the model-alias preview after explicit confirmation and digest binding.",
+        help="Apply the model-alias and fallback_model preview after explicit confirmation and digest binding.",
     )
     setup.add_argument(
         "--model-config-digest",
         default="",
-        help="Expected Hermes config digest printed by the model-alias preview.",
+        help="The preview's approval_digest: it names the Hermes config file and the exact previewed change.",
     )
     setup.add_argument(
         "--allow-model-alias-collision",

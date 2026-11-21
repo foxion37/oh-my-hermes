@@ -101,9 +101,12 @@ test("a row opens its detail: when, what, where it delivers, last run, and the n
   // a job delivered to the bot's own chat says so
   await page.getByTestId("auto-row-a1f0c2d9e801").click();
   await expect(d.getByTestId("auto-deliver")).toHaveText("Kami chat (omher)");
-  // primary action is the neutral ink fill, never the accent gradient
-  const bg = await d.getByTestId("auto-run").evaluate((el) => getComputedStyle(el).backgroundImage);
-  expect(bg).toBe("none");
+  // Run now is a quiet text action at the end of the row, not a filled button (khope: it looked like one you must
+  // press): no fill, the quiet colour, after Delete
+  const run = d.getByTestId("auto-run");
+  expect(await run.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).backgroundImage])).toEqual(["rgba(0, 0, 0, 0)", "none"]);
+  const [runBox, delBox] = await Promise.all([run.boundingBox(), d.getByTestId("auto-delete").boundingBox()]);
+  expect(runBox!.x).toBeGreaterThan(delBox!.x);
 });
 
 test("the toggle pauses and resumes through cron.manage with the job id; offline is one short line", async ({ page }) => {
@@ -146,9 +149,16 @@ test("Run now is a chat message to the bot and opens its chat; Edit fills the bo
   await expect(page.getByTestId("ask-bot")).toContainText("Friren");
   expect(await submitted("friren")).toEqual([]);
 
+  // one click only asks; Cancel sends nothing; Run sends
   await page.getByTestId("auto-run").click();
+  await expect(page.getByTestId("auto-run-ask")).toContainText("Run it now, outside its schedule?");
+  await page.getByTestId("auto-run-cancel").click();
+  await expect(page.getByTestId("auto-run")).toBeVisible();
+  expect(await submitted("friren")).toEqual([]);
+  await page.getByTestId("auto-run").click();
+  await page.getByTestId("auto-run-confirm").click();
   await expect(page.getByTestId("bot-friren")).toHaveAttribute("aria-current", "true");
-  await expect(page.getByTestId("bubble-user").last()).toHaveText('Run my automation "Weekly product-ab report" (id e5c2a9b81d40) now.');
+  await expect(page.getByTestId("bubble-user").last().locator(".b")).toHaveText('Run my automation "Weekly product-ab report" (id e5c2a9b81d40) now.');
   expect(await submitted("friren")).toEqual(['Run my automation "Weekly product-ab report" (id e5c2a9b81d40) now.']);
   expect((await calls("automations.")).filter((c) => c.op !== "automations.list")).toEqual([]);
 });
@@ -163,7 +173,7 @@ test("the top box sends to the picked bot's chat; a suggestion only fills it", a
   await page.getByTestId("ask-bot-default").click();
   await page.getByTestId("ask-send").click();
   await expect(page.getByTestId("bot-default")).toHaveAttribute("aria-current", "true");
-  await expect(page.getByTestId("bubble-user").last()).toHaveText("Tell me when CI fails on one of my PRs");
+  await expect(page.getByTestId("bubble-user").last().locator(".b")).toHaveText("Tell me when CI fails on one of my PRs");
   expect(await submitted("default")).toEqual(["Tell me when CI fails on one of my PRs"]);
 });
 
@@ -196,6 +206,15 @@ test("an automation the bot made in chat leaves a card there: run, open, undo", 
   await expect(card).toContainText("every 15 min");
   await expect(card).toContainText("Kami chat (omher)");
   await expect(page.getByTestId("nav-automations")).toContainText("7");
+  // Run once is the quiet last action: a click asks first, Run sends the run message to the bot
+  const run = card.getByTestId("card-run");
+  const [runBox, undoBox] = await Promise.all([run.boundingBox(), card.getByTestId("card-undo").boundingBox()]);
+  expect(runBox!.x).toBeGreaterThan(undoBox!.x);
+  expect(await run.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+  await run.click();
+  expect(await submitted("kami")).toEqual([]);
+  await card.getByTestId("card-run-confirm").click();
+  await expect.poll(() => submitted("kami")).toEqual(['Run my automation "CI watch on my PRs" (id a9c1e7f30d12) now.']);
 
   await card.getByTestId("card-open-auto").click();
   await expect(page.getByTestId("auto-detail").getByRole("heading")).toHaveText("CI watch on my PRs");
@@ -377,4 +396,29 @@ test("the language picker switches at once (ko, ja); both pages translate and sh
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("language").getByRole("radio", { name: "English" }).click();
   await expect(page.getByTestId("nav-settings")).toHaveText("Settings");
+});
+
+// ---- the back arrow ---------------------------------------------------------------------------------------------
+
+test("Automations, Plugins and Settings each have a back arrow top left that returns to the chat", async ({ page }) => {
+  await open(page);
+  for (const [nav, view] of [["nav-automations", "automations"], ["nav-plugins", "plugins"], ["nav-settings", "settings"]]) {
+    await page.getByTestId(nav).click();
+    await expect(page.getByTestId(view)).toBeVisible();
+    const head = page.getByTestId("header");
+    const back = head.getByTestId("page-back");
+    await expect(back).toHaveAttribute("aria-label", "Back");
+    // the arrow is the first thing in the header, left of the title
+    const b = (await back.boundingBox())!;
+    const title = (await head.locator(".head-title").boundingBox())!;
+    expect(b.x + b.width).toBeLessThanOrEqual(title.x);
+    expect(b.x - (await head.boundingBox())!.x).toBeLessThan(20);
+    await back.click();
+    await expect(page.getByTestId(view)).toHaveCount(0);
+    await expect(page.getByTestId("composer")).toBeVisible();
+  }
+  // Settings keeps its × too
+  await page.getByTestId("nav-settings").click();
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(page.getByTestId("composer")).toBeVisible();
 });

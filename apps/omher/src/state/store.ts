@@ -1,8 +1,9 @@
 // The whole app view model: one reducer, one store, one React hook. UI nodes only read this and call
 // its actions; they never edit this file.
+import { SESSIONS_ENTRY } from "../sessions/entry";
 import { useSyncExternalStore } from "react";
 import { BridgeClient, type BridgeStatus } from "../lib/bridge";
-import { noteFor, sessionNote, showNote, watchMissedNote, windowWatched, type SessionNote } from "../lib/notify";
+import { createNoteGate, noteFor, sessionNote, sessionRings, showNote, watchMissedNote, windowWatched, type SessionNote } from "../lib/notify";
 import { appSounds, soundFor, type SoundBoard } from "../lib/sounds";
 import { promptText } from "../chat/parts/attachFiles";
 import { findTokens, toWire } from "../chat/parts/skillTokens";
@@ -23,6 +24,7 @@ import type {
   ClarifyQuestion,
   HelloResult,
   FolderOpenResult,
+  FolderResumeResult,
   ModelCurrent,
   ModelOptions,
   PeekMsg,
@@ -41,6 +43,7 @@ import type {
   AccountCli,
   AccountGroup,
   Skill,
+  SlashCommand,
   Automation,
   CatalogResult,
   InspectResult,
@@ -51,6 +54,7 @@ import type {
   Msg,
 } from "../lib/protocol";
 import type { AgentRunSummary, CliAgent, NodePr, RunDetail } from "../lib/runs";
+import { firstWords, hideSplitBlocks, threadEvent, threadKey, type ThreadOps, type ThreadRow } from "../threads/types";
 
 export type PanelTabId = "details" | "terminal" | "schedule" | "worktrees" | "diff" | "runs";
 
@@ -71,6 +75,8 @@ export interface Step {
   dag?: { run: string; node: string }[];
   /** A file edit's change, per file (SESSIONS agents), for the step's diff view. */
   diff?: DiffFile[];
+  /** Read back from a record with no later timestamp (a child's session): its length is unknown, none is shown. */
+  untimed?: boolean;
 }
 
 export interface Turn {
@@ -98,6 +104,9 @@ export interface Turn {
   plan?: PlanItem[];
   /** What the agent thought, when it sends the text (SESSIONS agents); at most THINKING_MAX characters. */
   thinking?: string;
+  /** The words written between the last tool call and a `clarify` ask: the question's context, which the cut below
+   *  would otherwise drop. Held until the ask arrives, then kept as its own row above the card. */
+  askNote?: string;
 }
 
 /** One subagent of a fan-out, as its latest event left it. */
@@ -153,6 +162,13 @@ export type MessageItem = {
   held?: boolean;
   /** user rows only: steered into the running turn (Hermes' `session.steer`) instead of sent as a new turn. */
   steered?: boolean;
+  /** user rows only: the bot has it (chat.send went through, its turn started, or Hermes queued the steer), at this
+   *  time (ms); 0 when the time is not known. Messenger-style "Read" under the person's last message. A send that
+   *  failed, a refused or uncertain steer, or one the turn dropped unread never carries it. */
+  readAt?: number;
+  /** user rows only, with `steered`: the first line the bot wrote after reading it (the note before its next tool
+   *  call, or the answer), so the person sees how it took the steer. */
+  steerReply?: string;
   /** user rows only (held): a steer whose answer never came back (the bridge dropped, the bot went offline, a
    *  timeout). Hermes may have taken it, so it is never sent again on its own: the person picks Send or Delete. */
   steerUnknown?: boolean;
@@ -224,7 +240,6 @@ export type ClarifyItem = {
   answers?: ClarifyAnswers;
   expired?: AskExpiry;
 };
-export type AwayItem = { kind: "away"; id: string; ts: number; away: Away };
 export type RoutineItem = {
   kind: "routine";
   id: string;
@@ -232,6 +247,10 @@ export type RoutineItem = {
   routine_id: string;
   name: string;
   status: string;
+  /** Failed runs of this routine folded into this one line, back to back with nothing between them (1 = this run). */
+  count?: number;
+  /** The first of those runs (`ts` is the latest). */
+  since?: number;
 };
 /** A card for an automation the bot made from this chat (`routine.added`): what, when, where it delivers. */
 export type RoutineAddedItem = {
@@ -247,8 +266,25 @@ export type RoutineAddedItem = {
 };
 /** A card for a plugin the bot installed from this chat (`plugin.added`). */
 export type PluginAddedItem = { kind: "pluginAdded"; id: string; ts: number; name: string; title: string; tools: number; hooks: number };
+/** omher set up its Slack briefing for this bot: one gray line, once per bot, with Turn off (the job's pause). */
+export type BriefNoticeItem = { kind: "briefNotice"; id: string; ts: number; bot: string };
 /** One quiet line from omher itself (e.g. "Switched to Claude #2 (limit on #1)"); never sent to the bot. */
 export type SystemItem = { kind: "system"; id: string; ts: number; text: string };
+/** "→ thread: <title>" under a main-chat answer: the bot opened `thread` (or the person sent a message there). */
+export type ThreadLinkItem = { kind: "threadLink"; id: string; ts: number; bot: string; thread: string; title: string };
+/** "Send this to <title>?" under a main-chat answer whose bot thought the person's message belongs in `thread`.
+ *  `text` is that message; nothing is sent until Send there. `done`: what the person chose. */
+export type ThreadRouteItem = {
+  kind: "threadRoute";
+  id: string;
+  ts: number;
+  bot: string;
+  thread: string;
+  title: string;
+  text: string;
+  done?: "sent" | "kept";
+  error?: string;
+};
 export type ChatItem =
   | MessageItem
   | ActivityItem
@@ -257,8 +293,11 @@ export type ChatItem =
   | RoutineItem
   | RoutineAddedItem
   | PluginAddedItem
-  | SystemItem;
-export type TimelineItem = ChatItem | AwayItem;
+  | SystemItem
+  | BriefNoticeItem
+  | ThreadLinkItem
+  | ThreadRouteItem;
+export type TimelineItem = ChatItem;
 
 export interface Chat {
   /** user / assistant / activity / approval / clarify / routine rows in arrival order. */
@@ -289,6 +328,9 @@ export interface Chat {
   /** Rows steered into the running turn that it has not read yet (no tool step ended and no message came since):
    *  a Stop or Send now before then makes Hermes drop them, so they are marked not used (Send / Delete). */
   steeredUnread?: string[];
+  /** The last steered row the turn consumed, waiting for the bot's first words after it: they start at `from` in the
+   *  turn's `streaming` and end at its next tool call (or are the answer). */
+  steerAck?: { id: string; from: number } | null;
 }
 
 /** The composer's "Reply there" chip: a thread elsewhere the next message points the bot at. */
@@ -326,15 +368,18 @@ export interface Ui {
   panelTab: PanelTabId;
   /** The run the Runs tab shows (a full id, or a dag run name from a chat line); null = the first in its list. */
   runId: string | null;
-  /** The Runs graph fills the chat column (⌘⇧G); the side panel stays. */
-  runsFull: boolean;
+  /** The side panel is maximised in place: it takes every pixel right of the sidebar and the chat column folds to 0
+   *  (still mounted). Closing the panel restores it. */
+  panelMax: boolean;
   /** Text put into a bot's composer for the person to edit and send (never sent by omher). */
   draft: { bot: string; text: string; n: number } | null;
   theme: Theme;
   look: Look;
   /** "session" = a terminal session (SESSIONS in the sidebar) fills the main column; `session` names it.
    *  "automations" and "plugins" are the two pages of the sidebar's foot. */
-  view: "chat" | "settings" | "session" | "automations" | "plugins";
+  view: "chat" | "settings" | "session" | "automations" | "plugins" | "tasks";
+  /** Where a page's back arrow (and Settings' ×) returns: the chat or the session the page was opened from. */
+  back: "chat" | "session";
   /** Automations: the job the detail panel shows (`<bot>:<id>`); Plugins: the bot whose plugins the page shows. */
   automation: string | null;
   pluginsBot: string | null;
@@ -349,6 +394,8 @@ export interface Ui {
   /** The ask card to scroll to and focus (set by the Needs-you strip and ⌘J); `seq` re-triggers the same one. */
   focusAsk: FocusAsk | null;
   session: string | null;
+  /** The thread under `selectedBot` the main column shows (`view` "chat"); null = the bot's main chat. */
+  thread: string | null;
 }
 
 export interface FocusAsk {
@@ -373,6 +420,8 @@ export interface AppState {
   models: Record<string, ModelOptions>;
   /** Per bot: the composer's "Reply there" chip, if any. */
   replyTo: Record<string, ReplyChip | null>;
+  /** Per bot: its threads (bridge `thread.list`), newest first; absent until read. */
+  threads: Record<string, ThreadRow[]>;
   ui: Ui;
 }
 
@@ -439,7 +488,7 @@ export function liveLabel(t: Turn): { verb: string; code?: string } {
  *  never a line still being typed and never an open code block (it shows once its closing fence came). Shown in
  *  pieces of whole lines, so the answer grows a line or paragraph at a time instead of word by word. */
 export function answerSoFar(t: Turn): string {
-  const text = t.streaming.slice(t.cut ?? 0).replace(/^\s+/, "");
+  const text = hideSplitBlocks(t.streaming.slice(t.cut ?? 0).replace(/^\s+/, ""));
   const end = text.lastIndexOf("\n");
   if (end < 0) return "";
   const lines = text.slice(0, end).split("\n");
@@ -554,20 +603,23 @@ export function initialState(): AppState {
     automations: null,
     models: {},
     replyTo: {},
+    threads: {},
     ui: {
       panelOpen: false,
       panelTab: "details",
       runId: null,
-      runsFull: false,
+      panelMax: false,
       draft: null,
       theme: readTheme(),
       look: readLook(),
       view: "chat",
+      back: "chat",
       settingsPage: "general",
       pinned: readList("omher.pinned"),
       roster: readRoster(),
       focusAsk: null,
       session: null,
+      thread: null,
       automation: null,
       pluginsBot: null,
       lang: readLang(),
@@ -780,16 +832,39 @@ function applyOpened(chat: Chat, res: ChatOpenResult, now: number, bot: string, 
     text: m.text,
     ...(m.reply_to ? { reply: replyOf(m.reply_to) } : {}),
     ...(m.watch ? { watch: m.watch } : {}),
+    ...(m.steered && m.role === "user" ? { steered: true, ...(m.steer_reply ? { steerReply: m.steer_reply } : {}) } : {}),
   }));
+  // a reopened chat: a row of the person's with any bot row after it reached the bot (read at that row's time; a
+  // steer at the time of the bot's first words after it); in a turn still running, its last row did too
+  server.forEach((m, k) => {
+    if (m.kind !== "user") return;
+    const next = server.slice(k + 1).find((x) => x.kind === "assistant");
+    const steerAt = res.messages[k]?.steer_read;
+    if (next || steerAt) m.readAt = (steerAt ?? next?.ts ?? 0) * 1000;
+  });
+  const lastUser = [...server].reverse().find((m) => m.kind === "user");
+  if (res.running && lastUser && lastUser.readAt === undefined) lastUser.readAt = 0;
   const ids = new Set(server.map((m) => m.id));
   const lastServerTs = server.length ? server[server.length - 1].ts : 0;
   const keep = chat.items.filter((i) => {
     if (i.kind !== "user" && i.kind !== "assistant") return true;
     if (i.kind === "user" && i.held) return true; // never sent: no server row can be its twin
-    if (ids.has(i.id)) return false;
+    if (ids.has(i.id)) {
+      const twin = server.find((s) => s.id === i.id);
+      if (twin && i.kind === "user" && i.readAt !== undefined && twin.readAt === undefined) twin.readAt = i.readAt;
+      return false;
+    }
+    // the words before a question, kept live above its card: the history now carries that row too (bridge
+    // `_ask_notes`), so the local copy goes once the server has it
+    if (i.kind === "assistant" && i.id.startsWith("clarify-note-")) {
+      const said = i.text.trim();
+      return !server.some((s) => s.kind === "assistant" && s.text.trim() === said);
+    }
     if (i.id.startsWith("local-")) {
       const sent = i.sent ?? i.text;
       const twin = server.find((s) => s.kind === "user" && s.text === sent && s.ts >= i.ts - 120);
+      // what this app already saw (the send went through) stays read until the history says when
+      if (twin && i.readAt !== undefined && twin.readAt === undefined) twin.readAt = i.readAt;
       // keep the local pictures, and the text as typed with its skill tokens (they go out hoisted)
       if (twin && (i.files || i.sent || i.skills))
         Object.assign(twin, { text: i.text, sent, ...(i.files ? { files: i.files } : {}), ...(i.skills ? { skills: i.skills } : {}) });
@@ -842,6 +917,8 @@ export type Action =
   | { type: "reply.set"; bot: string; chip: ReplyChip | null }
   | QueueAction
   | { type: "send.failed"; bot: string; id: string; error: string }
+  /** chat.send went through: the bot has the message (its "Read" mark). */
+  | { type: "send.ok"; bot: string; id: string; now: number }
   | { type: "event"; ev: BridgeEvent; now: number }
   | { type: "approval.resolved"; bot: string; request_id: string; choice: ApprovalChoice }
   | { type: "clarify.resolved"; bot: string; request_id: string; answer: string; answers?: ClarifyAnswers }
@@ -853,13 +930,14 @@ export type Action =
   | { type: "automations"; automations: Automation[] }
   | { type: "ui.automations"; job?: string | null }
   | { type: "ui.plugins"; bot?: string | null }
+  | { type: "ui.tasks" }
   | { type: "ui.lang"; lang: Lang }
   | { type: "models"; bot: string; options: ModelOptions }
   | { type: "model.set"; bot: string; current: ModelCurrent }
   | { type: "ui.panel"; open?: boolean }
   | { type: "ui.panelTab"; tab: PanelTabId }
   | { type: "ui.run"; run: string | null }
-  | { type: "ui.runsFull"; open: boolean }
+  | { type: "ui.panelMax"; open: boolean; tab?: PanelTabId }
   | { type: "ui.draft"; bot: string; text: string }
   | { type: "ui.theme"; theme: Theme }
   | { type: "ui.look"; look: Partial<Look> }
@@ -873,12 +951,24 @@ export type Action =
   | { type: "ui.focusAsk"; bot: string; id: string }
   | { type: "ui.session"; id: string | null }
   /** After a restart: the panel, Plans view and open session as they were (resume.ts). */
-  | { type: "ui.restore"; ui: Pick<Ui, "panelOpen" | "panelTab" | "runsFull" | "runId"> & { session: string | null } }
+  | { type: "ui.restore"; ui: Pick<Ui, "panelOpen" | "panelTab" | "runId"> & { runsFull: boolean; session: string | null } }
   /** Drop a chat that is gone for good (a closed SESSIONS chat): its open asks go with it. */
   | { type: "chat.forget"; bot: string }
   /** A SESSIONS chat ended with `error`: its last turn, failed with that same reason, no longer repeats it (the
    *  Ended line above the composer says it once, beside Restart). */
-  | { type: "turn.reasonMoved"; bot: string; error: string };
+  | { type: "turn.reasonMoved"; bot: string; error: string }
+  /** A bot's threads as `thread.list` read them (rows the app already holds keep their live title and time). */
+  | { type: "threads"; bot: string; threads: ThreadRow[] }
+  /** One thread joined (made here, or the bot opened one) or changed (named, active). */
+  | { type: "thread.upsert"; bot: string; row: ThreadRow }
+  /** A thread was archived: its row, its chat and the asks in it go. */
+  | { type: "thread.gone"; bot: string; thread: string }
+  /** Show a thread of `bot` in the main column (null: the bot's main chat). */
+  | { type: "ui.thread"; bot: string; thread: string | null }
+  /** A link line or a route card under the main-chat answer `message` of `bot` (once per id). */
+  | { type: "thread.note"; bot: string; message: string; item: ThreadLinkItem | ThreadRouteItem }
+  /** The person answered a route card. */
+  | { type: "thread.routed"; bot: string; id: string; done?: "sent" | "kept"; error?: string };
 
 // ---- chats that are not a bot's main chat ------------------------------------------------------
 //
@@ -910,6 +1000,32 @@ export const chatRoute = (key: string): ChatRoute | undefined => chatRoutes.get(
 export const folderKey = (bot: string, session: string) => `fold:${bot}:${session}`;
 /** True for a SESSIONS chat key (not a bot's main chat). */
 export const isSessionChat = (key: string) => key.startsWith("fold:") || key.startsWith("agent:");
+/** Where a Hermes chat's words go on the bridge: a bot's main chat (`<bot>`) or its folder chat / thread
+ *  (`fold:<bot>:<session>`, the bridge's `session=`). The steer queue sends, steers and stops through this. */
+export function chatTarget(key: string): { bot: string; session?: string } {
+  if (!key.startsWith("fold:")) return { bot: key };
+  const rest = key.slice(5);
+  const at = rest.indexOf(":");
+  return { bot: rest.slice(0, at), session: rest.slice(at + 1) };
+}
+
+/** The bots whose "will brief you here" line was already shown (`localStorage["omher.briefNoticed"]`). */
+export function briefNoticed(): string[] {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem("omher.briefNoticed") : null;
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function saveBriefNoticed(bots: string[]): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem("omher.briefNoticed", JSON.stringify([...new Set(bots)]));
+  } catch {
+    /* storage is best effort */
+  }
+}
 
 function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
   if (ev.session && ev.event !== "folder.closed") {
@@ -924,7 +1040,9 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
     case "turn.start":
       return touchChat(state, bot, (c) => {
         const early = c.early && now - c.early.at <= EARLY_STATUS_MS ? c.early.text : "";
-        return { ...newTurn(endTurn(c, now, "done"), bot, now, early)[0], early: null, pendingTurn: null, steeredUnread: undefined };
+        // its turn started: the bot has the person's last sent message
+        const got = markRead(c, lastSent(c)?.id, now);
+        return { ...newTurn(endTurn(got, now, "done"), bot, now, early)[0], early: null, pendingTurn: null, steeredUnread: undefined, steerAck: null };
       });
     case "status": {
       // the agent's own retry of this turn: the line says which try, in the person's language
@@ -954,22 +1072,28 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
     case "rewound":
       return touchChat(state, bot, (c) => rewind(c));
     case "tool.start":
-      return touchChat(state, bot, (c) =>
-        patchTurn(c, (t) => ({
+      return touchChat(state, bot, (c0) => {
+        // the note written before this call is the bot's first word on a steer it read
+        const c = c0.steerAck && c0.turn ? ackSteer(c0, c0.turn.streaming.slice(c0.steerAck.from)) : c0;
+        // an ask is a tool call too, and the words just before it are what the person has to read to answer:
+        // keep them before the cut takes them (they show right above the card, see clarify.request)
+        const ask = ev.name === "clarify";
+        return patchTurn(c, (t) => ({
           ...t,
           status: activityText(ev.name, ev.detail),
+          ...(ask ? { askNote: hideSplitBlocks(t.streaming.slice(t.cut ?? 0).trim()) } : {}),
           // what was written before this call was commentary on it, not the answer
           cut: t.streaming.length,
           steps: [
             ...t.steps,
             { id: ev.tool_id, name: ev.name, detail: ev.detail, startedAt: now, ...(ev.dag?.length ? { dag: ev.dag } : {}) },
           ],
-        })),
-      );
+        }));
+      });
     case "tool.end":
       // a tool step ended: Hermes hands what was steered in to the model with its result
       return touchChat(state, bot, (c0) => {
-        const c = c0.steeredUnread ? { ...c0, steeredUnread: undefined } : c0;
+        const c = c0.steeredUnread ? consumeSteers({ ...c0, steeredUnread: undefined }, c0.steeredUnread) : c0;
         return c.turn?.steps.some((s) => s.id === ev.tool_id)
           ? patchTurn(c, (t) => ({
               ...t,
@@ -991,7 +1115,10 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
     case "message": {
       const next = touchChat(state, bot, (c) => {
         // the answer came: a steer Hermes took by now runs in this turn or right after it (never dropped by a Stop)
-        const cleared = patchTurn({ ...c, steeredUnread: undefined }, (t) => ({ ...t, streaming: "", cut: undefined }));
+        const read = c.steeredUnread ? consumeSteers(c, c.steeredUnread) : c;
+        // a steer read before this answer, with no note since: the answer is the bot's first word on it
+        const acked = read.steerAck ? ackSteer(read, ev.text) : read;
+        const cleared = patchTurn({ ...acked, steeredUnread: undefined, steerAck: null }, (t) => ({ ...t, streaming: "", cut: undefined }));
         const msg: MessageItem = { kind: "assistant", id: ev.id, ts: now / 1000, text: ev.text, ...(ev.watch ? { watch: ev.watch } : {}) };
         const exists = cleared.items.some((i) => i.kind === "assistant" && i.id === ev.id);
         const slot = answerSlot(cleared);
@@ -1026,7 +1153,11 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
     case "clarify.request":
       return touchChat(state, bot, (c) => {
         if (c.items.some((i) => i.kind === "clarify" && i.request_id === ev.request_id)) return c;
-        const base = patchTurn(c, (t) => ({ ...t, status: tr("live.waitAnswer") }));
+        // The words written right before the question are its context. Hermes asks through a tool call, and the
+        // commentary beside a tool call is dropped (`cut`, see tool.start), so the card used to arrive alone with
+        // the explanation the person was supposed to read gone. Keep that commentary as a row above the card.
+        const note = c.turn?.askNote ?? "";
+        const asked = patchTurn(c, (t) => ({ ...t, status: tr("live.waitAnswer") }));
         const qs = (ev.questions ?? []).filter((q) => q && typeof q.question === "string" && q.question.trim());
         const item: ClarifyItem = {
           kind: "clarify",
@@ -1040,7 +1171,11 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
           ...(ev.subagent?.id ? { subagent: ev.subagent } : {}),
           ...(c.turn || !bot.startsWith("agent:") ? {} : { outside: true }),
         };
-        return withItems(base, [...base.items, item]);
+        const noted: MessageItem = { kind: "assistant", id: `clarify-note-${ev.request_id}`, ts: now / 1000, text: note };
+        const withNote = note ? withItems(asked, [...asked.items, noted]) : asked;
+        const base = withItems(withNote, [...withNote.items, item]);
+        // the note now lives in its own row: it is not the answer still being written
+        return note ? patchTurn(base, (t) => ({ ...t, streaming: "", cut: undefined, askNote: undefined })) : base;
       });
     case "prompt.expired":
       return touchChat(state, bot, (c) =>
@@ -1058,16 +1193,18 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
         let base = c;
         // A done turn that streamed text but never sent the final message: keep what was said.
         // Only what came after the latest tool call: the text before it was commentary on that call, not the answer.
-        const said = c.turn ? c.turn.streaming.slice(c.turn.cut ?? 0).trim() : "";
+        const said = c.turn ? hideSplitBlocks(c.turn.streaming.slice(c.turn.cut ?? 0).trim()) : "";
         if (ev.outcome === "done" && c.turn && said) {
           const text = said;
           const slot = answerSlot(c);
           base = withItems(c, [...c.items.slice(0, slot), { kind: "assistant", id: `${c.turn.id}-a`, ts: now / 1000, text }, ...c.items.slice(slot)]);
           base = patchTurn(base, (t) => ({ ...t, streaming: "", cut: undefined }));
         }
+        // a steer read with no note before the end: what the turn said last is the bot's word on it
+        if (ev.outcome === "done" && c.turn && c.steerAck) base = ackSteer(base, c.turn.streaming.slice(c.steerAck.from));
         // stopped before the turn read what was steered in: Hermes dropped it, so it says so and waits for Send / Delete
         if (ev.outcome === "interrupted" && c.steeredUnread?.length) base = unsteer(base, c.steeredUnread);
-        return { ...endTurn(base, now, ev.outcome, ev.error), early: null, pendingTurn: null, steeredUnread: undefined };
+        return { ...endTurn(base, now, ev.outcome, ev.error), early: null, pendingTurn: null, steeredUnread: undefined, steerAck: null };
       });
     case "bot.status":
       return {
@@ -1095,6 +1232,13 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
       };
       return bumpUnread(touchChat(state, bot, (c) => withItems(c, [...c.items, item])), bot);
     }
+    case "brief.ready": {
+      // once per bot on this computer: the line never comes back after it was shown
+      if (briefNoticed().includes(bot) || state.chats[bot]?.items.some((i) => i.kind === "briefNotice")) return state;
+      saveBriefNoticed([...briefNoticed(), bot]);
+      const item: BriefNoticeItem = { kind: "briefNotice", id: `brief-notice-${bot}`, ts: now / 1000, bot };
+      return touchChat(state, bot, (c) => withItems(c, [...c.items, item]));
+    }
     case "plugin.added": {
       const id = `plugin-added-${ev.name}-${ev.ts}`;
       if (state.chats[bot]?.items.some((i) => i.id === id)) return state;
@@ -1104,6 +1248,21 @@ function reduceEvent(state: AppState, ev: BridgeEvent, now: number): AppState {
     case "routine.ran": {
       // a delivered bot-chat run: its answer comes as that chat's message, which is the line and the unread
       if (ev.delivered) return state;
+      // a run that went fine says nothing in the chat (a 30-minute job would fill it); Automations shows its last run.
+      // Only a failed run draws a line and an unread.
+      if (!FAILED_ROUTINE.has(String(ev.status ?? "").trim().toLowerCase())) return state;
+      // the same routine failing again with nothing between: one line counts the runs (×12 · 03:56–09:37), no new
+      // unread; the first failure drew the unread already
+      const tail = state.chats[bot]?.items.at(-1);
+      if (tail?.kind === "routine" && tail.routine_id === ev.routine_id) {
+        if (ev.ts <= tail.ts) return state;
+        return touchChat(state, bot, (c) =>
+          withItems(c, [
+            ...c.items.slice(0, -1),
+            { ...tail, ts: ev.ts, status: ev.status, count: (tail.count ?? 1) + 1, since: tail.since ?? tail.ts },
+          ]),
+        );
+      }
       const next = touchChat(state, bot, (c) =>
         withItems(c, [
           ...c.items,
@@ -1155,7 +1314,7 @@ export function reduce(state: AppState, a: Action): AppState {
       for (const [b, c] of Object.entries(state.chats)) {
         const ended = c.turn && !b.startsWith("agent:") ? endTurn(c, t, "interrupted", tr("live.lost")) : c;
         // what Hermes runs is not known until the chat is read again: the steer queue waits for that
-        chats[b] = isSessionChat(b) ? ended : { ...ended, stale: true, pendingTurn: null, steeredUnread: undefined };
+        chats[b] = isSessionChat(b) ? ended : { ...ended, stale: true, pendingTurn: null, steeredUnread: undefined, steerAck: null };
       }
       return { ...state, conn: a.status, chats };
     }
@@ -1169,7 +1328,62 @@ export function reduce(state: AppState, a: Action): AppState {
     case "bots":
       return { ...state, bots: a.bots };
     case "select":
-      return { ...state, selectedBot: a.bot, unread: { ...state.unread, [a.bot]: 0 }, ui: { ...state.ui, view: "chat" } };
+      return { ...state, selectedBot: a.bot, unread: { ...state.unread, [a.bot]: 0 }, ui: { ...state.ui, view: "chat", thread: null } };
+    case "ui.thread":
+      return {
+        ...state,
+        selectedBot: a.bot,
+        unread: a.thread ? state.unread : { ...state.unread, [a.bot]: 0 },
+        ui: { ...state.ui, view: "chat", thread: a.thread },
+      };
+    case "threads": {
+      const had = new Map((state.threads[a.bot] ?? []).map((r) => [r.thread, r]));
+      const rows = a.threads.map((r) => {
+        const old = had.get(r.thread);
+        // a re-list keeps what the app already learned: the name, the last activity, and the folder thread.open gave
+        return old ? { ...r, title: r.title || old.title, cwd: r.cwd || old.cwd, last: Math.max(old.last ?? 0, r.last ?? 0) || undefined } : r;
+      });
+      return { ...state, threads: { ...state.threads, [a.bot]: rows } };
+    }
+    case "thread.upsert": {
+      const list = state.threads[a.bot] ?? [];
+      const i = list.findIndex((r) => r.thread === a.row.thread);
+      const rows = i < 0 ? [a.row, ...list] : list.map((r, j) => (j === i ? { ...r, ...a.row, title: a.row.title || r.title } : r));
+      return { ...state, threads: { ...state.threads, [a.bot]: rows } };
+    }
+    case "thread.note":
+      return touchChat(state, a.bot, (c) => {
+        if (c.items.some((i) => i.id === a.item.id)) return c;
+        // right under the answer and the lines already under it; at the end when that answer is not here
+        let at = c.items.findIndex((i) => i.id === a.message);
+        if (at < 0) at = c.items.length;
+        else {
+          at += 1;
+          while (at < c.items.length && (c.items[at].kind === "threadLink" || c.items[at].kind === "threadRoute")) at += 1;
+        }
+        return withItems(c, [...c.items.slice(0, at), a.item, ...c.items.slice(at)]);
+      });
+    case "thread.routed":
+      return touchChat(state, a.bot, (c) =>
+        withItems(
+          c,
+          c.items.map((i) => (i.kind === "threadRoute" && i.id === a.id ? { ...i, done: a.done, error: a.error } : i)),
+        ),
+      );
+    case "thread.gone": {
+      const list = state.threads[a.bot];
+      const key = threadKey(a.bot, a.thread);
+      if (!list?.some((r) => r.thread === a.thread) && !state.chats[key] && state.ui.thread !== a.thread) return state;
+      const chats = { ...state.chats };
+      delete chats[key];
+      const open = state.selectedBot === a.bot && state.ui.thread === a.thread;
+      return {
+        ...state,
+        chats,
+        threads: { ...state.threads, [a.bot]: (list ?? []).filter((r) => r.thread !== a.thread) },
+        ui: open ? { ...state.ui, thread: null } : state.ui,
+      };
+    }
     case "watch.missed":
       return a.count > 0 && a.bot !== state.selectedBot
         ? { ...state, unread: { ...state.unread, [a.bot]: (state.unread[a.bot] ?? 0) + a.count } }
@@ -1199,11 +1413,13 @@ export function reduce(state: AppState, a: Action): AppState {
       });
     case "reply.set":
       return { ...state, replyTo: { ...state.replyTo, [a.bot]: a.chip } };
+    case "send.ok":
+      return state.chats[a.bot] ? touchChat(state, a.bot, (c) => markRead(c, a.id, a.now)) : state;
     case "send.failed":
       return touchChat(state, a.bot, (c) => ({
         ...withItems(
           c,
-          c.items.map((i) => (i.kind === "user" && i.id === a.id ? { ...i, error: a.error } : i)),
+          c.items.map((i) => (i.kind === "user" && i.id === a.id ? (({ readAt: _r, ...m }) => ({ ...m, error: a.error }))(i) : i)),
         ),
         ...(c.pendingTurn === a.id ? { pendingTurn: null } : {}),
       }));
@@ -1269,9 +1485,11 @@ export function reduce(state: AppState, a: Action): AppState {
     case "automations":
       return { ...state, automations: a.automations };
     case "ui.automations":
-      return { ...state, ui: { ...state.ui, view: "automations", ...(a.job !== undefined ? { automation: a.job } : {}) } };
+      return { ...state, ui: { ...state.ui, view: "automations", back: backOf(state.ui), ...(a.job !== undefined ? { automation: a.job } : {}) } };
     case "ui.plugins":
-      return { ...state, ui: { ...state.ui, view: "plugins", ...(a.bot ? { pluginsBot: a.bot } : {}) } };
+      return { ...state, ui: { ...state.ui, view: "plugins", back: backOf(state.ui), ...(a.bot ? { pluginsBot: a.bot } : {}) } };
+    case "ui.tasks":
+      return { ...state, ui: { ...state.ui, view: "tasks", back: backOf(state.ui) } };
     case "ui.lang":
       return { ...state, ui: { ...state.ui, lang: a.lang } };
     case "models":
@@ -1293,14 +1511,20 @@ export function reduce(state: AppState, a: Action): AppState {
           : next.models,
       };
     }
-    case "ui.panel":
-      return { ...state, ui: { ...state.ui, panelOpen: a.open ?? !state.ui.panelOpen } };
+    case "ui.panel": {
+      const open = a.open ?? !state.ui.panelOpen;
+      // closing the panel also restores it: it opens again at its own width
+      return { ...state, ui: { ...state.ui, panelOpen: open, ...(open ? {} : { panelMax: false }) } };
+    }
     case "ui.panelTab":
       return { ...state, ui: { ...state.ui, panelOpen: true, panelTab: a.tab } };
     case "ui.run":
       return { ...state, ui: { ...state.ui, panelOpen: true, panelTab: "runs", runId: a.run } };
-    case "ui.runsFull":
-      return { ...state, ui: { ...state.ui, runsFull: a.open, ...(a.open ? { panelOpen: true, panelTab: "runs" as const } : {}) } };
+    case "ui.panelMax":
+      return {
+        ...state,
+        ui: { ...state.ui, panelMax: a.open, ...(a.open ? { panelOpen: true, ...(a.tab ? { panelTab: a.tab } : {}) } : {}) },
+      };
     case "ui.draft":
       return { ...state, ui: { ...state.ui, draft: { bot: a.bot, text: a.text, n: (state.ui.draft?.n ?? 0) + 1 } } };
     case "ui.theme":
@@ -1308,16 +1532,19 @@ export function reduce(state: AppState, a: Action): AppState {
     case "ui.look":
       return { ...state, ui: { ...state.ui, look: { ...state.ui.look, ...a.look } } };
     case "ui.settings":
-      return { ...state, ui: { ...state.ui, view: "settings", settingsPage: a.page ?? state.ui.settingsPage } };
+      return { ...state, ui: { ...state.ui, view: "settings", back: backOf(state.ui), settingsPage: a.page ?? state.ui.settingsPage } };
     case "ui.closeSettings":
-      return { ...state, ui: { ...state.ui, view: "chat" } };
+      // back to the session the page was opened from, when it is still open; otherwise the chat
+      return { ...state, ui: { ...state.ui, view: state.ui.back === "session" && state.ui.session ? "session" : "chat", back: "chat" } };
     case "system.note":
       return touchChat(state, a.bot, (c) =>
         withItems(c, [...c.items, { kind: "system", id: `system-${a.now}-${c.items.length}`, ts: a.now / 1000, text: a.text }]),
       );
     case "ui.restore": {
-      const { session, ...rest } = a.ui;
-      return { ...state, ui: { ...state.ui, ...rest, ...(session ? { view: "session" as const, session } : {}) } };
+      const { session, runsFull, ...rest } = a.ui;
+      // the snapshot's `runsFull` carries the maximised panel
+      const max = runsFull && rest.panelOpen;
+      return { ...state, ui: { ...state.ui, ...rest, panelMax: max, ...(session ? { view: "session" as const, session } : {}) } };
     }
     case "ui.session":
       return a.id
@@ -1386,7 +1613,44 @@ function unsteer(c: Chat, ids: string[]): Chat {
     c.items.map((i) => (i.kind === "user" && ids.includes(i.id) && i.steered ? { ...withoutSteered(i), steerUnknown: true, steerUnused: true } : i)),
   );
 }
-const withoutSteered = ({ steered: _s, ...m }: MessageItem): MessageItem => m;
+const withoutSteered = ({ steered: _s, readAt: _r, ...m }: MessageItem): MessageItem => m;
+
+/** Rows steered in that the turn just consumed: the last one waits for the bot's first words after it (several
+ *  consumed together get one reply, on the last, the one the bot answers last). */
+function consumeSteers(c: Chat, ids: string[]): Chat {
+  const read = c.items.filter((i): i is MessageItem => i.kind === "user" && ids.includes(i.id) && !!i.steered);
+  if (!read.length) return c;
+  return { ...c, steerAck: { id: read[read.length - 1].id, from: c.turn?.streaming.length ?? 0 } };
+}
+
+/** The person's last row that went out (not held, not failed, not a steer left waiting for Send / Delete). */
+function lastSent(c: Chat): MessageItem | undefined {
+  for (let k = c.items.length - 1; k >= 0; k--) {
+    const i = c.items[k];
+    if (i.kind === "user" && !i.held && !i.error && !i.steerUnknown) return i;
+  }
+  return undefined;
+}
+
+/** Row `id` reached the bot at `now`: it reads "Read" (an earlier mark keeps its time). */
+function markRead(c: Chat, id: string | undefined, now: number): Chat {
+  if (!id || !c.items.some((i) => i.kind === "user" && i.id === id && i.readAt === undefined && !i.held && !i.error)) return c;
+  return withItems(c, c.items.map((i) => (i.kind === "user" && i.id === id ? { ...i, readAt: now } : i)));
+}
+
+/** How long a steer's reply line may be: one glance under the bubble. */
+const STEER_REPLY_MAX = 140;
+
+/** The bot's first words after it read a steer: their first line goes under that message. No words yet (a tool call
+ *  with nothing written before it), it keeps waiting for the next ones. The rest stays hidden as commentary. */
+function ackSteer(c: Chat, said: string): Chat {
+  const id = c.steerAck?.id;
+  const line = hideSplitBlocks(said).split("\n").map((l) => l.trim()).find(Boolean);
+  if (!id || !line) return c;
+  const reply = line.length <= STEER_REPLY_MAX ? line : `${line.slice(0, STEER_REPLY_MAX - 1).trimEnd()}…`;
+  const items = c.items.map((i) => (i.kind === "user" && i.id === id ? { ...i, steerReply: reply } : i));
+  return { ...withItems(c, items), steerAck: null };
+}
 
 /** The row the running answer goes before once `id` leaves: the next user row after it (one still waiting, or
  *  typed under the answer), or none. */
@@ -1429,7 +1693,8 @@ export function reduceQueue(c: Chat, a: QueueAction): Chat {
         return { ...marked, queue: without, steering: null };
       }
       if (!a.ok) return { ...c, queue: [a.id, ...without], steering: null };
-      const moved = toEnd(c, a.id, ({ held: _h, ...m }) => ({ ...m, steered: true, ts: a.now / 1000 }));
+      // Hermes queued it: the bot has it
+      const moved = toEnd(c, a.id, ({ held: _h, ...m }) => ({ ...m, steered: true, ts: a.now / 1000, readAt: a.now }));
       // it joined the running turn: it sits before the messages still waiting (they go out after this turn), and
       // the turn's answer lands after it, still above those waiting ones
       const items = [...moved.items];
@@ -1469,6 +1734,14 @@ export function heldDrafts(state: AppState, drafts: Record<string, string>): Rec
 
 /** Whether a message typed now in `bot`'s main chat is held instead of sent: a turn runs, others wait before it,
  *  a send's turn has not started, or the chat is being read again after the bridge came back. */
+/** The view a page returns to: the one it was opened from, or (page to page) where the first page returns. */
+function backOf(ui: Ui): Ui["back"] {
+  return ui.view === "chat" || ui.view === "session" ? ui.view : ui.back;
+}
+
+/** Hermes' run states that mean a routine failed (the bridge's FAILED_RUN). */
+const FAILED_ROUTINE = new Set(["error", "failed", "failure", "delivery_failed", "blocked_config"]);
+
 export function mustHold(state: AppState, bot: string): boolean {
   const c = state.chats[bot];
   return !!c && (!!c.turn || !!c.queue?.length || !!c.pendingTurn || !!c.stale || !!c.steering);
@@ -1476,29 +1749,13 @@ export function mustHold(state: AppState, bot: string): boolean {
 
 // ---- selectors ------------------------------------------------------------------------------
 
-const timelineCache = new Map<string, { items: ChatItem[]; away: Away[] | undefined; max: number; out: TimelineItem[] }>();
-
 /**
- * The bot's timeline: chat rows in order with its elsewhere sessions placed by `last_active`.
- * Only the `maxAway` most recent elsewhere sessions go in (the UI shows the rest in the panel).
- * The result is memoised, so it is safe to call from render.
+ * The bot's timeline: its chat rows in order. The bot's sessions elsewhere (Slack, Discord, cron) are not placed in
+ * it: the header's "N other places" and the side panel show them (khope: answers from other channels in this chat,
+ * with nothing saying where they came from, made the chat hard to follow).
  */
-export function selectTimeline(state: AppState, bot: string, maxAway = 2): TimelineItem[] {
-  const items = state.chats[bot]?.items ?? EMPTY_ITEMS;
-  const away = state.elsewhere[bot];
-  const hit = timelineCache.get(bot);
-  if (hit && hit.items === items && hit.away === away && hit.max === maxAway) return hit.out;
-  const recent = [...(away ?? [])].sort((a, b) => b.last_active - a.last_active).slice(0, maxAway);
-  const out: TimelineItem[] = [...items];
-  // oldest first so equal timestamps keep newest-last
-  for (const a of recent.reverse()) {
-    const row: AwayItem = { kind: "away", id: `away-${a.id}`, ts: a.last_active, away: a };
-    let idx = out.length;
-    while (idx > 0 && out[idx - 1].ts > row.ts) idx -= 1;
-    out.splice(idx, 0, row);
-  }
-  timelineCache.set(bot, { items, away, max: maxAway, out });
-  return out;
+export function selectTimeline(state: AppState, bot: string): TimelineItem[] {
+  return state.chats[bot]?.items ?? EMPTY_ITEMS;
 }
 const EMPTY_ITEMS: ChatItem[] = [];
 
@@ -1617,6 +1874,12 @@ export interface Actions {
   openAutomations(job?: string | null): void;
   /** Open the Plugins page, scoped to `bot` when given (else the last one, else the selected bot). */
   openPlugins(bot?: string | null): void;
+  /** Open the Tasks page (src/tasks: issues and pull requests, read-only). */
+  openTasks(): void;
+  /** Tasks › Linear: whether `bot`'s config names a Linear MCP server (bridge `tasks.linear`, config only). */
+  tasksLinear(bot: string): Promise<{ configured: boolean; server: string }>;
+  /** Tasks › Start in thread: a new thread under `bot` titled `title`, opened, whose first message is `text`. */
+  startTaskThread(bot: string, title: string, text: string): Promise<string | null>;
   /** Open `bot`'s main chat and send `text` there (the pages' "say it in words" box, Run now). */
   sendTo(bot: string, text: string): Promise<void>;
   /** The bot's own `cron.manage` through the bridge: pause, resume or remove one job, or add one. Rejects with
@@ -1644,8 +1907,9 @@ export interface Actions {
   setPanelTab(tab: PanelTabId): void;
   /** Open the Runs tab on one run (null: the first in the list). */
   openRun(run: string | null): void;
-  /** Show or hide the full-size Runs graph over the chat column. */
-  setRunsFull(open: boolean): void;
+  /** Maximise the side panel in place (every pixel right of the sidebar) or restore it to its own width; `tab`
+   *  also picks the tab it opens on. */
+  setPanelMax(open: boolean, tab?: PanelTabId): void;
   /** Put text in the selected bot's composer and focus it. Never sends. */
   prefill(text: string): void;
   setTheme(theme: Theme): void;
@@ -1666,6 +1930,8 @@ export interface Actions {
   openSession(id: string | null): void;
   /** A new Hermes chat for `bot` in folder `cwd` (SESSIONS > oh-my-hermes). */
   folderOpen(bot: string, cwd: string): Promise<FolderOpenResult>;
+  /** Attach again folder chat `stored` (Hermes' stored id `folderOpen` returned) after a restart. */
+  folderResume(bot: string, cwd: string, stored: string): Promise<FolderResumeResult>;
   folderClose(bot: string, session: string): Promise<void>;
   /** Change the model of folder chat `session`. */
   folderSetModel(bot: string, session: string, change: { model: string; provider?: string }): Promise<ModelCurrent>;
@@ -1681,6 +1947,9 @@ export interface Actions {
   /** The bot's skills for the composer's `$` picker, read once per bot (`fresh`: read again, e.g. right after an
    *  install); [] when the bridge cannot list them. */
   skills(bot: string, fresh?: boolean): Promise<Skill[]>;
+  /** The slash commands Hermes answers for this bot (its own registry), for the composer's `/` menu; read once
+   *  per bot, [] when the bridge cannot list them. */
+  slashCommands(bot: string, fresh?: boolean): Promise<SlashCommand[]>;
   /** Channel names for Slack / Discord link chips, read once per bot; empty when the bridge cannot say. */
   linkPlaces(bot: string): Promise<LinkPlaces>;
   avatarOf(bot: string): Promise<{ rev: number | null; data: string | null }>;
@@ -1718,6 +1987,23 @@ export interface Actions {
   restartScope(bot: string): Promise<OpMap["bots.restart_scope"]["result"]>;
   /** Hermes' own `reload-plugins` on the bot's gateway (restarts nothing). */
   reloadPlugins(bot: string, name?: string): Promise<OpMap["plugins.reload"]["result"]>;
+  /** Re-read a bot's threads (`thread.list`). */
+  loadThreads(bot: string): Promise<void>;
+  /** A new, empty thread under `bot`, opened in the main column (the composer takes focus). */
+  newThread(bot: string): Promise<string | null>;
+  /** `./thread <text>`: a new thread under `bot`, opened, with `first` sent as its first message (it names the
+   *  thread); an empty `first` is the same as newThread. Nothing goes to the bot's main chat. */
+  newThreadWith(bot: string, first: string): Promise<string | null>;
+  /** Show thread `thread` of `bot` (reads its messages the first time); null = the bot's main chat. */
+  openThread(bot: string, thread: string | null): Promise<void>;
+  /** Send in a thread; the first message names it. */
+  threadSend(bot: string, thread: string, text: string): Promise<void>;
+  threadInterrupt(bot: string, thread: string): Promise<void>;
+  /** Stop the thread when it runs, then archive it in Hermes (hidden, kept, restorable). Rejects on refusal. */
+  removeThread(bot: string, thread: string): Promise<void>;
+  /** A route card's answer: `send` sends the person's message to the card's thread (and adds a link line); `keep`
+   *  only closes the card. */
+  answerRoute(bot: string, id: string, choice: "send" | "keep"): Promise<void>;
 }
 
 export type BridgeLike = Pick<BridgeClient, "connect" | "request" | "onAny" | "onStatus">;
@@ -1812,6 +2098,8 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   // skills.list per bot: the promise (asked once) and the names, for hoisting tokens when a message is sent
   const skillLists = new Map<string, Promise<Skill[]>>();
   const skillNames = new Map<string, string[]>();
+  // commands.list per bot: the composer's `/` menu, asked once (empty rows mean: keep the hint, no menu)
+  const slashLists = new Map<string, Promise<SlashCommand[]>>();
   const tokenNames = (text: string, bot: string) => [...new Set(findTokens(text, skillNames.get(bot) ?? []).map((k) => k.name))];
 
   // Steer queue: what each held row sends (the wire text, a Reply there target, its files), kept out of the state
@@ -1827,9 +2115,21 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     opts.onAction?.(a, state);
     flushQueues();
   };
+  // Thread chats (`fold:<bot>:<thread>` keys threadRoute made) and the ones removed here: a removed thread's held
+  // rows never go out, not even when the archive itself ends its turn
+  const threadKeys = new Set<string>();
+  const goneThreads = new Set<string>();
+  /** A thread chat whose thread is removed, archived or no longer listed: nothing of it is sent. */
+  const threadGone = (key: string) => {
+    if (goneThreads.has(key)) return true;
+    if (!threadKeys.has(key)) return false;
+    const { bot, session } = chatTarget(key);
+    return !(state.threads[bot] ?? []).some((r) => r.thread === session);
+  };
   /** Every chat whose held head can go out now sends it (exactly once: it leaves the queue before the request). */
   const flushQueues = () => {
     for (const bot of Object.keys(state.chats)) {
+      if (threadGone(bot)) continue;
       const id = queueReady(state, bot);
       if (id && !flushing.has(bot)) void sendHeld(bot, id);
     }
@@ -1841,16 +2141,18 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       dispatch({ type: "queue.take", bot, id, now: now() });
       if (!p) return;
       held.delete(id);
+      const to = chatTarget(bot);
       try {
         let wire = p.wire;
         if (p.files?.length) {
           const results: AttachResult[] = [];
-          for (const f of p.files) results.push(await bridge.request("chat.attach", { bot, kind: f.attach, name: f.name, data_base64: await f.read() }));
+          for (const f of p.files) results.push(await bridge.request("chat.attach", { bot: to.bot, kind: f.attach, name: f.name, data_base64: await f.read() }));
           wire = toWire(promptText(p.text, results), skillNames.get(bot) ?? []);
         }
         // queued: when Hermes is still busy (its own next turn: a steer it took during the final answer, or one held
         // through a compression), this waits behind it in Hermes' FIFO instead of steering or interrupting it
-        await bridge.request("chat.send", p.reply_to ? { bot, text: wire, reply_to: p.reply_to, queued: true } : { bot, text: wire, queued: true });
+        await bridge.request("chat.send", p.reply_to ? { ...to, text: wire, reply_to: p.reply_to, queued: true } : { ...to, text: wire, queued: true });
+        dispatch({ type: "send.ok", bot, id, now: now() });
         idleLater(bot, id);
       } catch (e) {
         dispatch({ type: "send.failed", bot, id, error: errText(e) });
@@ -1879,6 +2181,18 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
   /** A row of `bot` whose steer got no answer (it waits for Send or Delete): the text it carries, or null. */
   const unknownRow = (bot: string, id: string) =>
     state.chats[bot]?.items.some((i) => i.kind === "user" && i.id === id && i.steerUnknown) ? (held.get(id) ?? null) : null;
+  /** Typed in chat `key` (a bot's main chat or a thread) while its turn runs: held (steer queue, the ↵ mark) and sent
+   *  when the turn ends, instead of now. False when nothing runs there: send it now. */
+  const holdIfBusy = (key: string, id: string, p: { text: string; wire: string; reply_to?: string; files?: OutFile[] }, row: Extract<Action, { type: "local.user" }>) => {
+    if (!mustHold(state, key)) return false;
+    held.set(id, { bot: key, ...p });
+    dispatch({ ...row, held: true });
+    // "steer" in Settings presses this row's Steer: only when it is the one row waiting and a turn runs, so it never
+    // goes ahead of a message held before it; a refused steer still goes out after the turn, as from the button
+    const c = state.chats[key];
+    if (busySend() === "steer" && c?.turn && !c.steering && c.queue?.length === 1 && c.queue[0] === id) void actions.queueSteer(id, key);
+    return true;
+  };
   const fail = (e: unknown) => dispatch({ type: "error", message: errText(e) });
   const botArg = (bot?: string) => bot ?? state.selectedBot;
 
@@ -2005,6 +2319,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     dispatch({ type: "select", bot });
     markWatchSeen(bot);
     const jobs: Promise<unknown>[] = [loadElsewhere(bot), loadRoutines(bot), loadModels(bot)];
+    if (!state.threads[bot]) jobs.push(loadThreads(bot));
     if (!state.chats[bot]?.loaded) jobs.push(loadChat(bot).catch(fail));
     await Promise.all(jobs);
   };
@@ -2040,8 +2355,60 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     }
     const names = new Set(state.bots.map((b) => b.name));
     const loaded = Object.entries(state.chats).filter(([n, c]) => c.loaded && names.has(n)).map(([n]) => n);
-    await Promise.allSettled([...loaded.map(loadChat), ...peekUnlisted(), loadElsewhere(), loadRoutines(), loadAutomations()]);
+    const threaded = Object.keys(state.threads).filter((n) => names.has(n));
+    await Promise.allSettled([...loaded.map(loadChat), ...threaded.map(loadThreads), ...peekUnlisted(), loadElsewhere(), loadRoutines(), loadAutomations()]);
   };
+
+  // ---- threads under a bot (bridge `thread.*`) ----
+  const threadReq = <K extends keyof ThreadOps>(op: K, params: ThreadOps[K]["params"]): Promise<ThreadOps[K]["result"]> =>
+    (bridge.request as unknown as (op: string, p: unknown) => Promise<ThreadOps[K]["result"]>)(op, params);
+  const threadRoute = (bot: string, thread: string) => {
+    const key = threadKey(bot, thread);
+    threadKeys.add(key);
+    setChatRoute(key, {
+      label: `${(state.threads[bot] ?? []).find((r) => r.thread === thread)?.title || tr("thread.untitled")} · ${
+        state.bots.find((b) => b.name === bot)?.display_name ?? bot
+      }`,
+      open: () => void actions.openThread(bot, thread),
+      send: (text) => actions.threadSend(bot, thread, text),
+      interrupt: () => actions.threadInterrupt(bot, thread),
+      approve: async (request_id, choice) => {
+        await bridge.request("approval.respond", { bot, session: thread, request_id, choice });
+      },
+      clarify: async (request_id, answer) => {
+        await bridge.request(
+          "clarify.respond",
+          typeof answer === "string" ? { bot, session: thread, request_id, answer } : { bot, session: thread, request_id, answers: answer },
+        );
+      },
+    });
+    return key;
+  };
+  const loadThreads = async (bot: string) => {
+    try {
+      const r = await threadReq("thread.list", { bot });
+      dispatch({ type: "threads", bot, threads: r.threads });
+      for (const row of r.threads) threadRoute(bot, row.thread);
+    } catch {
+      /* an offline bot, or a bridge without threads: the bot row shows none */
+    }
+  };
+  const loadThread = async (bot: string, thread: string) => {
+    const key = threadRoute(bot, thread);
+    const since = now();
+    try {
+      const res = await threadReq("thread.open", { bot, thread });
+      dispatch({ type: "chat.opened", bot: key, res: { ...res, session_id: res.thread }, now: now(), since });
+      // the folder the open thread runs in (a restored row may have listed none): the terminal's next tab starts there
+      const row = (state.threads[bot] ?? []).find((r) => r.thread === thread);
+      if (row && res.cwd && res.cwd !== row.cwd) dispatch({ type: "thread.upsert", bot, row: { ...row, cwd: res.cwd } });
+    } catch (e) {
+      dispatch({ type: "chat.failed", bot: key, message: errText(e) });
+    }
+  };
+  /** The thread a `session`-tagged event belongs to, when it is one of the bot's threads. */
+  const threadOf = (ev: BridgeEvent) => (ev.session ? (state.threads[ev.bot] ?? []).find((r) => r.thread === ev.session) : undefined);
+  let threadSeq = 0;
 
   const actions: Actions = {
     async init() {
@@ -2057,17 +2424,56 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       });
       bridge.onAny((ev) => {
         dispatch({ type: "event", ev, now: now() });
+        // a removed thread's late events (its turn's end) leave no blank chat behind
+        if (ev.session && goneThreads.has(folderKey(ev.bot, ev.session))) dispatch({ type: "chat.forget", bot: folderKey(ev.bot, ev.session) });
         for (const l of [...bridgeListeners]) l(ev);
         opts.onEvent?.(ev.session ? { ...ev, bot: folderKey(ev.bot, ev.session) } : ev, state);
         for (const fn of [...eventFns]) fn(ev);
         if (ev.event === "elsewhere.update") void loadElsewhere(ev.bot);
-        if (ev.event === "turn.end" && !ev.session) pruneHeld(ev.bot);
+        if (ev.event === "turn.end") pruneHeld(ev.session ? folderKey(ev.bot, ev.session) : ev.bot);
         // After a turn the person pointed at a thread, re-read the places so the bot's new reply shows there.
         if (ev.event === "turn.end" && lastUserReplied(state, ev.bot)) void loadElsewhere(ev.bot);
         if (ev.event === "routine.ran") void loadRoutines(ev.bot);
         if (ev.event === "message" && ev.watch && !ev.session && ev.bot === state.selectedBot) markWatchSeen(ev.bot);
-        if (ev.event === "routine.ran" || ev.event === "routines.update" || ev.event === "routine.added") void loadAutomations();
+        if (ev.event === "routine.ran" || ev.event === "routines.update" || ev.event === "routine.added" || ev.event === "brief.ready")
+          void loadAutomations();
         if (ev.event === "bots.update") void reloadBots();
+        const tev = threadEvent(ev);
+        if (tev) {
+          if (tev.event === "thread.removed") {
+            // removed elsewhere (another window, the bot): its held rows go with it, as for the x here
+            const key = threadKey(tev.bot, tev.thread);
+            goneThreads.add(key);
+            for (const [id, p] of held) if (p.bot === key) held.delete(id);
+            dispatch({ type: "thread.gone", bot: tev.bot, thread: tev.thread });
+          }
+          else if (tev.event === "thread.split") {
+            // the bot opened a thread from its answer: the row at once (the list re-read confirms it), a link line
+            const known = (state.threads[tev.bot] ?? []).find((r) => r.thread === tev.thread);
+            const row: ThreadRow = known
+              ? { ...known, title: known.title || tev.title, last: now() / 1000 }
+              : { thread: tev.thread, title: tev.title, cwd: "", started_at: now() / 1000, running: false, needs: false, message_count: 0, last: now() / 1000 };
+            dispatch({ type: "thread.upsert", bot: tev.bot, row });
+            threadRoute(tev.bot, tev.thread);
+            dispatch({ type: "thread.note", bot: tev.bot, message: tev.message, item: { kind: "threadLink", id: `split-${tev.thread}`, ts: now() / 1000, bot: tev.bot, thread: tev.thread, title: tev.title } });
+          } else if (tev.event === "thread.route") {
+            // the bot thinks the person's last message belongs in an open thread: ask, move nothing
+            const items = state.chats[tev.bot]?.items ?? [];
+            const at = items.findIndex((i) => i.kind === "assistant" && i.id === tev.message);
+            const upTo = at < 0 ? items : items.slice(0, at);
+            const said = [...upTo].reverse().find((i): i is MessageItem => i.kind === "user");
+            if (said && (state.threads[tev.bot] ?? []).some((r) => r.thread === tev.thread))
+              dispatch({ type: "thread.note", bot: tev.bot, message: tev.message, item: { kind: "threadRoute", id: `route-${tev.message}`, ts: now() / 1000, bot: tev.bot, thread: tev.thread, title: tev.title, text: said.text } });
+          }
+          // a thread the bot opened itself (or another window made): the list re-reads
+          else if (!(state.threads[tev.bot] ?? []).some((r) => r.thread === tev.thread)) void loadThreads(tev.bot);
+        } else {
+          const row = threadOf(ev);
+          if (row && (ev.event === "turn.start" || ev.event === "turn.end" || ev.event === "message" || ev.event === "session.title")) {
+            const title = ev.event === "session.title" ? ev.title.trim() : row.title;
+            dispatch({ type: "thread.upsert", bot: ev.bot, row: { ...row, title, last: now() / 1000, running: ev.event === "turn.start" || (ev.event !== "turn.end" && row.running) } });
+          }
+        }
         // a restarted bot is attached again: its chat re-reads itself, as after a reconnect; a bot outside the list
         // is asked again, because the restart dropped the bridge's link to its Bot Chat
         if (ev.event === "bot.restarted" && ev.ok) {
@@ -2097,15 +2503,18 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
         // those reads ended, a click on the panel in the meantime (the places chip, ⌘.) was undone by it
         const loading = first ? selectBot(first) : Promise.resolve();
         if (back?.bot && back.bot === first) {
-          const { panelOpen, panelTab, runsFull, runId, session } = back;
+          const { panelOpen, panelTab, runsFull, runId } = back;
+          // a TERMINALS session comes back open (sessions/entry.ts)
+          const session = SESSIONS_ENTRY ? back.session : null;
           dispatch({ type: "ui.restore", ui: { panelOpen, panelTab, runsFull, runId, session } });
-        } else if (back?.session) dispatch({ type: "ui.session", id: back.session });
+        } else if (back?.session && SESSIONS_ENTRY) dispatch({ type: "ui.session", id: back.session });
         await loading;
         // Load the other listed chats too, so the sidebar can show previews and unread counts. A profile outside
         // the list is not opened as a chat (that would make its Bot Chat, and list it): it is only asked for the
         // prompts its existing Bot Chat holds, so an approval or question it is waiting on still reaches Needs you.
         await Promise.allSettled([
           ...selectSidebarBots(state).filter((b) => b.name !== first && online(b)).map((b) => loadChat(b.name)),
+          ...selectSidebarBots(state).filter((b) => b.name !== first && online(b)).map((b) => loadThreads(b.name)),
           // every bot outside the list, not only `online` ones: bots.list reads offline for any profile the bridge
           // has not attached yet, which is every one of these at start; chat.open attaches on demand, and one that
           // cannot start just fails and is skipped
@@ -2126,10 +2535,8 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       const chip = state.replyTo[bot] ?? null;
       const reply = chip ? { source: chip.source, label: chip.place } : undefined;
       const wire = toWire(t, skillNames.get(bot) ?? []);
-      if (mustHold(state, bot)) {
-        // a turn runs: omher holds it (steer queue) and sends it when the turn ends
-        held.set(id, { bot, text: t, wire, ...(chip ? { reply_to: chip.session_id } : {}) });
-        dispatch({ type: "local.user", bot, id, text: t, now: now(), reply, sent: wire, skills: tokenNames(t, bot), held: true });
+      // a turn runs: omher holds it (steer queue) and sends it when the turn ends
+      if (holdIfBusy(bot, id, { text: t, wire, ...(chip ? { reply_to: chip.session_id } : {}) }, { type: "local.user", bot, id, text: t, now: now(), reply, sent: wire, skills: tokenNames(t, bot) })) {
         if (chip) dispatch({ type: "reply.set", bot, chip: null });
         return;
       }
@@ -2137,6 +2544,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       if (chip) dispatch({ type: "reply.set", bot, chip: null });
       try {
         await bridge.request("chat.send", chip ? { bot, text: wire, reply_to: chip.session_id } : { bot, text: wire });
+        dispatch({ type: "send.ok", bot, id, now: now() });
       } catch (e) {
         dispatch({ type: "send.failed", bot, id, error: errText(e) });
       }
@@ -2154,8 +2562,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
         const id = `local-${++localSeq}`;
         const t = text.trim();
         const shown: SentFile[] = files.map(({ name, size, kind, url }) => ({ name, size, kind, url }));
-        held.set(id, { bot, text, wire: toWire(t, skillNames.get(bot) ?? []), files });
-        dispatch({ type: "local.user", bot, id, text: t, now: now(), files: shown, skills: tokenNames(t, bot), held: true });
+        holdIfBusy(bot, id, { text, wire: toWire(t, skillNames.get(bot) ?? []), files }, { type: "local.user", bot, id, text: t, now: now(), files: shown, skills: tokenNames(t, bot) });
         return;
       }
       const results: AttachResult[] = [];
@@ -2172,6 +2579,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       dispatch({ type: "local.user", bot, id, text: text.trim(), now: now(), files: shown, sent, skills: tokenNames(text.trim(), bot) });
       try {
         await bridge.request("chat.send", { bot, text: sent });
+        dispatch({ type: "send.ok", bot, id, now: now() });
       } catch (e) {
         dispatch({ type: "send.failed", bot, id, error: errText(e) });
       }
@@ -2184,7 +2592,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       if (!state.chats[bot]?.turn || interrupting.has(bot)) return;
       interrupting.add(bot);
       try {
-        await bridge.request("chat.interrupt", { bot });
+        await bridge.request("chat.interrupt", chatTarget(bot));
       } catch (e) {
         fail(e);
       } finally {
@@ -2205,7 +2613,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       let ok = false;
       let unknown = false;
       try {
-        const status = (await bridge.request("chat.steer", { bot, text: p.wire })).status;
+        const status = (await bridge.request("chat.steer", { ...chatTarget(bot), text: p.wire })).status;
         ok = status === "queued";
         // Hermes could not say whether the agent saw it: the same as no answer, the person decides
         unknown = status === "uncertain";
@@ -2290,6 +2698,24 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       dispatch({ type: "ui.automations", job });
       void loadAutomations();
     },
+    openTasks: () => dispatch({ type: "ui.tasks" }),
+    tasksLinear: (bot) => (bridge.request as unknown as (op: string, p: unknown) => Promise<{ configured: boolean; server: string }>)("tasks.linear", { bot }),
+    async startTaskThread(bot, title, text) {
+      try {
+        const key = `t${Date.now().toString(36)}${(threadSeq += 1)}`;
+        const r = await threadReq("thread.create", { bot, key, title });
+        const { model, provider, reasoning, ...row } = r;
+        dispatch({ type: "thread.upsert", bot, row: { ...row, title: row.title || title, last: now() / 1000 } });
+        const ck = threadRoute(bot, row.thread);
+        dispatch({ type: "chat.opened", bot: ck, res: { session_id: row.thread, messages: [], running: false, model, provider, reasoning }, now: now() });
+        dispatch({ type: "ui.thread", bot, thread: row.thread });
+        await actions.threadSend(bot, row.thread, text);
+        return row.thread;
+      } catch (e) {
+        fail(e);
+        return null;
+      }
+    },
     openPlugins: (bot) => dispatch({ type: "ui.plugins", bot: bot ?? state.ui.pluginsBot ?? state.selectedBot ?? state.bots[0]?.name ?? null }),
     async sendTo(bot, text) {
       if (!text.trim()) return;
@@ -2350,7 +2776,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     togglePanel: (open) => dispatch({ type: "ui.panel", open }),
     setPanelTab: (tab) => dispatch({ type: "ui.panelTab", tab }),
     openRun: (run) => dispatch({ type: "ui.run", run }),
-    setRunsFull: (open) => dispatch({ type: "ui.runsFull", open }),
+    setPanelMax: (open, tab) => dispatch({ type: "ui.panelMax", open, tab }),
     prefill(text) {
       const bot = state.selectedBot;
       if (!bot) return;
@@ -2397,6 +2823,7 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     },
     openSession: (id) => dispatch({ type: "ui.session", id }),
     folderOpen: (bot, cwd) => bridge.request("folder.open", { bot, cwd }),
+    folderResume: (bot, cwd, stored) => bridge.request("folder.resume", { bot, cwd, stored }),
     async folderClose(bot, session) {
       await bridge.request("folder.close", { bot, session });
     },
@@ -2444,6 +2871,21 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
       }
       return list;
     },
+    slashCommands(bot, fresh) {
+      if (fresh) slashLists.delete(bot);
+      let list = slashLists.get(bot);
+      if (!list) {
+        list = bridge
+          .request("commands.list", { bot })
+          .then((r) => r.commands)
+          .catch(() => {
+            slashLists.delete(bot); // an older bridge without the op, or a failed read: no menu, no toast
+            return [];
+          });
+        slashLists.set(bot, list);
+      }
+      return list;
+    },
     linkPlaces: (bot) =>
       bridge
         .request("links.places", { bot })
@@ -2485,6 +2927,93 @@ export function createStore(bridge: BridgeLike, opts: StoreOptions = {}): Store 
     restartBot: (bot, interrupt) => bridge.request("bots.restart", interrupt ? { bot, interrupt: true } : { bot }),
     restartScope: (bot) => bridge.request("bots.restart_scope", { bot }),
     reloadPlugins: (bot, name) => bridge.request("plugins.reload", name ? { bot, name } : { bot }),
+    loadThreads,
+    async newThread(bot) {
+      try {
+        const key = `t${Date.now().toString(36)}${(threadSeq += 1)}`;
+        const r = await threadReq("thread.create", { bot, key });
+        const { model, provider, reasoning, ...row } = r;
+        dispatch({ type: "thread.upsert", bot, row: { ...row, last: now() / 1000 } });
+        const ck = threadRoute(bot, row.thread);
+        dispatch({ type: "chat.opened", bot: ck, res: { session_id: row.thread, messages: [], running: false, model, provider, reasoning }, now: now() });
+        dispatch({ type: "ui.thread", bot, thread: row.thread });
+        return row.thread;
+      } catch (e) {
+        fail(e);
+        return null;
+      }
+    },
+    async newThreadWith(bot, first) {
+      const thread = await actions.newThread(bot);
+      if (thread && first.trim()) await actions.threadSend(bot, thread, first);
+      return thread;
+    },
+    async openThread(bot, thread) {
+      if (state.ui.roster && state.bots.some((b) => b.name === bot)) listBot(bot, true);
+      if (!thread) return selectBot(bot);
+      dispatch({ type: "ui.thread", bot, thread });
+      if (!state.chats[threadKey(bot, thread)]?.loaded) await loadThread(bot, thread);
+    },
+    async threadSend(bot, thread, text) {
+      const key = threadRoute(bot, thread);
+      const id = `local-${++localSeq}`;
+      const t = text.trim();
+      // typed while the thread's turn runs: the same steer queue as the main chat (held, ↵ ↓ × buttons, sent in order)
+      if (holdIfBusy(key, id, { text: t, wire: t }, { type: "local.user", bot: key, id, text: t, now: now() })) return;
+      dispatch({ type: "local.user", bot: key, id, text: t, now: now() });
+      const row = (state.threads[bot] ?? []).find((r) => r.thread === thread);
+      // the row reads the first words at once; Hermes' own title replaces them when it lands
+      if (row && !row.title) dispatch({ type: "thread.upsert", bot, row: { ...row, title: firstWords(text), last: now() / 1000 } });
+      try {
+        await bridge.request("chat.send", { bot, session: thread, text: text.trim() });
+        dispatch({ type: "send.ok", bot: key, id, now: now() });
+      } catch (e) {
+        dispatch({ type: "send.failed", bot: key, id, error: errText(e) });
+      }
+    },
+    async threadInterrupt(bot, thread) {
+      try {
+        await bridge.request("chat.interrupt", { bot, session: thread });
+      } catch (e) {
+        fail(e);
+      }
+    },
+    async removeThread(bot, thread) {
+      const key = threadKey(bot, thread);
+      // its held rows (and its chat) go first: the archive ends the thread's turn, and that turn's end must not
+      // drain them to the archived session
+      goneThreads.add(key);
+      const texts = (state.chats[key]?.queue ?? []).map((id) => held.get(id)?.text).filter((t): t is string => !!t);
+      for (const [id, p] of held) if (p.bot === key) held.delete(id);
+      dispatch({ type: "chat.forget", bot: key });
+      try {
+        await threadReq("thread.remove", { bot, thread });
+      } catch (e) {
+        // not removed: the thread reads again, and what it held is back in its box, unsent
+        goneThreads.delete(key);
+        const typed = getDraft(key).trim();
+        if (texts.length) dispatch({ type: "ui.draft", bot: key, text: [...texts, ...(typed ? [typed] : [])].join("\n") });
+        if (state.ui.thread === thread) void loadThread(bot, thread);
+        throw e;
+      }
+      setChatRoute(key, null);
+      dispatch({ type: "thread.gone", bot, thread });
+    },
+    async answerRoute(bot, id, choice) {
+      const card = state.chats[bot]?.items.find((i): i is ThreadRouteItem => i.kind === "threadRoute" && i.id === id);
+      if (!card || card.done) return;
+      if (choice === "keep") return dispatch({ type: "thread.routed", bot, id, done: "kept" });
+      const key = threadRoute(bot, card.thread);
+      const local = `local-${++localSeq}`;
+      try {
+        await bridge.request("chat.send", { bot, session: card.thread, text: card.text });
+      } catch (e) {
+        return dispatch({ type: "thread.routed", bot, id, error: errText(e) });
+      }
+      dispatch({ type: "local.user", bot: key, id: local, text: card.text, now: now() });
+      dispatch({ type: "thread.routed", bot, id, done: "sent" });
+      dispatch({ type: "thread.note", bot, message: id, item: { kind: "threadLink", id: `${id}-link`, ts: now() / 1000, bot, thread: card.thread, title: card.title } });
+    },
   };
 
   return {
@@ -2514,6 +3043,44 @@ export function notifyEnabled(): boolean {
 export function setNotifyEnabled(on: boolean): void {
   try {
     localStorage.setItem("omher.notify", on ? "on" : "off");
+  } catch {
+    /* no storage */
+  }
+}
+
+/** "Also notify on errors" (Settings > General): a turn that ends with an error raises a notification too. Off unless
+ *  turned on: an error only marks its chat. */
+export function notifyErrorsEnabled(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem("omher.notifyErrors") === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function setNotifyErrorsEnabled(on: boolean): void {
+  try {
+    localStorage.setItem("omher.notifyErrors", on ? "on" : "off");
+  } catch {
+    /* no storage */
+  }
+}
+
+/** "While it answers" (Settings › General): what a message typed during a turn does. "queue" (the default) holds it
+ *  until the turn ends; "steer" presses the held row's Steer for the person. Saved on this computer. */
+export type BusySend = "queue" | "steer";
+
+export function busySend(): BusySend {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem("omher.busySend") === "steer" ? "steer" : "queue";
+  } catch {
+    return "queue";
+  }
+}
+
+export function setBusySend(mode: BusySend): void {
+  try {
+    localStorage.setItem("omher.busySend", mode);
   } catch {
     /* no storage */
   }
@@ -2562,18 +3129,27 @@ export function soundOf(a: Action, state: AppState, board: SoundBoard): void {
   }
 }
 
+/** Rings with no words wait for the question that says what they want (notify.ts `createNoteGate`). */
+const noteGate = createNoteGate();
+
 /** A system notification for a chat event, unless the person is looking at that chat. SESSIONS chats
- *  (`fold:` / `agent:` keys) name themselves through their route and open their own view. */
+ *  (`fold:` / `agent:` keys) name themselves through their route and open their own view. A question with no text
+ *  waits for a texted one (8 s); an error notifies only with "Also notify on errors". */
 export function notifySessionEvent(ev: BridgeEvent, state: AppState): void {
   if (!notifyEnabled()) return;
   const watching = (bot: string) => watchingChat(state, bot);
   const name = (bot: string) => chatRoute(bot)?.label ?? state.bots.find((b) => b.name === bot)?.display_name ?? bot;
-  const note = noteFor(ev, { name, watching });
-  if (note) void showNote(note, () => {
-    const route = chatRoute(note.bot);
-    if (route) route.open();
-    else void singleton?.actions.selectBot(note.bot);
-  }, ev.event === "message" && !!ev.watch);
+  const note = noteFor(ev, { name, watching, errors: notifyErrorsEnabled() });
+  if (!note) return;
+  const asks = ev.event === "approval.request" || ev.event === "clarify.request";
+  const empty = ev.event === "clarify.request" && !ev.question.trim();
+  noteGate.offer(note.bot, empty ? "empty" : asks ? "ask" : "plain", () =>
+    void showNote(note, () => {
+      const route = chatRoute(note.bot);
+      if (route) route.open();
+      else void singleton?.actions.selectBot(note.bot);
+    }, ev.event === "message" && !!ev.watch),
+  );
 }
 
 /** One note for the automation answers `bot` got while omher was closed ("<bot>: N watch alerts"). */
@@ -2584,12 +3160,18 @@ export function notifyWatchMissed(bot: string, rows: Msg[], state: AppState): vo
   if (note) void showNote(note, () => void singleton?.actions.selectBot(bot), true);
 }
 
-/** A system notification for what session `id` did outside its chat (its program ended, it could not start, its
- *  terminal rang), unless the person is looking at that session. A click opens the session. */
+/** A system notification for what session `id` did outside its chat (its program ended badly, it could not start, its
+ *  terminal rang), unless the person is looking at that session. A clean exit only marks the row. A click opens the
+ *  session. */
 export function notifySessionNote(id: string, n: SessionNote, state: AppState): void {
-  if (!notifyEnabled()) return;
+  if (!notifyEnabled() || !sessionRings(n)) return;
+  if (n.told && notifyErrorsEnabled()) return; // the failed turn's own notification said it
   if (windowWatched() && state.ui.view === "session" && state.ui.session === id) return;
-  void showNote(sessionNote(id, n), () => singleton?.actions.openSession(id));
+  const fire = () => void showNote(sessionNote(id, n), () => singleton?.actions.openSession(id));
+  // a session with a chat can follow its ring with the question itself; a bare terminal never says more than the ring
+  const key = n.kind === "bell" ? (sessionKeyOf?.(id) ?? null) : null;
+  if (key) noteGate.offer(key, "empty", fire);
+  else fire();
 }
 
 /** Set by SESSIONS: the chat key shown for a session id (so its own notifications stay quiet). */

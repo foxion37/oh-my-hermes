@@ -10,6 +10,51 @@ what a user sees is in [Installation](INSTALLATION.md).
 
 ## Launch and the gateway child
 
+### Proofreading
+
+Proofreading is opt-in. Alt+P explicitly checks the draft. With
+`OMH_PROOFREAD=1`, the main or clarify free-text composer also checks after
+600 ms quiet; any other value, or none, sends nothing until Alt+P. Only
+unprotected draft text is sent to a local LanguageTool server for inline
+underlines (portable SGR 4, including NO_COLOR). Cursor motion alone never starts a check.
+Only plain HTTP to a loopback IP literal is accepted; `localhost` is pinned to
+127.0.0.1. Proxy variables are bypassed and redirects refused. A daemon worker
+allows one pending request with a five-second elapsed deadline, a 512 KiB reply
+limit and a 20,000-character client draft limit. Composer remains I/O-free.
+Masked fields send nothing. Command lines, fenced, indented, inline, multiline
+and unclosed backtick code, image tokens and paste chips are blanked before HTTP
+with UTF-16 widths preserved. Paste contents are never expanded.
+
+Main drafts and clarify free-text fields share diagnostics. Approval and choice
+menus keep their keys, as does pending Vim grammar. Results bind composer object,
+edit/metadata generation, session and question identity. Changed ownership or
+draft discards results immediately, including an ownership change away and back.
+Automatic results never open review or take keys. Alt+P opens only the issue
+containing the cursor, or the immediately preceding issue at its exact end when
+none contains it. Without fresh results it remembers this explicit intent for
+the exact snapshot; editing or changing owner cancels it. Without an issue at
+the cursor it shows a local hint. Enter explicitly accepts the selected replacement
+after the 300 ms arming guard; Cancel and Esc leave text unchanged. A spelling
+issue on one word of letters (accented forms included; a word with an
+apostrophe or hyphen such as `don't` or `e-mail` gets no dictionary action) can
+be added to the private `proofread/dictionary.txt` under the OMH home; without
+an OMH home there is no dictionary. Saved words hide spelling marks, not
+grammar marks, and a correction overlapping a spelling keeps its own mark and
+replacements. Alt+P on the saved spelling offers removal without changing the
+draft. The dictionary is read and saved on a short-lived background thread,
+never on the key or paint path: the first check reads it, later results reread
+it only when the file changed (another window's save included), a save rereads
+under its lock before an atomic replacement, and a file or lock that is not a
+regular file is refused without waiting. A failed save says so on the info line
+and leaves the file and ordinary corrections as they were. Each action closes
+review without advancing elsewhere. Each accepted edit uses Composer.replace
+and its existing undo. No action submits a prompt.
+Unavailable servers leave the draft untouched and produce a quiet inline status,
+with retries backing off from 5 to at most 30 seconds; Alt+P retries immediately.
+One in-flight request finishes before the latest eligible generation is checked.
+No per-keystroke or stale-result transcript notices are added. No server
+installation or startup happens automatically. Only tui/app.py imports the client.
+
 The OMH TUI is the frontend bare `omh` opens. `omh` runs the user's own `hermes
 --tui` with `HERMES_TUI_DIR` pointing at OMH's packaged frontend, so Hermes'
 launcher still resolves the profile, resume target, working directory and
@@ -92,6 +137,24 @@ last row, "no, and tell Hermes what to do instead", sends the explicit deny at
 once, interrupts nothing, and then opens the composer for what the person tells
 Hermes instead; Esc there sends nothing more.
 
+The one prompt it sends that the person did not type is the onboarding prompt.
+It goes only when `omh` was launched with `--onboard model-setup`. The accepted
+"Set up your models now?" question at the end of an interactive `omh setup` is
+its only automatic caller (setup opens the TUI as a child process and waits for
+it); a person may also run `omh --onboard model-setup` themselves, which sends
+the same fixed prompt.
+The flag is for a bare launch in a new session: it is refused beside `--resume`
+or `--continue` or with a subcommand, and it skips the last-session question and
+the what's-new notice. The text is the fixed, packaged one in
+`src/tui/onboarding.py` (English, Korean, Japanese or Chinese by the `OMH_LANG`
+setup passed on), sent once through the same submit path a typed prompt takes,
+so it is echoed, queued and checked against the default model like any other.
+It is never sent on a resume, a reconnect, a gateway restart or a session
+switch, and `/new` starts a session without it. `OMH_TUI_ONBOARD` and
+`OMH_TUI_ONBOARD_LANG` are `OMH_TUI_` names, so they never reach the gateway.
+Everything after that first turn is the person's own: Hermes asks, the person
+answers, and every approval and secret request stays theirs to answer.
+
 When the person attaches an image, it also sends `image.render` once for that
 image, naming only the path Hermes staged and answered, to draw a preview under
 the prompt that sends it: it asks for at most 64 columns by 16 rows, for kitty
@@ -173,7 +236,11 @@ composer), which takes the oldest one. A steer Hermes does not take waits in
 the TUI's own queue for the running turn to end, as everything sent during a
 turn does, so it never interrupts that turn. A steer Hermes does not answer within its answer
 budget (120 s, longer when held behind a /compress) goes back to the composer
-and is never re-sent.
+and is never re-sent. The one stop the send-now key asks for is the person's
+own: Ctrl+Enter on a prompt with images, which a steer cannot carry, sends
+`session.interrupt` and then that prompt, with its images, once the stopped
+turn ends; a second stop, a session switch or a new gateway gives it back to
+the composer unsent.
 
 ## Look
 
@@ -183,6 +250,7 @@ skin's accent for a reply, a call's state colour for the call), a call's state
 in its mark's glyph and colour as the dag view draws it (running blue `○`, done
 green `●`, failed red `✗`), its name in its tool family's hue at 4.5:1 on dark
 and light, consecutive skill loads and tool-detail reads folded into one row,
+consecutive calls of one other tool folded into one row over their commands,
 and the composer between two full-width rules with no side edges; none of it
 changes what the TUI sends or answers.
 
@@ -216,6 +284,14 @@ child, act on that agent, and only on the person's keypress: `x` interrupts it
 (`subagent.interrupt`) once a second `x` confirms, and `s` steers it
 (`subagent.steer`) with text the person then types and sends; the TUI never
 interrupts, steers or answers for a subagent on its own.
+
+The waiting row above the composer between turns (`src/tui/wait_kinds.py`)
+names what the session waits on from what the TUI already holds, read-only:
+the words of a background process's command as Hermes' `processes.json`
+records it, the first watch pattern of the `terminal` result Hermes sent as
+it started the process, and the delegation graph's lane fields (state,
+category, role, model, the run's name) the HUD read. It reads no other file,
+runs nothing it names, sends nothing, and never reads what the model said.
 
 ## Shell commands, rewind and mouse
 
@@ -307,7 +383,9 @@ and `O_NONBLOCK`), keeps its bytes in memory and nowhere else, and has
 Hermes let go of it (`image.detach`). A prompt that goes with the image
 stages those bytes again through Hermes' `image.attach_bytes`, the call
 Hermes' own remote clients use, and nothing else is staged until Hermes has
-taken them. The explicit `/omh-model` save also edits the person's existing
+taken them. Proofreading's dictionary, `<omh_home>/proofread/dictionary.txt`
+(mode 0600, at most 64 KiB) and its `.dictionary.txt.lock` sidecar, is written
+only by an explicit Add or Remove ([Proofreading](#proofreading)). The explicit `/omh-model` save also edits the person's existing
 `routing/identities.json` under the active OMH home: only the chosen identities'
 `model_chain` and `enabled` fields change. Its per-file atomic replacement
 preserves existing prompt strings and unrelated profiles, including invalid
@@ -335,12 +413,12 @@ clipboard helper where Hermes stages images, as the stdio entry saved it.
 
 ## Connections and the import allow list
 
-The frontend makes one network call of its own, the update notice: at most
+Beyond local proofreading above, the frontend's network call is the update notice: at most
 once a day per OMH home, on a background thread, an HTTPS GET of npm's latest
 `oh-my-hermes` version from `registry.npmjs.org`, keeping only the version
 (`tui/update_notice.py`, listed in INVARIANT 2's `NETWORK_CLIENT_BRIDGES`; off
 with `OMH_TUI_UPDATE_CHECK=0`, `omh theme update-check off`, or `omh
-update-check` set to `off`). Beyond that it opens no socket. It strips the sidecar and
+update-check` set to `off`). Beyond these it opens no socket. It strips the sidecar and
 attach URLs from the child's environment, and reaps the child when it exits,
 SIGTERM and SIGHUP included; the child's only connections are the two above, to
 the person's own Hermes home (the WebSocket goes to the URL the gateway's grant
@@ -470,10 +548,104 @@ scope and profile and `--resume <id>` (`src/commands/bare_launch.py`, in
 INVARIANT 1's `PROCESS_SPAWN_ALLOWLIST`), and holds its own generation until
 that exits. A 78 without the marker is an ordinary exit code. A new TUI is not
 told to restart again: the generation it runs is the one `current` names.
-`UPDATED_ENV` in that launch makes the new TUI offer `/gateway restart` once,
-with Cancel first, when the shared gateway still runs older OMH plugin code. It
-never restarts the gateway without the person's pick. Each such restart leaves
+`UPDATED_ENV` in that launch makes the new TUI say in one line, asking nothing,
+that the shared gateway still runs older OMH plugin code and that `/gateway
+restart` loads the new code. It never restarts the gateway itself. Each such restart leaves
 one waiting `omh` holding its generation until the session ends.
+
+## Coming back after a closed terminal
+
+Every TUI that takes a stored session records it in
+`<omh_home>/tui/live-sessions.json` (`src/tui/live_sessions.py`, schema
+`omh_tui_live_sessions/v1`, written 0600, at most 64 entries): the session id,
+the Hermes home it runs in, the folder, the terminal it runs in as `NAME=value`
+of the first terminal variable set (`OMHER_TERMINAL_LINK`, `CMUX_SURFACE_ID`,
+`HERDR_PANE_ID`, `ITERM_SESSION_ID`, `TERM_SESSION_ID`, `KITTY_WINDOW_ID`,
+`WEZTERM_PANE`, `WT_SESSION`, `OTTY_PANE_ID`, `TMUX_PANE`; only read, no
+terminal's own files are written), the pid and boot of each TUI that holds it
+open, and how the session ended. Nothing said in a session is recorded, and nothing leaves
+the machine.
+
+A session the person left is closed: `/exit`, Ctrl+D, a normal close, `/new`
+or `/resume` moving away, a relaunch for an update. It never reopens by
+itself. A terminal hang-up (SIGHUP), SIGTERM, SIGBREAK, an uncaught crash, or a
+TUI whose process is gone (killed, power loss: a different boot or a pid that
+no longer runs) is dropped. `resume-pending` beside the record exists while a
+dropped session waits, and `live-pids` holds, on one line, `b:` and the boot
+its writer ran on (spaces removed, `-` when unknown; on Linux the kernel's boot
+id verbatim) and then the pids of the TUIs recorded as running, so a TUI killed
+outright shows before anything sweeps it. A line whose first word lacks `b:`
+was written by an older OMH and holds pids only; the shell hook reads every
+word of it as a pid. A dropped session reopens once: the reopen marks it
+`resumed` under the record's lock before Hermes opens it, so a resume Hermes
+refuses is not tried again.
+
+A bare `omh`, on by default, reopens the session this terminal dropped, or
+else, outside omher, the newest one dropped in this folder, within 72 hours, in
+a Hermes home this launch opens: the one Hermes' launcher picks (`-p NAME`'s
+profile, `-p default` the root, else the sticky `active_profile`, else the
+resolved home) and the TUI's own runtime home when this launch can open it now
+(its root files read as UTF-8, and the root config names no messaging token
+under `platforms:`). That is checked read-only, before anything is claimed, and
+only when a session of the own home is the one that would win here; the home
+is built or refreshed only after the claim picked such a session, so a launch
+that reopens a shared session, or none, leaves the own home's files as they
+are. An own-home winner this launch cannot open is passed over, and the claim
+chooses among the shared homes. When another launch takes the session that
+would have won first, the launch looks once more. A session in any other home is left for a launch that opens there. Should the claimed home still fail to open
+after the claim, the claim is given back (the session is dropped again and
+`resume-pending` re-armed) and the launch claims again among the shared homes
+only; with nothing there a new session opens. The id is never sent to
+another home. It runs at once, in the home it was
+recorded in, as `omh --resume <id>` would, and says so in one stderr line naming the session
+and `omh --new`. A session nothing was said in is skipped (Hermes keeps no
+such session). It applies only on a terminal and only when the launch names no
+session of its own (`--resume`, `--continue`, `--onboard`). Off switches:
+`omh --new` for one launch, `OMH_AUTO_RESUME=0` for one shell, and `omh
+auto-resume set --mode off` (`auto_resume.mode` in `setup-profile.json`;
+absent is on). `omh auto-resume status` shows the mode, the shell hooks and the
+dropped sessions waiting, naming each terminal variable without its value.
+
+A new terminal reopens it too only after an explicit opt-in: `omh auto-resume
+shell install [--shell zsh|bash|powershell] [--dry-run]`, or a Yes to `omh
+setup`'s question (default No, asked on a terminal while the shell's rc exists
+without the block). It appends one block between `# >>> omh auto-resume >>>`
+and `# <<< omh auto-resume <<<` at the end of `${ZDOTDIR:-$HOME}/.zshrc`,
+`~/.bashrc`, or PowerShell's current-user profile (`src/tui/shell_hook.py`),
+written through a temporary file and a rename with the file's mode kept; a
+symlinked rc is written at its target only when that is inside the home. `omh
+auto-resume shell remove` deletes exactly that block, and a file the block was
+appended to comes back byte for byte. The block, in an interactive shell where
+none of `OMH_AUTO_RESUME_DONE`, `HERMES_SESSION_ID`, `OMH_TUI_SESSION_FILE`
+and `CI` is set, exports `OMH_AUTO_RESUME_DONE=1` (a nested shell does
+nothing) and looks with the shell's own builtins for `resume-pending`, or for
+a pid in `live-pids` that no longer runs (`read`, `kill -0`; PowerShell
+`Get-Process`), so no process starts while nothing waits and every recorded
+TUI still runs. Where `/proc/sys/kernel/random/boot_id` can be read (Linux),
+the zsh and bash blocks also wake when it differs from the boot `live-pids`
+recorded, so a pid the new boot reused does not hide a TUI the reboot ended.
+macOS has no boot source a builtin can read, and the PowerShell block keeps the
+pid check too: after a reboot that hands a recorded pid to a live process, the
+hook stays quiet, and a later terminal, once that pid is gone, or a bare `omh`
+(which sweeps by boot) reopens the session. `kill -0` also fails for a pid
+another user now holds; that wakes the hook too, and `shell-start` finds
+nothing and exits 0 at once. The file lists only this user's TUIs, so that
+takes a recycled pid. When one holds and `omh` is on PATH, the first prompt runs
+`omh --omh-home <home> auto-resume shell-start`: zsh from its first
+`zle-line-init`, kept out of the history by a one-shot `zshaddhistory` hook
+that changes no history option, bash from its first `PROMPT_COMMAND` with both ends
+on the terminal (each then unhooks itself, leaving the rest of
+`PROMPT_COMMAND`), PowerShell at the end of the profile in the console host.
+The zsh and bash blocks are written with LF line ends in a CRLF rc too, which
+keeps its own bytes. `shell-start` checks the policy, the terminal and the same
+variables again, then reopens this terminal's dropped session in place with
+the same line, or exits 0 at once; it never asks anything. Unlike a bare
+`omh`, it does not take a same-folder session recorded under another
+terminal's key while this terminal has a key of its own.
+
+omher starts each `omh` terminal with `OMHER_TERMINAL_LINK=<linkId>` and
+`TERM_PROGRAM=omher` and no arguments, so a bare `omh` there reopens by that
+link alone and never by the folder another omher terminal shares.
 
 ## Job control, and what OMH does not do
 
@@ -487,3 +659,15 @@ call the gateway makes, is Hermes'. This is a foreground terminal the person
 launched, not a background runtime, a transport bot, or a third process bridge:
 the child relays one terminal's frames and executes nothing; a gateway it
 started is Hermes' own, which exits once idle.
+
+## Frame language
+
+Moved verbatim from `AGENTS.md` (Coding Style).
+
+- The OMH TUI and CLI frame is English for everyone: TUI labels, key hints,
+  picker rows, TUI notices and CLI output. Never switch it by the language of
+  the conversation or of text a model or a person wrote. That text keeps its
+  own language; the frame around it does not follow. The only exception is
+  the explicit `--language` / `OMH_LANG` opt-in above. Chat and messenger
+  reply copy (`src/wrapper/localized_copy.py`) is a separate surface. It
+  follows the person's message and is not covered by this rule.

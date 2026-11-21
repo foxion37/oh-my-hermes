@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerSlot, answerSoFar, activityText, chatRoute, createStore, folderKey, setChatRoute, initialState, reduce, replyChipFor, selectTimeline, type Action, type AppState, type BridgeLike } from "./store";
+import { answerSlot, answerSoFar, activityText, chatRoute, createStore, folderKey, setChatRoute, initialState, reduce, replyChipFor, selectTimeline, type Action, type AppState, type BridgeLike, type MessageItem } from "./store";
 import type { Away, BridgeEvent, ChatOpenResult } from "../lib/protocol";
 import type { BridgeStatus } from "../lib/bridge";
 
@@ -321,8 +321,106 @@ describe("reducer: approvals and clarifications", () => {
   });
 });
 
+describe("read receipts and the steer reply", () => {
+  const bot = "kami";
+  /** kami's turn running with "A" (and "B" when asked) held, then steered in (Hermes queued each). */
+  const steeredIn = (ids = ["A"]) => {
+    let s = run(initialState(), [{ event: "turn.start", bot }, { event: "delta", bot, text: "Looking at the retry code.\n" }]);
+    for (const id of ids) {
+      s = reduce(s, { type: "local.user", bot, id, text: `steer ${id}`, now: T0 + 1000, held: true });
+      s = reduce(s, { type: "queue.steered", bot, id, ok: true, now: T0 + 1500 });
+    }
+    return s;
+  };
+  const row = (s: AppState, id: string) => s.chats[bot].items.find((i) => i.kind === "user" && i.id === id) as MessageItem;
+
+  it("a send is read once chat.send went through, or once its turn started; a failed send never is", () => {
+    let s = reduce(initialState(), { type: "local.user", bot, id: "l1", text: "hi", now: T0 });
+    expect(row(s, "l1").readAt).toBeUndefined();
+    s = reduce(s, { type: "send.ok", bot, id: "l1", now: T0 + 200 });
+    expect(row(s, "l1").readAt).toBe(T0 + 200);
+    s = reduce(s, { type: "local.user", bot, id: "l2", text: "again", now: T0 + 300 });
+    s = run(s, [{ event: "turn.start", bot }], T0 + 400);
+    expect(row(s, "l2").readAt).toBe(T0 + 400);
+    s = reduce(s, { type: "send.ok", bot, id: "l2", now: T0 + 900 });
+    expect(row(s, "l2").readAt).toBe(T0 + 400); // the first mark keeps its time
+    s = reduce(s, { type: "local.user", bot, id: "l3", text: "lost", now: T0 + 1000 });
+    s = reduce(s, { type: "send.failed", bot, id: "l3", error: "bridge connection lost" });
+    s = reduce(s, { type: "send.ok", bot, id: "l3", now: T0 + 1100 });
+    expect(row(s, "l3").readAt).toBeUndefined();
+  });
+
+  it("a held message is not read until it goes out; a refused or uncertain steer is not read", () => {
+    let s = run(initialState(), [{ event: "turn.start", bot }]);
+    s = reduce(s, { type: "local.user", bot, id: "H", text: "later", now: T0 + 100, held: true });
+    s = run(s, [{ event: "turn.start", bot }], T0 + 200);
+    expect(row(s, "H").readAt).toBeUndefined();
+    s = reduce(s, { type: "queue.steered", bot, id: "H", ok: false, now: T0 + 300 });
+    expect(row(s, "H").readAt).toBeUndefined();
+    s = reduce(s, { type: "queue.steered", bot, id: "H", ok: false, unknown: true, now: T0 + 400 });
+    expect(row(s, "H").readAt).toBeUndefined();
+    // a held one that goes out after the turn: read once its send went through
+    s = reduce(s, { type: "local.user", bot, id: "H2", text: "after", now: T0 + 500, held: true });
+    s = run(s, [{ event: "turn.end", bot, outcome: "done" }], T0 + 600);
+    s = reduce(s, { type: "queue.take", bot, id: "H2", now: T0 + 700 });
+    expect(row(s, "H2").readAt).toBeUndefined();
+    s = reduce(s, { type: "send.ok", bot, id: "H2", now: T0 + 800 });
+    expect(row(s, "H2").readAt).toBe(T0 + 800);
+  });
+
+  it("a steer is read as soon as Hermes queued it; the note before the next tool call is its reply", () => {
+    let s = steeredIn();
+    expect(row(s, "A").readAt).toBe(T0 + 1500);
+    s = run(s, [{ event: "tool.start", bot, tool_id: "t1", name: "terminal", detail: "ls" }, { event: "tool.end", bot, tool_id: "t1", name: "terminal", ok: true, ms: 10 }], T0 + 2000);
+    expect(row(s, "A").steerReply).toBeUndefined();
+    s = run(s, [
+      { event: "delta", bot, text: "  Got it, keeping the old timeout.\nThen I rerun the tests." },
+      { event: "tool.start", bot, tool_id: "t2", name: "terminal", detail: "pnpm test" },
+      { event: "tool.end", bot, tool_id: "t2", name: "terminal", ok: true, ms: 10 },
+      { event: "delta", bot, text: "Later commentary." },
+      { event: "tool.start", bot, tool_id: "t3", name: "terminal", detail: "git diff" },
+    ], T0 + 4000);
+    expect(row(s, "A").steerReply).toBe("Got it, keeping the old timeout.");
+    // the rest stays commentary: never a bubble
+    expect(s.chats[bot].items.filter((i) => i.kind === "assistant")).toHaveLength(0);
+  });
+
+  it("with no tool call after it, the answer's first line is the reply; a long one is clipped", () => {
+    let s = steeredIn();
+    s = run(s, [{ event: "tool.start", bot, tool_id: "t1", name: "read", detail: "a" }, { event: "tool.end", bot, tool_id: "t1", name: "read", ok: true, ms: 1 }], T0 + 2000);
+    const long = "Done ".repeat(60).trim();
+    s = run(s, [{ event: "message", bot, id: "m1", text: `${long}\nsecond line` }, { event: "turn.end", bot, outcome: "done" }], T0 + 5000);
+    const reply = row(s, "A").steerReply!;
+    expect(reply.length).toBe(140);
+    expect(reply.endsWith("…")).toBe(true);
+    expect(reply).not.toContain("second line");
+  });
+
+  it("a steer the answer itself consumed (no tool step): the answer is its reply", () => {
+    let s = steeredIn();
+    s = run(s, [{ event: "message", bot, id: "m1", text: "Sure, keeping it.\nMore." }], T0 + 6000);
+    expect(row(s, "A")).toMatchObject({ readAt: T0 + 1500, steerReply: "Sure, keeping it." });
+  });
+
+  it("several steers consumed together: only the last gets the reply", () => {
+    let s = steeredIn(["A", "B"]);
+    s = run(s, [{ event: "tool.start", bot, tool_id: "t1", name: "read", detail: "a" }, { event: "tool.end", bot, tool_id: "t1", name: "read", ok: true, ms: 1 }], T0 + 2000);
+    s = run(s, [{ event: "delta", bot, text: "Both noted.\n" }, { event: "tool.start", bot, tool_id: "t2", name: "read", detail: "b" }], T0 + 3000);
+    expect([row(s, "A").steerReply, row(s, "B").steerReply]).toEqual([undefined, "Both noted."]);
+  });
+
+  it("an interrupt before the turn consumed it: Hermes dropped it, so no read mark and no reply", () => {
+    let s = steeredIn();
+    expect(row(s, "A").readAt).toBe(T0 + 1500);
+    s = run(s, [{ event: "delta", bot, text: "half a thought\n" }, { event: "turn.end", bot, outcome: "interrupted" }], T0 + 2000);
+    expect(row(s, "A").readAt).toBeUndefined();
+    expect(row(s, "A").steerReply).toBeUndefined();
+    expect(row(s, "A")).toMatchObject({ steerUnused: true });
+  });
+});
+
 describe("elsewhere ordering", () => {
-  it("places away lines by last_active among chat rows, capped to the 2 most recent", () => {
+  it("keeps the bot's sessions elsewhere out of the chat timeline; the list itself is newest first", () => {
     const base = T0 / 1000;
     let s = reduce(initialState(), {
       type: "chat.opened",
@@ -342,10 +440,8 @@ describe("elsewhere ordering", () => {
       sessions: [away("old", base - 2000), away("mid", base - 300), away("new", base - 50), away("mid2", base - 700)],
     });
     expect(s.elsewhere.kami.map((a) => a.id)).toEqual(["new", "mid", "mid2", "old"]); // newest first
-    const tl = selectTimeline(s, "kami");
-    expect(tl.map((i) => i.id)).toEqual(["a", "b", "away-mid", "c", "away-new"]);
-    expect(selectTimeline(s, "kami")).toBe(tl); // memoised
-    expect(selectTimeline(s, "kami", 4).map((i) => i.id)).toContain("away-old");
+    // the chat keeps other places out: the header count and the side panel show them
+    expect(selectTimeline(s, "kami").map((i) => i.id)).toEqual(["a", "b", "c"]);
   });
 });
 
@@ -353,13 +449,44 @@ describe("unread", () => {
   it("counts assistant messages and routine lines for unselected bots only", () => {
     let s = reduce(initialState(), { type: "select", bot: "kami" });
     s = run(s, [{ event: "message", bot: "friren", id: "x1", text: "hello" }]);
-    s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "Repo watch", status: "ok", ts: T0 / 1000 }]);
+    s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "Repo watch", status: "error", ts: T0 / 1000 }]);
     s = run(s, [{ event: "message", bot: "kami", id: "k1", text: "mine" }]);
     expect(s.unread.friren).toBe(2);
     expect(s.unread.kami ?? 0).toBe(0);
     expect(s.chats.friren.items.some((i) => i.kind === "routine")).toBe(true);
     s = reduce(s, { type: "select", bot: "friren" });
     expect(s.unread.friren).toBe(0);
+  });
+
+  it("a routine run that went fine draws no line and no unread; a failed one does", () => {
+    let s = reduce(initialState(), { type: "select", bot: "kami" });
+    for (const status of ["ok", "success", "done", "completed", "", "silent"])
+      s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "sso refresh", status, ts: T0 / 1000 }]);
+    expect(s.chats.friren?.items.some((i) => i.kind === "routine") ?? false).toBe(false);
+    expect(s.unread.friren ?? 0).toBe(0);
+    ["error", "Failed", "delivery_failed"].forEach((status, n) => {
+      s = run(s, [{ event: "routine.ran", bot: "friren", routine_id: "r1", name: "sso refresh", status, ts: T0 / 1000 + 1 + n }]);
+    });
+    // three failures of the same routine in a row: one line counting them, one unread
+    expect(s.chats.friren.items.filter((i) => i.kind === "routine")).toMatchObject([{ count: 3 }]);
+    expect(s.unread.friren).toBe(1);
+  });
+
+  it("the same routine failing again folds into one line that counts the runs; anything between starts a new line", () => {
+    let s = reduce(initialState(), { type: "select", bot: "kami" });
+    const fail = (ts: number, id = "r1") => ({ event: "routine.ran" as const, bot: "friren", routine_id: id, name: "sso refresh", status: "delivery_failed", ts });
+    for (let n = 0; n < 12; n++) s = run(s, [fail(T0 / 1000 + n * 1860)]);
+    let lines = s.chats.friren.items.filter((i) => i.kind === "routine");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ count: 12, since: T0 / 1000, ts: T0 / 1000 + 11 * 1860 });
+    expect(s.unread.friren).toBe(1); // only the first failure is new
+    s = run(s, [fail(T0 / 1000 + 11 * 1860)]); // the same run again changes nothing
+    expect(s.chats.friren.items.filter((i) => i.kind === "routine")[0]).toMatchObject({ count: 12 });
+    s = run(s, [fail(T0 / 1000 + 30000, "r2")]); // another routine: its own line
+    s = run(s, [fail(T0 / 1000 + 40000)]); // r1 again, but r2 came between: a new line
+    lines = s.chats.friren.items.filter((i) => i.kind === "routine");
+    expect(lines.map((i) => [i.kind === "routine" && i.routine_id, i.kind === "routine" && (i.count ?? 1)])).toEqual([["r1", 12], ["r2", 1], ["r1", 1]]);
+    expect(s.unread.friren).toBe(3);
   });
 
   it("does not double count a message re-delivered with the same id", () => {
@@ -372,6 +499,28 @@ describe("unread", () => {
 });
 
 describe("chat.opened merging", () => {
+  it("a reopened row with a bot row after it is read at that row's time; a steered one at its reply's time", () => {
+    const s = reduce(initialState(), {
+      type: "chat.opened",
+      bot: "kami",
+      res: opened({
+        messages: [
+          { id: "srv-1", role: "user", text: "fix the terminal", ts: T0 / 1000 },
+          { id: "srv-2", role: "user", text: "keep the old timeout", ts: T0 / 1000 + 5, steered: true, steer_read: T0 / 1000 + 9, steer_reply: "Keeping it." },
+          { id: "srv-3", role: "assistant", text: "Done.", ts: T0 / 1000 + 12 },
+          { id: "srv-4", role: "user", text: "also the logs", ts: T0 / 1000 + 20 },
+        ],
+      }),
+      now: T0 + 30_000,
+    });
+    const rows = s.chats.kami.items.flatMap((i) => (i.kind === "user" ? [i] : []));
+    expect(rows.map((i) => [i.readAt, i.steerReply])).toEqual([
+      [T0 + 12_000, undefined],
+      [T0 + 9000, "Keeping it."],
+      [undefined, undefined],
+    ]);
+  });
+
   it("drops a local user row once the server history has it", () => {
     let s = reduce(initialState(), { type: "local.user", bot: "kami", id: "local-1", text: "ping", now: T0 });
     s = reduce(s, {
@@ -381,6 +530,25 @@ describe("chat.opened merging", () => {
       now: T0 + 2000,
     });
     expect(s.chats.kami.messages.map((m) => m.id)).toEqual(["srv-1"]);
+  });
+
+  it("a reopened chat keeps a steered row's Sent-to line (the bridge marks it; the text is what was typed)", () => {
+    const s = reduce(initialState(), {
+      type: "chat.opened",
+      bot: "kami",
+      res: opened({
+        messages: [
+          { id: "srv-1", role: "user", text: "fix the terminal", ts: T0 / 1000 },
+          { id: "srv-2", role: "user", text: "it looks cut off", ts: T0 / 1000 + 5, steered: true },
+        ],
+      }),
+      now: T0 + 2000,
+    });
+    const rows = s.chats.kami.items.flatMap((i) => (i.kind === "user" ? [i] : []));
+    expect(rows.map((i) => [i.text, i.steered])).toEqual([
+      ["fix the terminal", undefined],
+      ["it looks cut off", true],
+    ]);
   });
 
   it("running chat starts a turn; idle chat closes a stale one", () => {
@@ -447,6 +615,9 @@ function fakeBridge() {
         case "skills.list":
           if (params.bot === "friren") throw { code: "unknown_op", message: "no such op: skills.list" };
           return { skills: [{ name: "plan", description: "Plan it" }, { name: "review", description: "" }] };
+        case "commands.list":
+          if (params.bot === "friren") throw { code: "unknown_op", message: "no such op: commands.list" };
+          return { commands: [{ name: "model", description: "Pick the model", hint: "[model|reset]", kind: "command", prefix: "/" }, { name: "help", description: "Show help" }] };
         default:
           return {};
       }
@@ -571,6 +742,22 @@ describe("store", () => {
     expect(f.calls.filter((c) => c.op === "skills.list" && c.params.bot === "friren")).toHaveLength(2);
   });
 
+  it("slashCommands reads the bot's `/` menu once, keeps what came, and survives a bridge without the op", async () => {
+    const f = fakeBridge();
+    const store = createStore(f.bridge, { now: () => T0 });
+    await store.actions.init();
+    const rows = await store.actions.slashCommands("kami");
+    expect(rows.map((r) => r.name)).toEqual(["model", "help"]);
+    expect(rows[0]).toMatchObject({ hint: "[model|reset]", kind: "command", prefix: "/" });
+    await store.actions.slashCommands("kami");
+    expect(f.calls.filter((c) => c.op === "commands.list")).toHaveLength(1); // read once per bot
+    // a bridge without the op: an empty list, no error, asked again next time
+    expect(await store.actions.slashCommands("friren")).toEqual([]);
+    expect(store.getState().lastError).toBeNull();
+    await store.actions.slashCommands("friren");
+    expect(f.calls.filter((c) => c.op === "commands.list" && c.params.bot === "friren")).toHaveLength(2);
+  });
+
   it("sendWithFiles attaches each file in order, then sends once; a failed attach sends nothing", async () => {
     const f = fakeBridge();
     const store = createStore(f.bridge, { now: () => T0 });
@@ -681,6 +868,28 @@ describe("store", () => {
     store.actions.openSession("s1");
     store.actions.openSession(null);
     expect(store.getState().ui).toMatchObject({ view: "chat", session: null });
+  });
+
+  it("a page's back returns where it was opened from: a session, through another page, else the chat", () => {
+    const f = fakeBridge();
+    const store = createStore(f.bridge);
+    store.actions.openSession("s1");
+    store.actions.openAutomations();
+    store.actions.openPlugins("kami");
+    store.actions.openSettings();
+    store.actions.closeSettings();
+    expect(store.getState().ui).toMatchObject({ view: "session", session: "s1" });
+    store.actions.openSession(null);
+    store.actions.openPlugins("kami");
+    store.actions.closeSettings();
+    expect(store.getState().ui.view).toBe("chat");
+    // a session closed while the page was open: back lands on the chat
+    store.actions.openSession("s1");
+    store.actions.openSettings();
+    store.actions.openSession(null);
+    store.actions.openSettings();
+    store.actions.closeSettings();
+    expect(store.getState().ui.view).toBe("chat");
   });
 
   it("Reply there: the chip goes along as reply_to once, then clears; a turn end re-reads the places", async () => {
@@ -864,5 +1073,55 @@ describe("subagent events: one fan-out per delegate_task, one row per subagent",
       ["uname -s", undefined],
       ["calc.py +4", 6],
     ]);
+  });
+});
+
+describe("clarify keeps the words written before the question", () => {
+  const bot = "default";
+  const asked = (): BridgeEvent[] => [
+    { event: "turn.start", bot },
+    { event: "delta", bot, text: "적용 전에 이렇게 바뀝니다.\n\n1) 별칭 6개 추가" },
+    { event: "tool.start", bot, tool_id: "t-ask", name: "clarify", detail: "적용할까요?" },
+    { event: "clarify.request", bot, request_id: "c-1", question: "적용할까요?" },
+  ];
+
+  it("shows that commentary as its own row above the card", () => {
+    const s = run(initialState(), asked());
+    expect(s.chats[bot].items.map((i) => i.kind)).toEqual(["activity", "assistant", "clarify"]);
+    const note = s.chats[bot].items[1];
+    expect(note.kind === "assistant" && note.text).toBe("적용 전에 이렇게 바뀝니다.\n\n1) 별칭 6개 추가");
+  });
+
+  it("keeps it out of the answer once the turn resumes and ends", () => {
+    const s = run(initialState(), [
+      ...asked(),
+      { event: "delta", bot, text: "고맙습니다." },
+      { event: "message", bot, id: "m-2", text: "고맙습니다." },
+      { event: "turn.end", bot, outcome: "done" },
+    ]);
+    const texts = s.chats[bot].items.flatMap((i) => (i.kind === "assistant" ? [i.text] : []));
+    expect(texts).toEqual(["적용 전에 이렇게 바뀝니다.\n\n1) 별칭 6개 추가", "고맙습니다."]);
+  });
+});
+
+describe("a reopened chat keeps the words before a question once", () => {
+  it("drops the live copy when the history carries the same row, and keeps it while the history lacks it", () => {
+    const note = "적용 전에 이렇게 바뀝니다.\n\n1) 별칭 6개 추가";
+    let s = reduce(initialState(), { type: "chat.opened", bot: "kami", res: opened(), now: T0 - 1000 });
+    s = run(s, [
+      { event: "turn.start", bot: "kami" },
+      { event: "delta", bot: "kami", text: note },
+      { event: "tool.start", bot: "kami", tool_id: "t-ask", name: "clarify", detail: "적용할까요?" },
+      { event: "clarify.request", bot: "kami", request_id: "c-1", question: "적용할까요?" },
+    ]);
+    const said = (x: AppState) => x.chats.kami.items.flatMap((i) => (i.kind === "assistant" ? [i.text] : []));
+    expect(said(s)).toEqual([note]);
+    // an older bridge: the history has no such row, the live copy stays
+    const old = reduce(s, { type: "chat.opened", bot: "kami", res: opened({ running: true }), now: T0 + 5000 });
+    expect(said(old)).toEqual([note]);
+    // this bridge: the history carries the row, shown once
+    const msgs = [...opened().messages, { id: "a1", role: "assistant" as const, text: note, ts: T0 / 1000 + 0.5 }];
+    const again = reduce(s, { type: "chat.opened", bot: "kami", res: opened({ running: true, messages: msgs }), now: T0 + 5000 });
+    expect(said(again)).toEqual([note]);
   });
 });

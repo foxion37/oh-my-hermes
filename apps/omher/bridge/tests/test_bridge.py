@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -26,7 +27,16 @@ MAIN_RUNTIME = "rt-main"
 
 
 class GatewayRPCError(Exception):  # same class name Hermes uses; the bridge matches on the name
-    pass
+    def __init__(self, reason="request_failed", data=None):
+        super().__init__(reason)
+        self.data = data or {}
+
+
+# What Hermes' canonical gateway (`/api/ws`, the one `connect_gateway` dials) does not serve: these are the older
+# tui gateway's verbs. A FakeClient refuses them as that gateway does unless it is built with `legacy=True`.
+LEGACY_ONLY = frozenset({"session.title", "session.archive", "session.close"})
+# session.create params the canonical gateway refuses with `invalid_params` (its contract forbids unknown keys)
+CANONICAL_CREATE_REFUSES = frozenset({"idempotency_key"})
 
 
 class GatewayClientError(ValueError):
@@ -37,8 +47,11 @@ class FakeClient:
     """The slice of ``GatewayClient`` the bridge uses: ``rpc`` and ``events``."""
 
     def __init__(self, name: str, *, bot_chat: bool = True, sessions=None, history=None, caps=None, lacks=(), ready=None,
-                 model_replies=None, resume_bumps=False):
+                 model_replies=None, resume_bumps=False, legacy=False, slow=(), keeps_created=False):
         self.name = name
+        self.slow = frozenset(slow)  # methods that answer after a short wait, so two requests overlap in them
+        self.keeps_created = keeps_created  # a main-chat session.create makes a Bot Chat the next session.list finds
+        self.legacy = legacy  # True: the older tui gateway (session.title/archive/close, idempotency_key)
         # session.mutate "model" answers in order (Hermes' selection guard refusals); the echo once they run out
         self.model_replies = list(model_replies or [])
         self.resume_bumps = resume_bumps  # each session.resume moves the revision, as a real gateway's may
@@ -58,10 +71,25 @@ class FakeClient:
     def find(self, method: str) -> list[dict]:
         return [p for m, p in self.calls if m == method]
 
+    def refuse(self, method: str, params: dict) -> None:
+        """Refuse what the gateway this fake stands for refuses, before answering anything."""
+        if method in self.lacks:
+            raise GatewayRPCError("unknown_method", {"reason": "unknown_method"})
+        if self.legacy:
+            if method == "session.mutate" or (method == "session.create" and "request_id" in params):
+                raise GatewayRPCError("unknown_method" if method == "session.mutate" else "request_failed")
+            return
+        if method in LEGACY_ONLY:
+            raise GatewayRPCError("unknown_method", {"reason": "unknown_method"})
+        bad = sorted(CANONICAL_CREATE_REFUSES & set(params)) if method == "session.create" else []
+        if bad:
+            raise GatewayRPCError("invalid_params", {"reason": "invalid_params", "fields": bad})
+
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
-        if method in self.lacks:
-            raise GatewayRPCError("unknown_method")
+        if method in self.slow:
+            await asyncio.sleep(0.05)
+        self.refuse(method, params)
         if method == "session.list":
             if params.get("title") == ob.BOT_CHAT_TITLE:
                 rows = [{"id": MAIN_STORED, "title": ob.BOT_CHAT_TITLE, "source": "tui"}] if self.bot_chat else []
@@ -98,6 +126,8 @@ class FakeClient:
                 return {"session_id": f"rt-folder-{n}", "stored_session_id": f"stored-folder-{n}", "messages": [],
                         "subscription_id": f"sub-folder-{n}",
                         "info": {**self.model_info, "cwd": params["cwd"]}, "revision": 0, "execution_generation": 0}
+            if self.keeps_created:
+                self.bot_chat = True
             return {"session_id": MAIN_RUNTIME, "stored_session_id": MAIN_STORED, "messages": [],
                     "info": dict(self.model_info), "revision": 0, "execution_generation": 0}
         if method == "session.title":
@@ -169,11 +199,27 @@ class Env:
         self.client_kw = client_kw
         self.clients: dict[str, FakeClient] = {}
         self.connects: list[str] = []
-        self.bridge = ob.Bridge(token=TOKEN, hermes_home=self.home, gateway_factory=self.factory, poll_s=3600)
+        # profiles whose gateway Hermes' discovery reads ready (none by default: nothing reattaches by itself)
+        self.ready: set[str] = set()
+        self.probes: list[str] = []
+        self.endpoints: list = []
+        self.on_probe = None
+        # omher's own folder inside the temp home: folder.open records its chats there, never in the real ~/.omher
+        self.bridge = ob.Bridge(token=TOKEN, hermes_home=self.home, gateway_factory=self.factory, poll_s=3600,
+                                omher_home=self.home / ".omher", gateway_probe=self.probe)
 
-    async def factory(self, stack, path: Path):
+    async def probe(self, path: Path) -> bool:
+        name = "default" if path == self.home else path.name
+        self.probes.append(name)
+        found = f"endpoint-{name}" if name in self.ready else None
+        if self.on_probe is not None:
+            self.on_probe(name)  # what happens while discovery answers
+        return found  # what Hermes' discovery found ready
+
+    async def factory(self, stack, path: Path, endpoint=None):
         name = "default" if path == self.home else path.name
         self.connects.append(name)
+        self.endpoints.append(endpoint)  # None: connect_gateway() may start a gateway; else dials that owner as-is
         if name in self.fail:
             raise OSError("gateway refused")
         c = self.clients[name] = FakeClient(name, **self.client_kw)
@@ -372,7 +418,10 @@ class BotsAndChat(BridgeCase):
             self.assertEqual(create[0]["title"], "Bot Chat")
             self.assertTrue(create[0]["follow_profile_config"])
             self.assertEqual(c.find("session.resume"), [])
-            self.assertEqual(c.find("session.title"), [{"session_id": MAIN_RUNTIME, "title": "Bot Chat"}])
+            self.assertEqual(c.find("session.title"), [])  # the canonical gateway has no session.title
+            [named] = c.find("session.mutate")
+            self.assertEqual((named["session_id"], named["operation"], named["payload"], named["expected_revision"]),
+                             (MAIN_RUNTIME, "rename", {"title": "Bot Chat"}, 0))
             self.assertEqual(r["result"]["session_id"], MAIN_RUNTIME)
             self.assertEqual(r["result"]["messages"], [])
 
@@ -727,6 +776,283 @@ class EventMapping(BridgeCase):
             last = [e for e in s.events if e["event"] == "bot.status"][-1]
             self.assertEqual((last["status"], last["running"]), ("offline", False))
             self.assertEqual((await s.req("chat.send", bot="kami", text="x"))["error"]["code"], "bot_offline")
+
+
+class ExternalRestart(BridgeCase):
+    """A gateway that went away without omher restarting it (`hermes update` pausing it, a crash and relaunch, a
+    `hermes gateway restart` from a terminal): the bot comes back by itself and its open chats re-read
+    (`bot.restarted`), as after omher's own restart. Only Hermes' discovery is asked while it is away; nothing is
+    started (BOUNDARY rule 39)."""
+
+    @staticmethod
+    def restarted(s: Session, bot: str) -> list[dict]:
+        return [e for e in s.events if e["event"] == "bot.restarted" and e["bot"] == bot]
+
+    async def test_an_update_paused_gateway_reattaches_every_bot_once_it_is_ready_again(self):
+        with mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)):
+            async with Env(("kami",)) as env:
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                await s.req("chat.open", bot="default")  # the other row: never selected again after the update
+                for name in ("kami", "default"):
+                    env.clients[name].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                await s.until(lambda ev: sum(e["event"] == "bot.status" and e["status"] == "offline" for e in ev) >= 2)
+                # draining for the update: discovery is asked, nothing is dialled or started
+                await s.until(lambda ev: env.probes.count("kami") >= 3 and env.probes.count("default") >= 3)
+                self.assertEqual((env.connects.count("kami"), env.connects.count("default")), (1, 1))
+                env.ready = {"kami", "default"}
+                await s.until(lambda ev: self.restarted(s, "kami") and self.restarted(s, "default"))
+                for name in ("kami", "default"):
+                    self.assertEqual([e["ok"] for e in self.restarted(s, name)], [True])
+                    last = [e for e in s.events if e["event"] == "bot.status" and e["bot"] == name][-1]
+                    self.assertEqual(last["status"], "online")
+                    self.assertEqual(env.connects.count(name), 2)
+                # the open chat reads its history again from the same Bot Chat
+                r = await s.req("chat.open", bot="kami")
+                self.assertEqual([m["text"] for m in r["result"]["messages"]], ["hi", "hello"])
+                await asyncio.sleep(0.1)
+                self.assertEqual(len(self.restarted(s, "kami")), 1)  # once back, it stops looking
+
+    async def test_a_chat_first_opened_while_draining_is_reread_when_the_bot_answers_again(self):
+        """The observed run: the chat was opened while the gateway drained for the update, then the person's next
+        message reconnected the bot. That reconnect says so, so the chat re-reads and drops its stale error."""
+        now = [1000.0]
+        async with Env(("kami",), fail=("kami",)) as env:
+            env.bridge.clock = lambda: now[0]
+            s = await self.open(env)
+            r = await s.req("chat.open", bot="kami")
+            self.assertEqual(r["error"]["code"], "bot_offline")
+            env.fail.clear()
+            now[0] += ob.OFFLINE_COOLDOWN + 1
+            self.assertTrue((await s.req("chat.send", bot="kami", text="after the update"))["ok"])
+            await s.until(lambda ev: self.restarted(s, "kami"))
+            self.assertEqual([e["ok"] for e in self.restarted(s, "kami")], [True])
+
+    async def test_a_bot_that_stays_away_is_only_looked_for(self):
+        with mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)):
+            async with Env(("kami",), fail=("kami",)) as env:
+                s = await self.open(env)
+                self.assertEqual((await s.req("chat.open", bot="kami"))["error"]["code"], "bot_offline")
+                await s.until(lambda ev: env.probes.count("kami") >= 5)
+                self.assertEqual(env.connects.count("kami"), 1)  # only the person's own open dialled it
+                self.assertEqual(self.restarted(s, "kami"), [])
+
+    async def test_omhers_own_restart_is_announced_once(self):
+        with mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)):
+            async with Env(("kami",)) as env:
+                env.ready = {"kami", "default"}
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                await s.until(lambda ev: self.restarted(s, "kami"))
+                env.bridge._reattaching.add("kami")  # as `bots.restart` does before it runs Hermes' restart
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                await s.until(lambda ev: sum(e["event"] == "bot.status" and e["bot"] == "kami"
+                                             and e["status"] == "offline" for e in ev) >= 2)
+                await asyncio.sleep(0.1)
+                self.assertEqual(len(self.restarted(s, "kami")), 1)  # the restart's own reattach says it, not this
+                with mock.patch.object(ob, "RESTART_POLL", 0.01):
+                    await env.bridge._reattach(["kami"])
+                await s.until(lambda ev: len(self.restarted(s, "kami")) >= 2)
+                self.assertEqual([e["ok"] for e in self.restarted(s, "kami")], [True, True])
+                await asyncio.sleep(0.1)
+                self.assertEqual(len(self.restarted(s, "kami")), 2)
+
+
+class ExternalRestartReview(BridgeCase):
+    """Review of the first cut (#3055): the reattach must not make a second Bot Chat, must never dial in a way that
+    can start a gateway, and must not cut short omher's own Restart."""
+
+    @staticmethod
+    def restarted(s: Session, bot: str) -> list[dict]:
+        return [e for e in s.events if e["event"] == "bot.restarted" and e["bot"] == bot]
+
+    async def test_a_send_and_the_apps_reread_after_a_reconnect_make_one_bot_chat(self):
+        """The person's message reconnects a bot that has no Bot Chat yet, and the app answers the reconnect with
+        chat.open: both look for the Bot Chat at once. Only one may create it, and both use the same main id."""
+        now = [1000.0]
+        async with Env(("kami",), fail=("kami",), bot_chat=False, keeps_created=True,
+                       slow=("session.list", "session.create")) as env:
+            env.bridge.clock = lambda: now[0]
+            s = await self.open(env)
+            self.assertEqual((await s.req("chat.open", bot="kami"))["error"]["code"], "bot_offline")
+            env.fail.clear()
+            now[0] += ob.OFFLINE_COOLDOWN + 1
+            sent, opened = await asyncio.gather(s.req("chat.send", bot="kami", text="after the update"),
+                                                s.req("chat.open", bot="kami"))
+            self.assertTrue(sent["ok"], sent)
+            self.assertTrue(opened["ok"], opened)
+            c = env.clients["kami"]
+            mains = [p for p in c.find("session.create") if not p.get("cwd")]
+            self.assertEqual(len(mains), 1, "two Bot Chats were made")
+            submit = c.find("prompt.submit")
+            self.assertEqual([p["session_id"] for p in submit], [opened["result"]["session_id"]])
+            self.assertEqual(env.bridge.conns["kami"].main_ids, {MAIN_RUNTIME, MAIN_STORED})
+
+    async def test_recovery_dials_only_the_owner_discovery_found(self):
+        with mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)):
+            async with Env(("kami",)) as env:
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                await s.until(lambda ev: env.probes.count("kami") >= 2)
+                env.ready = {"kami"}
+                await s.until(lambda ev: self.restarted(s, "kami"))
+                # the person's open may start a gateway (None); the reattach only dials the discovered owner
+                self.assertEqual(env.endpoints, [None, "endpoint-kami"])
+
+    async def test_recovery_through_hermes_never_reaches_a_starting_dial(self):
+        """The real `_default_probe` and `_default_connect` against stand-ins for Hermes' modules: recovery dials
+        `connect_gateway(endpoint=<discovered>)`, which never starts a gateway; on a Hermes whose
+        connect_gateway takes no endpoint it stops looking instead of dialling the way that starts one; and while an
+        update holds the install (Hermes' `_update_fenced`) a ready gateway is not dialled."""
+        import contextlib as cl
+        for case in ("endpoint", "no endpoint", "update fence"):
+            with self.subTest(case=case):
+                has_endpoint = case != "no endpoint"
+                fence: list = []
+                dials: list = []
+                ensured: list = []
+
+                @cl.asynccontextmanager
+                async def with_endpoint(endpoint=None, subject=None):
+                    dials.append(endpoint)
+                    if endpoint is None:
+                        ensured.append(os.environ.get("HERMES_HOME"))  # ensure_gateway_runtime: may start one
+                    yield FakeClient("kami")
+
+                @cl.asynccontextmanager
+                async def without_endpoint():
+                    dials.append(None)
+                    ensured.append(os.environ.get("HERMES_HOME"))
+                    yield FakeClient("kami")
+
+                class Found:
+                    state, endpoint = "ready", "owner-endpoint"
+                client_mod = types.ModuleType("hermes_cli.gateway_client")
+                client_mod.connect_gateway = with_endpoint if has_endpoint else without_endpoint
+                runtime_mod = types.ModuleType("hermes_cli.gateway_runtime")
+                runtime_mod.discover_gateway_endpoint = lambda home, **kw: Found()
+                if case == "update fence":
+                    def update_fenced(homes):
+                        fence.append(sorted(str(h) for h in homes))
+                        return True
+                    runtime_mod._update_fenced = update_fenced
+                pkg = types.ModuleType("hermes_cli")
+                pkg.gateway_client, pkg.gateway_runtime = client_mod, runtime_mod
+                fakes = {"hermes_cli": pkg, "hermes_cli.gateway_client": client_mod,
+                         "hermes_cli.gateway_runtime": runtime_mod}
+                with mock.patch.dict(sys.modules, fakes), mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)), \
+                        mock.patch.dict(os.environ, {}):
+                    env = Env(("kami",))
+                    env.bridge = ob.Bridge(token=TOKEN, hermes_home=env.home, poll_s=3600,
+                                           omher_home=env.home / ".omher")
+                    async with env:
+                        conn = env.bridge.conns["kami"] = ob.Conn(env.bridge._bot("kami"))
+                        env.bridge._lost(conn)  # its gateway went away
+                        for _ in range(50):
+                            await asyncio.sleep(0.01)
+                        if case == "endpoint":
+                            self.assertTrue(conn.connected)
+                            self.assertEqual(dials, ["owner-endpoint"])
+                        elif case == "update fence":
+                            self.assertFalse(conn.connected)
+                            self.assertEqual(dials, [])
+                            # the profile's own home and the Hermes root, where `hermes update` puts its marker
+                            self.assertEqual(fence[0], sorted([str(env.home / "profiles" / "kami"), str(env.home)]))
+                            self.assertIn("kami", env.bridge._recovering)  # it keeps looking until the update ends
+                        else:
+                            self.assertFalse(conn.connected)
+                            self.assertEqual(dials, [])
+                            self.assertNotIn("kami", env.bridge._recovering)  # it stopped looking
+                        self.assertEqual(ensured, [])
+
+    async def test_a_request_during_omhers_own_restart_does_not_say_restarted(self):
+        with mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)), mock.patch.object(ob, "RESTART_POLL", 0.05):
+            async with Env(("kami",)) as env:
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                env.bridge._reattaching.add("kami")  # as `bots.restart` does before it runs Hermes' restart
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                await s.until(lambda ev: any(e["event"] == "bot.status" and e["status"] == "offline" for e in ev))
+                env.bridge.conns["kami"].failed_at = 0.0  # past the cooldown
+                # a poll or a list read attaches the bot while Hermes' restart still runs
+                self.assertTrue((await s.req("models.options", bot="kami"))["ok"])
+                await asyncio.sleep(0.05)
+                self.assertEqual(self.restarted(s, "kami"), [])
+                await env.bridge._reattach(["kami"])
+                await s.until(lambda ev: self.restarted(s, "kami"))
+                await asyncio.sleep(0.1)
+                self.assertEqual([e["ok"] for e in self.restarted(s, "kami")], [True])
+
+    async def test_a_second_loss_is_looked_for_from_the_short_wait_again(self):
+        with mock.patch.object(ob, "RECOVER_POLL", (0.004, 60.0)):
+            async with Env(("kami",)) as env:
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                # a long outage: after 9 looks the next wait is 0.004 * 2**9 s, about 2 s, and the one after that,
+                # which a look that went on after the bot came back would sleep first, is about 4 s
+                await s.until(lambda ev: env.probes.count("kami") >= 9, timeout=10.0)
+                env.ready = {"kami"}
+                await s.until(lambda ev: self.restarted(s, "kami"), timeout=10.0)
+                # back: the look ends at once (well inside the ~4 s it would otherwise sleep)
+                await s.until(lambda ev: "kami" not in env.bridge._recovering, timeout=2.0)
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                # the next loss is a new look from the short wait
+                await s.until(lambda ev: len(self.restarted(s, "kami")) >= 2, timeout=2.0)
+
+    async def test_a_restart_that_begins_while_discovery_answers_keeps_the_bot(self):
+        """`_recover` looks at `_reattaching` again once discovery has answered: a Restart pressed meanwhile attaches
+        the bot itself."""
+        with mock.patch.object(ob, "RECOVER_POLL", (0.01, 0.02)):
+            async with Env(("kami",)) as env:
+                s = await self.open(env)
+                await s.req("chat.open", bot="kami")
+                env.ready = {"kami"}
+                env.on_probe = lambda name: env.bridge._reattaching.add(name)
+                env.clients["kami"].events.put_nowait(GatewayClientError("Gateway disconnected"))
+                await s.until(lambda ev: env.probes.count("kami") >= 1)
+                await asyncio.sleep(0.2)
+                self.assertEqual(env.connects.count("kami"), 1)  # the look did not attach it
+                self.assertEqual(self.restarted(s, "kami"), [])
+
+    async def test_a_restart_that_does_not_say_ok_still_announces_a_bot_a_request_attached(self):
+        """Bot offline, its chat's open failed; the person presses Start; while Hermes' restart runs a request
+        attaches the bot (so `bot.restarted` waits for the restart); then the restart fails, is refused or raises, so
+        no `_reattach` runs. The bot is attached, so the chat must still hear it and re-read."""
+        for how in ("failed", "refused", "raises"):
+            with self.subTest(how=how):
+                async with Env(("kami",), fail=("kami",)) as env:
+                    s = await self.open(env)
+                    self.assertEqual((await s.req("chat.open", bot="kami"))["error"]["code"], "bot_offline")
+                    env.fail.clear()
+                    env.bridge.conns["kami"].failed_at = 0.0
+                    started = asyncio.Event()
+                    go = __import__("threading").Event()
+                    loop = asyncio.get_running_loop()
+
+                    def restart(*a, **kw):  # Hermes' restart, still running while the request below attaches
+                        loop.call_soon_threadsafe(started.set)
+                        go.wait(5)
+                        if how == "raises":
+                            raise RuntimeError("restart command broke")
+                        return {"outcome": how, "line": "Hermes said no", **({"work": []} if how == "refused" else {})}
+                    with mock.patch.object(ob, "run_hermes_restart", restart), \
+                            mock.patch.object(ob, "hermes_path", lambda *a, **k: "/stub/hermes"):
+                        pressed = asyncio.ensure_future(s.req("bots.restart", bot="kami"))
+                        await asyncio.wait_for(started.wait(), 5)
+                        self.assertTrue((await s.req("models.options", bot="kami"))["ok"])
+                        self.assertEqual(self.restarted(s, "kami"), [])  # the restart says it, not this request
+                        go.set()
+                        r = await pressed
+                    self.assertNotEqual((r.get("result") or {}).get("outcome"), "ok")
+                    await s.until(lambda ev: self.restarted(s, "kami"))
+                    await asyncio.sleep(0.05)
+                    self.assertEqual([e["ok"] for e in self.restarted(s, "kami")], [True])
+                    conn = env.bridge.conns["kami"]
+                    self.assertEqual((conn.connected, conn.lost), (True, False))
+                    self.assertEqual(env.bridge._reattaching, set())
 
 
 class NeedsYou(BridgeCase):
@@ -1241,7 +1567,8 @@ class ReadOnlyRule(BridgeCase):
                     if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "subprocess" \
                             and n.attr in ("run", "Popen", "call", "check_call", "check_output"):
                         uses.append(fn.name)
-        self.assertEqual(uses, ["_git", "gh_pr_view", "run_hermes_restart"])
+        # _hermes_run: rule 24's one `hermes -p <bot> cron create` for the briefing (test_brief_setup pins its argv)
+        self.assertEqual(uses, ["_git", "_hermes_run", "gh_pr_view", "run_hermes_restart"])
         self.assertNotIn("create_subprocess", src)
         self.assertNotIn("os.system", src)
         self.assertEqual(ob.GIT_READS, {("worktree", "list"), ("rev-parse",), ("status",), ("diff",), ("log",),
@@ -1308,7 +1635,7 @@ class FolderChats(BridgeCase):
         subscription `session.create` gave, as a close (`end_reason`), so Hermes ends the conversation, and the
         close reports no error. A gateway that has no `session.detach` gets `session.close`, as before."""
         with tempfile.TemporaryDirectory() as folder:
-            async with Env(lacks={"session.close"}) as env:
+            async with Env() as env:  # the canonical gateway: no session.close at all
                 s = await self.open(env)
                 fid = (await s.req("folder.open", bot="kami", cwd=folder))["result"]["session"]
                 c = env.clients["kami"]
@@ -1317,7 +1644,7 @@ class FolderChats(BridgeCase):
                 self.assertEqual([m for m, _ in c.calls if m in ("session.detach", "session.close")], ["session.detach"])
                 self.assertEqual(c.find("session.detach")[0], {"session_id": "rt-folder-0", "subscription_id": "sub-folder-0",
                                                                "end_reason": "omher_close"})
-            async with Env(lacks={"session.detach"}) as env:
+            async with Env(lacks={"session.detach"}, legacy=True) as env:
                 s = await self.open(env)
                 fid = (await s.req("folder.open", bot="kami", cwd=folder))["result"]["session"]
                 c = env.clients["kami"]
@@ -2067,6 +2394,76 @@ class Skills(BridgeCase):
             self.assertEqual(env.connects, [])  # a file read: no gateway started for it
 
 
+class _Cmd:
+    def __init__(self, name, description="", args_hint="", cli_only=False, gateway_config_gate=None):
+        self.name, self.description, self.args_hint = name, description, args_hint
+        self.cli_only, self.gateway_config_gate = cli_only, gateway_config_gate
+
+    def describe(self):
+        return self.description
+
+
+def _fake_registry():
+    """A stand-in for `hermes_cli.commands`: the bridge CI installs only websockets and pyyaml, no Hermes."""
+    import types
+    pkg, mod = types.ModuleType("hermes_cli"), types.ModuleType("hermes_cli.commands")
+    mod.COMMAND_REGISTRY = [
+        _Cmd("model", "Switch  the\nmodel", "[model|reset] [--provider name]"),
+        _Cmd("help", "Show help"),
+        _Cmd("redraw", "Redraw the screen", cli_only=True),
+        _Cmd("verbose", "Tool progress", cli_only=True, gateway_config_gate="display.tool_progress_command"),
+        _Cmd("help", "a second help, later"),
+    ]
+    pkg.commands = mod
+    return mock.patch.dict(sys.modules, {"hermes_cli": pkg, "hermes_cli.commands": mod})
+
+
+class Commands(BridgeCase):
+    """`commands.list`: the slash commands Hermes answers for a bot, from Hermes' own registry (read-only)."""
+
+    async def test_lists_commands_sorted_with_hints_and_no_cli_only(self):
+        with _fake_registry():
+            async with Env() as env:
+                s = await self.open(env)
+                r = await s.req("commands.list", bot="kami")
+                self.assertTrue(r["ok"], r)
+                rows = r["result"]["commands"]
+                names = [x["name"] for x in rows]
+                self.assertEqual(names, sorted(names))
+                self.assertEqual(len(names), len(set(names)))
+                for row in rows:
+                    self.assertEqual((row["kind"], row["prefix"]), ("command", "/"))
+                    self.assertFalse(row["name"].startswith("/"))
+                    self.assertIsInstance(row["description"], str)
+                    self.assertIsInstance(row["hint"], str)
+                # the commands a gateway really dispatches are listed; the editor-only ones are not
+                self.assertIn("model", names)
+                self.assertIn("help", names)
+                self.assertNotIn("redraw", names)  # cli_only, no config gate: the gateway never answers it
+                model = next(x for x in rows if x["name"] == "model")
+                self.assertTrue(model["hint"].startswith("[model|reset]"))
+                self.assertEqual(model["description"], "Switch the model")
+                self.assertNotIn("verbose", names)  # its config gate is off for this bot
+                self.assertEqual(env.connects, [])  # a registry read: no gateway started for it
+                # the bot turns the gate on: the gateway answers /verbose, so the menu lists it
+                cfg = env.home / "profiles" / "kami" / "config.yaml"
+                cfg.write_text(cfg.read_text() + "display:\n  tool_progress_command: true\n")
+                r = await s.req("commands.list", bot="kami")
+                self.assertIn("verbose", [x["name"] for x in r["result"]["commands"]])
+
+    async def test_no_hermes_registry_gives_no_rows(self):
+        with mock.patch.dict(sys.modules, {"hermes_cli": None, "hermes_cli.commands": None}):
+            async with Env() as env:
+                s = await self.open(env)
+                r = await s.req("commands.list", bot="kami")
+                self.assertEqual(r["result"]["commands"], [])
+
+    async def test_unknown_bot(self):
+        async with Env() as env:
+            s = await self.open(env)
+            self.assertEqual((await s.req("commands.list", bot="ghost"))["error"]["code"], "unknown_bot")
+
+
 class ReplyThere(BridgeCase):
     """"Reply there": omher passes a thread reference to the bot as one context block; it posts nothing."""
 
@@ -2124,6 +2521,52 @@ class ReplyThere(BridgeCase):
         self.assertEqual(rows[0]["reply_to"], {"target": "slack:C1:1794.5", "label": "#og-dev"})
         self.assertNotIn("reply_to", rows[1])  # only the person's own rows carry a reference
 
+    def test_a_steer_row_shows_what_was_typed_not_hermes_marker(self):
+        """kami's Bot Chat after a restart: a mid-turn steer came back as "[OUT-OF-BAND USER MESSAGE — …]\\n<text>\\n
+        [/OUT-OF-BAND USER MESSAGE]", the frame Hermes wraps it in for the model (display_kind "steer")."""
+        o = ("[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool "
+             "output and not a new delivery when replayed from conversation history]")
+        c = "[/OUT-OF-BAND USER MESSAGE]"
+        rows = ob.chat_messages([{"role": "user", "text": "fix the terminal", "row_id": 1},
+                                 {"role": "user", "content": f"{o}\n터미널이 잘려 보여\n{c}", "display_kind": "steer",
+                                  "row_id": 2},
+                                 {"role": "user", "text": f"{o}\n왜 이래\n{c} 뭐냐  {c}  ? 이것도 고쳐", "row_id": 3},
+                                 {"role": "user", "text": f"{o}\n{c}", "display_kind": "steer", "row_id": 4},
+                                 {"role": "assistant", "text": "Fixed.", "row_id": 5}])
+        self.assertEqual([(m["text"], m.get("steered")) for m in rows],
+                         [("fix the terminal", None), ("터미널이 잘려 보여", True), ("왜 이래\n뭐냐\n? 이것도 고쳐", None),
+                          ("Fixed.", None)])
+        self.assertFalse(any("OUT-OF-BAND" in m["text"] for m in rows))
+
+    def test_a_steered_row_carries_the_bots_next_words_as_its_reply(self):
+        """A steer Hermes read joins the next tool result; the bot's note after it ("Got it, keeping the timeout") is
+        a commentary row the reopened chat hides. The steered row carries that note's first line and its time, so
+        the bubble shows it was read and how it was taken. A steer with no bot row after it in its turn gets none."""
+        o = "[OUT-OF-BAND USER MESSAGE — a direct message from the user]"
+        c = "[/OUT-OF-BAND USER MESSAGE]"
+        rows = ob.chat_messages([
+            {"role": "user", "text": "fix the retry code", "row_id": 1, "timestamp": 100.0},
+            {"role": "assistant", "text": "Reading it.", "tool_calls": [{"id": "a"}], "row_id": 2, "timestamp": 101.0},
+            {"role": "tool", "text": "ok", "row_id": 3},
+            {"role": "user", "content": f"{o}\nkeep the old timeout\n{c}", "display_kind": "steer", "row_id": 4,
+             "timestamp": 102.0},
+            {"role": "assistant", "text": "", "tool_calls": [{"id": "b"}], "row_id": 5, "timestamp": 103.0},
+            {"role": "assistant", "text": "\n  Got it, keeping the old timeout.\nRunning the tests.",
+             "tool_calls": [{"id": "c"}], "row_id": 6, "timestamp": 104.5},
+            {"role": "assistant", "text": "Done.", "row_id": 7, "timestamp": 106.0},
+            {"role": "user", "text": "thanks", "row_id": 8, "timestamp": 110.0},
+            {"role": "user", "content": f"{o}\nand the logs\n{c}", "display_kind": "steer", "row_id": 9},
+            {"role": "user", "text": "next", "row_id": 10},
+            {"role": "assistant", "text": "x" * 200, "row_id": 11},
+        ])
+        steered = [m for m in rows if m.get("steered")]
+        self.assertEqual([(m["text"], m.get("steer_reply"), m.get("steer_read")) for m in steered],
+                         [("keep the old timeout", "Got it, keeping the old timeout.", 104.5),
+                          ("and the logs", None, None)])
+        # the note itself stays hidden as a bubble; only its first line shows, under the steered row
+        self.assertNotIn("Got it", " ".join(m["text"] for m in rows if m["role"] == "assistant"))
+        self.assertEqual(rows[-1]["text"], "x" * 200)
+
     def test_a_reopened_chat_shows_one_bubble_per_turn_its_answer(self):
         """kami's real Bot Chat: a turn stores the commentary Hermes writes beside each tool call as assistant rows of
         their own (14 of the 20 with text in one evening). The live chat shows only the answer; a reopened one too."""
@@ -2142,6 +2585,23 @@ class ReplyThere(BridgeCase):
                                ("assistant", "Merged."), ("user", "still running?"), ("assistant", "Checking the logs.")])
         # opened while that last turn still runs: what it said so far is commentary, its answer comes live
         self.assertEqual(ob.chat_messages(rows, running=True)[-1], {"id": "9", "role": "user", "text": "still running?", "ts": 0.0})
+
+    def test_the_words_before_a_clarify_ask_stay_in_a_reopened_chat(self):
+        """The live chat keeps the words written right before a question as a row above its card (store.ts
+        `askNote`). Hermes stores them as a commentary row; a reopened chat keeps that one row, while the question
+        still waits and after it was answered, and still hides the other commentary."""
+        rows = [{"role": "user", "text": "add the aliases", "row_id": 1},
+                {"role": "assistant", "text": "Reading the config.", "row_id": 2},
+                {"role": "tool", "name": "read_file", "row_id": 3},
+                {"role": "assistant", "text": "Before I apply it:\n\n1) six aliases", "row_id": 4},
+                {"role": "tool", "name": "clarify", "row_id": 5}]
+        waiting = [(m["role"], m["text"]) for m in ob.chat_messages(rows, running=True)]
+        self.assertEqual(waiting, [("user", "add the aliases"), ("assistant", "Before I apply it:\n\n1) six aliases")])
+        done = rows + [{"role": "assistant", "text": "Applied.", "row_id": 6}]
+        got = [m["text"] for m in ob.chat_messages(done)]
+        self.assertEqual(got, ["add the aliases", "Before I apply it:\n\n1) six aliases", "Applied."])
+        # a row whose next tool is not clarify stays commentary
+        self.assertNotIn("Reading the config.", got)
 
     async def test_elsewhere_list_carries_the_target_only_for_threads(self):
         async with Env(sessions=[dict(r) for r in self.SESSIONS]) as env:
@@ -4181,3 +4641,318 @@ class PeerHint(BridgeCase):
             self.assertIn("```omher-peer", ob.PEER_HINT)
             rows = ob.chat_messages([{"role": "user", "text": sent[0], "row_id": 9}])
             self.assertEqual(rows[0]["text"], "맥미니 헤르메스 붙여줘")
+
+
+class TermLinkStatus(BridgeCase):
+    """A main-chat message holding an omher terminal link gets that terminal's status (from the file omher keeps,
+    `~/.omher/terminals/<id>.json`) as one `[omher]` block; a link to a terminal not here says so; the block never
+    shows back as the person's words; only that file is read, never through a link."""
+
+    LID = "abcdefgh23"
+    STATUS = {"link": "omher://terminal/abcdefgh23", "title": "checkout build", "agent": "claude",
+              "folder": "~/code/web-app", "state": "waiting", "started": 1700000000,
+              "last_line": "All 42 tests passed", "updated_at": 1700000100}
+
+    def _omher(self) -> Path:
+        d = Path(tempfile.mkdtemp())
+        (d / "terminals").mkdir()
+        (d / "terminals" / f"{self.LID}.json").write_text(json.dumps(self.STATUS), encoding="utf-8")
+        return d
+
+    def test_the_block_names_the_terminal_and_one_not_here(self):
+        home = self._omher()
+        blocks = ob.term_link_blocks(f"look at omher://terminal/{self.LID} and omher://terminal/zzzzzzzzzz", home)
+        self.assertEqual(blocks.split("\n"), [
+            f'[omher] Terminal omher://terminal/{self.LID}: "checkout build"; CLI claude; folder ~/code/web-app; '
+            f"state waiting; last line: All 42 tests passed. {ob.TERM_LINK_TAIL}",
+            "[omher] Terminal omher://terminal/zzzzzzzzzz: not open on this computer.",
+        ])
+        self.assertEqual(ob.term_link_blocks("no link here, omher://terminal/ABCDEFGH23 or xomher://terminal/abcdefgh23", home), "")
+        many = " ".join(f"omher://terminal/{c * 10}" for c in "abcde")
+        self.assertEqual(len(ob.term_link_blocks(many, home).split("\n")), ob.TERM_LINK_MAX)
+
+    @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
+    def test_a_linked_or_oversized_status_file_is_not_read(self):
+        home = self._omher()
+        f = home / "terminals" / f"{self.LID}.json"
+        outside = home / "outside.json"
+        f.rename(outside)
+        os.symlink(outside, f)
+        self.assertIsNone(ob.read_term_status(home, self.LID))
+        f.unlink()
+        f.write_text("x" * (17 * 1024), encoding="utf-8")
+        self.assertIsNone(ob.read_term_status(home, self.LID))
+        self.assertIsNone(ob.read_term_status(home, "../../etc"))
+
+    @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
+    def test_a_linked_status_file_is_refused_where_os_has_no_o_nofollow(self):
+        """Windows has no O_NOFOLLOW, so the open alone would follow a link: the reader refuses it before opening."""
+        home = self._omher()
+        f = home / "terminals" / f"{self.LID}.json"
+        outside = home / "outside.json"
+        f.rename(outside)
+        os.symlink(outside, f)
+        saved = os.O_NOFOLLOW
+        del os.O_NOFOLLOW
+        try:
+            self.assertIsNone(ob.read_term_status(home, self.LID))
+        finally:
+            os.O_NOFOLLOW = saved
+        f.unlink()
+        outside.rename(f)
+        del os.O_NOFOLLOW
+        try:
+            self.assertEqual(ob.read_term_status(home, self.LID), self.STATUS)  # a plain file still reads
+        finally:
+            os.O_NOFOLLOW = saved
+
+    async def test_the_block_rides_a_main_chat_turn_and_is_stripped_on_read(self):
+        async with Env() as env:
+            env.bridge.omher_home = self._omher()
+            s = await self.open(env)
+            await s.req("chat.open", bot="kami")
+            typed = f"what is omher://terminal/{self.LID} doing?"
+            await s.req("chat.send", bot="kami", text=typed)
+            await s.req("chat.send", bot="kami", text="hello")
+            sent = [x["text"] for x in env.clients["kami"].find("prompt.submit")]
+            self.assertTrue(sent[0].startswith(typed + "\n\n[omher] Terminal omher://terminal/abcdefgh23: \"checkout build\""), sent[0])
+            self.assertIn("last line: All 42 tests passed", sent[0])
+            self.assertEqual(sent[1], "hello")
+            rows = ob.chat_messages([{"role": "user", "text": sent[0], "row_id": 9}])
+            self.assertEqual(rows[0]["text"], typed)
+
+
+class TasksLinear(unittest.TestCase):
+    """`tasks.linear`: the Tasks page's Linear source asks only whether the bot's config has an MCP server whose name
+    has `linear` in it; the reader reads the names and that server's `enabled`, never a url, headers, env or auth."""
+
+    def _dir(self, text: str) -> Path:
+        d = Path(tempfile.mkdtemp())
+        (d / "config.yaml").write_text(text, encoding="utf-8")
+        return d
+
+    def test_finds_a_linear_server_by_name_only(self):
+        d = self._dir("mcp_servers:\n  notion:\n    url: https://mcp.notion.com/mcp\n  linear:\n    url: https://mcp.linear.app/sse\n"
+                      "    headers:\n      Authorization: Bearer ***")
+        self.assertEqual(ob.read_linear_mcp(d), {"configured": True, "server": "linear"})
+        # a name with linear in it, whatever its url
+        d = self._dir("mcp_servers:\n  linear-work:\n    url: https://mcp.example.com/sse\n")
+        self.assertEqual(ob.read_linear_mcp(d), {"configured": True, "server": "linear-work"})
+        # a Linear url under another name is not detected: the url is never read
+        fake = "glpat-" + "X" * 24
+        d = self._dir(f"mcp_servers:\n  work:\n    url: https://mcp.linear.app/sse?token={fake}\n    headers:\n      Authorization: {fake}\n")
+        self.assertEqual(ob.read_linear_mcp(d), {"configured": False, "server": ""})
+
+    def test_enabled_reads_as_the_config_loader_reads_it(self):
+        # the event reader and the bridge's loader must agree on `enabled` for every plain word: under Hermes'
+        # own hermes_yaml (YAML 1.1 in ruamel) `n` and `N` are false too, under PyYAML they are strings (on)
+        for word in ("true", "false", "yes", "no", "on", "off", "y", "Y", "n", "N", "Off", "NO", "maybe", "0", "1"):
+            d = self._dir(f"mcp_servers:\n  linear:\n    enabled: {word}\n")
+            loaded = ob._load_yaml(d / "config.yaml")["mcp_servers"]["linear"]["enabled"]
+            ob._YAML_CACHE.clear()
+            self.assertEqual(ob.mcp_server_names(d / "config.yaml")["linear"].get("enabled"), loaded is not False, word)
+
+    def test_reads_only_the_names_and_enabled(self):
+        # the verifier's probe (V3 on PR #2908): every value read is recorded; only the Linear server's `enabled` may be
+        touched = []
+
+        class Spy(dict):
+            def __getitem__(self, k):
+                touched.append(k)
+                return super().__getitem__(k)
+
+            def get(self, k, default=None):
+                touched.append(k)
+                return super().get(k, default)
+
+            def values(self):
+                raise AssertionError("values() read")
+
+            def items(self):
+                raise AssertionError("items() read")
+
+        fake = "glpat-" + "X" * 24
+        work = Spy(url="https://mcp.linear.app/sse?token=" + fake, headers=Spy(Authorization=fake), enabled=True)
+        lin = Spy(url="https://mcp.example.com/" + fake, env=Spy(LINEAR_API_KEY=fake), enabled=False)
+        self.assertEqual(ob.linear_server(Spy(work=work)), {"configured": False, "server": ""})
+        self.assertEqual(touched, [])
+        self.assertEqual(ob.linear_server(Spy(work=work, my_linear=lin)), {"configured": False, "server": "my_linear"})
+        self.assertEqual(touched, ["my_linear", "enabled"])
+
+    def test_no_other_value_is_kept_or_cached(self):
+        # the verifier's V5 probe (PR #2908): a fake credential under the Linear server must not be held by anything
+        # the reader returns or caches; the config never reaches the shared YAML cache
+        fake = "glpat-" + "X" * 24
+        for name, url, want in (("linear-work", "https://example.org/sse", True), ("work", "https://mcp.linear.app/sse", False)):
+            d = self._dir(f"model: x\nmcp_servers:\n  {name}:\n    url: {url}?token={fake}\n    headers:\n"
+                          f"      Authorization: {fake}\n    env: [{fake}, {{K: {fake}}}]\n    enabled: true\n")
+            ob._YAML_CACHE.clear()
+            result = ob.read_linear_mcp(d)
+            self.assertEqual(result, {"configured": want, "server": name if want else ""})
+            self.assertNotIn(str(d / "config.yaml"), ob._YAML_CACHE)
+            self.assertEqual(ob.mcp_server_names(d / "config.yaml"), {name: {"enabled": True}})
+            for held in (result, ob._YAML_CACHE, ob.mcp_server_names(d / "config.yaml")):
+                self.assertNotIn(fake, repr(held))
+
+    def test_the_op_returns_caches_and_logs_no_other_value(self):
+        # rule 33 as written (the verifier's V5 probe, PR #2908 verify9): fake values in headers, env and args. The
+        # bot lookup parses the config whole for every op (`_load_yaml`, discover_bots); the Linear path adds nothing
+        # to that cache, returns only the name and `enabled`, logs nothing, and only names / `enabled` leave its parser.
+        import logging
+
+        fake = "ghp_" + "Q7" * 18
+        for name, enabled, want in (("linear-work", True, True), ("work", True, False), ("linear", False, False)):
+            home = Path(tempfile.mkdtemp())
+            (home / "config.yaml").write_text(ob._yaml_safe_dump({"mcp_servers": {name: {
+                "enabled": enabled, "url": "https://example.org/sse", "headers": {"Authorization": fake},
+                "env": {"API_TOKEN": fake}, "args": ["--token", fake]}}}), encoding="utf-8")
+            bridge = ob.Bridge(token=TOKEN, hermes_home=home)
+            ob._YAML_CACHE.clear()
+            ob.discover_bots(home)
+            before = repr(ob._YAML_CACHE)
+            records: list[logging.LogRecord] = []
+
+            class Keep(logging.Handler):
+                def emit(self, record):
+                    records.append(record)
+
+            root, keep = logging.getLogger(), Keep(logging.DEBUG)
+            level = root.level
+            root.addHandler(keep)
+            root.setLevel(logging.DEBUG)
+            try:
+                result = asyncio.run(bridge.op_tasks_linear({"bot": "default"}))
+            finally:
+                root.removeHandler(keep)
+                root.setLevel(level)
+            self.assertEqual(result, {"configured": want, "server": name if "linear" in name else ""})
+            self.assertNotIn(fake, repr(result))
+            self.assertEqual(repr(ob._YAML_CACHE), before)  # the Linear path stores nothing of its own
+            self.assertEqual([r.getMessage() for r in records if fake in r.getMessage()], [])
+            self.assertEqual(ob.mcp_server_names(home / "config.yaml"), {name: {"enabled": enabled}})
+
+    def test_names_and_enabled_only(self):
+        d = self._dir("mcp_servers:\n  notion: {url: x}\n  lin:\n    nested: {enabled: false}\n    enabled: off\n"
+                      "  q:\n    enabled: 'false'\nskills:\n  mcp_servers: {linear: {}}\n")
+        self.assertEqual(ob.mcp_server_names(d / "config.yaml"), {"notion": {}, "lin": {"enabled": False}, "q": {}})
+        self.assertEqual(ob.mcp_server_names(self._dir("mcp_servers: {linear: {enabled: false}\n") / "config.yaml"), {})
+
+    def test_none_off_or_broken(self):
+        for text in ("", "mcp_servers: []\n", "mcp_servers:\n  notion:\n    url: https://mcp.notion.com/mcp\n",
+                     "mcp_servers:\n  issues:\n    url: https://mcp.linear.app/mcp\n", "model: x\n"):
+            self.assertEqual(ob.read_linear_mcp(self._dir(text)), {"configured": False, "server": ""}, text)
+        off = self._dir("mcp_servers:\n  linear:\n    url: https://mcp.linear.app/sse\n    enabled: false\n")
+        self.assertEqual(ob.read_linear_mcp(off), {"configured": False, "server": "linear"})
+
+    def test_is_an_op(self):
+        self.assertIn("tasks.linear", ob.Bridge(token=TOKEN, hermes_home=Path(tempfile.gettempdir())).ops)
+        self.assertIn("tasks.linear", ob.PEER_FORWARD)
+
+
+def hermes_yaml_stand_in():
+    """Hermes 0.22 and later's own `hermes_yaml`, as far as the bridge uses it: ruamel.yaml's safe loader in YAML 1.1
+    mode, and its safe dumper. Those Hermes releases do not depend on PyYAML."""
+    from io import StringIO
+
+    from ruamel.yaml import YAML
+
+    def safe_load(text):
+        y = YAML(typ="safe", pure=True)
+        y.version = (1, 1)
+        return y.load(text)
+
+    def safe_dump(data, *, sort_keys=True):
+        y = YAML(typ="safe", pure=True)
+        y.default_flow_style, y.allow_unicode, y.sort_base_mapping_type_on_output = False, True, sort_keys
+        out = StringIO()
+        y.dump(data, out)
+        return out.getvalue()
+
+    mod = types.ModuleType("hermes_yaml")
+    mod.safe_load, mod.safe_dump = safe_load, safe_dump
+    return mod
+
+
+try:
+    import ruamel.yaml  # noqa: F401
+    HAVE_RUAMEL = True
+except ImportError:
+    HAVE_RUAMEL = False
+
+
+class OnHermesYaml:
+    """Run a reader's tests the way the bridge runs on Hermes 0.22 and later: `hermes_yaml` importable, `yaml` not.
+    There `import yaml` failed and every config the bridge read answered `{}`: no bot's model, no oh-my-hermes skill
+    folder, no Linear server."""
+
+    def setUp(self):
+        super().setUp()
+        modules = mock.patch.dict(sys.modules, {"yaml": None, "hermes_yaml": hermes_yaml_stand_in()})
+        modules.start()
+        self.addCleanup(modules.stop)
+        ob._YAML_CACHE.clear()
+        self.addCleanup(ob._YAML_CACHE.clear)
+
+
+@unittest.skipUnless(HAVE_RUAMEL, "ruamel.yaml (the YAML library of Hermes 0.22 and later) is not installed")
+class DiscoveryOnHermesYaml(OnHermesYaml, Discovery):
+    def test_pyyaml_is_not_imported(self):
+        with self.assertRaises(ImportError):
+            import yaml  # noqa: F401
+
+    def test_skill_roots_and_yaml_1_1_values(self):
+        with tempfile.TemporaryDirectory() as t:
+            prof, omh = Path(t) / "kami", Path(t) / "omh-skills"
+            omh.mkdir()
+            prof.mkdir()
+            (prof / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - '{omh}'\nagent:\n  reasoning_effort: high\n"
+                                              "model:\n  default: m\n  provider: p\nmcp_servers:\n  linear:\n"
+                                              "    enabled: off\n", encoding="utf-8")
+            self.assertEqual(ob.skill_roots(prof), [prof / "skills", omh])
+            bot = ob.discover_bots(prof)[0]
+            self.assertEqual((bot["model"], bot["provider"], bot["reasoning"]), ("m", "p", "high"))
+            # Hermes' YAML 1.1 reads `off` as false, as PyYAML did
+            self.assertIs(ob._load_yaml(prof / "config.yaml")["mcp_servers"]["linear"]["enabled"], False)
+
+    def test_display_name_fallback_writes_with_the_same_library(self):
+        with tempfile.TemporaryDirectory() as t:
+            prof = Path(t)
+            (prof / "profile.yaml").write_text("description: first\n", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"hermes_cli.profiles": None}):  # Hermes' writer is not reachable
+                ob.write_display_name(prof, "카미")
+            self.assertEqual(ob._load_yaml(prof / "profile.yaml"), {"description": "first", "display_name": "카미"})
+
+
+@unittest.skipUnless(HAVE_RUAMEL, "ruamel.yaml (the YAML library of Hermes 0.22 and later) is not installed")
+class TasksLinearOnHermesYaml(OnHermesYaml, TasksLinear):
+    pass
+
+
+class OneMasker(unittest.TestCase):
+    """The bridge's `mask_secrets` is omher's one masker: the same patterns as src/lib/secrets.json (the page and the
+    desktop shell read that file)."""
+
+    def test_same_patterns_as_the_shared_file(self):
+        spec = json.loads((Path(ob.__file__).parent.parent / "src" / "lib" / "secrets.json").read_text(encoding="utf-8"))
+        self.assertEqual((ob.SECRET_TOKENS, ob.SECRET_ASSIGNED, ob.SECRET_MASK), (spec["tokens"], spec["assigned"], spec["mask"]))
+        self.assertEqual([list(e) for e in ob.SECRET_SPLIT], spec["split"])
+
+    def test_the_shared_cases(self):
+        # src/lib/secrets.cases.json: the same table the page (secrets.test.ts) and the shell (tasks.rs) run
+        table = json.loads((Path(ob.__file__).parent.parent / "src" / "lib" / "secrets.cases.json").read_text(encoding="utf-8"))
+        self.assertGreater(len(table["cases"]), 10)
+        for text, want in table["cases"]:
+            self.assertEqual(ob.mask_secrets(text), want, text)
+
+    def test_a_token_broken_by_a_line_break(self):
+        # the verifier's V4 (PR #2908): `ghp_XXXX` + newline + 32 X stayed visible
+        self.assertEqual(ob.mask_secrets("before ghp_XXXX\n" + "X" * 32 + " after"), "before •••• after")
+        self.assertEqual(ob.mask_secrets("ghp_" + "X" * 36 + "\nThe next line"), "••••\nThe next line")
+
+    def test_masks_tokens_and_assigned_values(self):
+        fake = "ghp_" + "X" * 36
+        self.assertEqual(ob.mask_secrets(f"failure credential={fake}"), "failure credential=••••")
+        self.assertEqual(ob.mask_secrets(f"example credential {fake}"), "example credential ••••")
+        self.assertEqual(ob.mask_secrets("[d](https://e.com/?token=abc&x=1)"), "[d](https://e.com/?token=••••&x=1)")
+        for plain in ("task-management works", "the token is in the vault", "password: see wiki"):
+            self.assertEqual(ob.mask_secrets(plain), plain)

@@ -1,6 +1,6 @@
 ---
 name: "omh-agent-instructions"
-description: "[omh] Agent instruction file for a repo -- AGENTS.md, CLAUDE.md, a Cursor rule: write or update what an agent cannot derive from the code, inside a marked region, with every command verified or marked unverified and no counts that drift. Use when the user says: agent-instructions, agents.md, claude.md, gemini.md, copilot-instructions.md, .cursorrules, cursor rules, cursor rule."
+description: "[omh] Agent instruction file for a repo: AGENTS.md, CLAUDE.md, or a Cursor rule; write or update what an agent cannot derive from the code, inside a marked region, with every command verified or marked unverified and no counts that drift. Use when the user says: agent-instructions, agents.md, claude.md, gemini.md, copilot-instructions.md, .cursorrules, cursor rules, cursor rule."
 license: MIT
 author: "oh-my-hermes maintainers"
 metadata:
@@ -84,6 +84,7 @@ Quality bar:
 
 - Inventory every instruction file first and respect closest-file-wins nesting.
 - Load `references/instruction-file-method.md` for the section order, the marker convention, the verified and unverified command form, and the drift rules instead of recalling them.
+- Keep a line only if an agent cannot infer it from the code, tests or docs; keep the workflows the project depends on, and leave routine how-to decisions out.
 - Record each pitfall with what it cost, so a reader can tell a scar from a preference.
 - Pair every generated file with its source, its regenerate command, and the gate that checks it.
 - Keep prepared, verified, and written as separate states for every command and section.

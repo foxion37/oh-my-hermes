@@ -74,7 +74,7 @@ for (const th of THEMES) {
     test.describe(`${th.id}, minimum contrast "${contrast}"`, () => {
       test.use({ colorScheme: th.app });
 
-      test(`yellow, green and dim text inside the active match reads at 7:1 on ${th.id}; so does a match over two rows and one in Korean`, async ({ page }) => {
+            test(`yellow, green and dim text inside the active match reads at 7:1 on ${th.id}; so does a match over two rows and one in Korean`, async ({ page }) => {
         await openApp(page, { theme: th.app, term: { [th.app === "light" ? "themeLight" : "themeDark"]: th.id, contrast } });
         await newTerminal(page);
         const cols = await page.evaluate(() => {

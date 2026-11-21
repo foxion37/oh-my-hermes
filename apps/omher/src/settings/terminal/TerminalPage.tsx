@@ -15,19 +15,23 @@ import {
   readTermSettings,
   TERM_CONTRASTS,
   TERM_CURSORS,
+  TERM_DIM,
   TERM_FONT_SIZE,
   TERM_GPUS,
   TERM_LINE_HEIGHT,
   TERM_PADDING,
   TERM_SCROLLBACKS,
+  TERM_UNDO_CLOSE,
   writeTermSettings,
   type TermContrast,
   type TermCursor,
   type TermGpu,
   type TermSettings,
 } from "../../sessions/term/settings";
-import { ANSI_NORMAL, TERM_THEMES, termThemePick, type TermTheme } from "../../sessions/term/themes";
+import { useShells } from "../../sessions/newMenu";
+import { ANSI_NORMAL, CUSTOM_THEME_ID, customTermTheme, TERM_THEMES, termThemePick, type TermTheme } from "../../sessions/term/themes";
 import { TermPreview } from "./TermPreview";
+import { TermImport, type ImportCandidate } from "./TermImport";
 
 type Mode = "dark" | "light";
 
@@ -124,6 +128,11 @@ export function TerminalPage() {
   useEffect(() => setSlot(appMode), [appMode]);
   const [q, setQ] = useState("");
   const [font, setFont] = useState(term.fontFamily);
+  useEffect(() => setFont(term.fontFamily), [term.fontFamily]);
+  // a profile being looked at in Import from…: the preview shows it until Use or Cancel
+  const [candidate, setCandidate] = useState<ImportCandidate>(null);
+  const mine = term.custom ? customTermTheme(term.custom) : null;
+  const [importAt, setImportAt] = useState<HTMLDivElement | null>(null);
 
   const picked = termThemePick(slot, term);
   const needle = compact(q);
@@ -132,13 +141,17 @@ export function TerminalPage() {
   const kinds: Mode[] = slot === "light" ? ["light", "dark"] : ["dark", "light"];
   const pick = (id: string) => writeTermSettings(slot === "light" ? { themeLight: id } : { themeDark: id });
   const set = (patch: Partial<TermSettings>) => void writeTermSettings(patch);
+  // Default shell: this computer's shells; the default one is stored as "" (the login shell, as before)
+  const shells = useShells();
+  const shellDefault = shells?.find((s) => s.default) ?? shells?.[0];
+  const shellValue = shells?.some((s) => s.id === term.defaultShell) ? term.defaultShell : (shellDefault?.id ?? "");
   const using = rendererInUse();
   const rows = (n: number) => n.toLocaleString(locale());
 
   return (
     <div className="st-page st-wide tm" data-testid="term-settings">
       <div className="st-gh st-gh0">{t("term.theme")}</div>
-      <TermPreview theme={picked} settings={term} />
+      <TermPreview theme={candidate?.theme ?? picked} settings={candidate?.settings ?? term} />
       <div className="tm-bar">
         <div className="tm-slot">
           <Seg
@@ -150,9 +163,21 @@ export function TerminalPage() {
             testId="term-slot"
           />
         </div>
-        <input type="search" className="bots-q tm-q" placeholder={t("term.find")} aria-label={t("term.find")} value={q} onChange={(e) => setQ(e.target.value)} data-testid="term-search" />
+        <div className="tm-bar-r">
+          <input type="search" className="bots-q tm-q" placeholder={t("term.find")} aria-label={t("term.find")} value={q} onChange={(e) => setQ(e.target.value)} data-testid="term-search" />
+          {isMac() && <TermImport settings={term} slot={slot} onCandidate={setCandidate} panelAt={importAt} />}
+        </div>
       </div>
+      <div ref={setImportAt} />
       <div className="tm-list" role="radiogroup" aria-label={t(SLOT[slot])} data-testid="term-themes">
+        {mine && (!needle || compact(mine.name).includes(needle)) && (
+          <div data-testid="term-themes-custom">
+            <div className="tm-gh">{t("term.yours")}</div>
+            <div className="tm-grid">
+              <ThemeRow theme={mine} on={picked.id === CUSTOM_THEME_ID} onPick={() => pick(CUSTOM_THEME_ID)} />
+            </div>
+          </div>
+        )}
         {kinds.map((kind) => {
           const list = shown.filter((th) => th.kind === kind);
           if (!list.length) return null;
@@ -167,7 +192,7 @@ export function TerminalPage() {
             </div>
           );
         })}
-        {shown.length === 0 && (
+        {shown.length === 0 && !(mine && compact(mine.name).includes(needle)) && (
           <div className="tm-none" data-testid="term-themes-none">
             {t("term.noMatch", { q: q.trim() })}
           </div>
@@ -213,6 +238,9 @@ export function TerminalPage() {
         <Row title={t("term.padding")} hints={[t("term.paddingHint")]}>
           <Stepper value={term.padding} min={TERM_PADDING.min} max={TERM_PADDING.max} step={2} label={t("term.padding")} onChange={(n) => set({ padding: Math.round(n) })} testId="term-padding" />
         </Row>
+        <Row title={t("term.dim")} hints={[t("term.dimHint")]} testId="term-dim-row">
+          <Stepper value={term.dimUnfocused} min={TERM_DIM.min} max={TERM_DIM.max} step={0.04} label={t("term.dim")} onChange={(n) => set({ dimUnfocused: n })} testId="term-dim" />
+        </Row>
       </div>
 
       <div className="st-gh">{t("term.cursor")}</div>
@@ -234,6 +262,23 @@ export function TerminalPage() {
 
       <div className="st-gh">{t("term.more")}</div>
       <div className="st-grp">
+        {shells && shells.length > 0 && (
+          <Row title={t("term.defaultShell")} hints={[t("term.defaultShellHint")]} testId="term-default-shell-row">
+            <select
+              className="tm-font tm-shell"
+              aria-label={t("term.defaultShell")}
+              value={shellValue}
+              onChange={(e) => set({ defaultShell: e.target.value === shellDefault?.id ? "" : e.target.value })}
+              data-testid="term-default-shell"
+            >
+              {shells.map((s) => (
+                <option key={s.id} value={s.id} title={s.path}>
+                  {s.default ? t("term.shellDefaultOf", { shell: s.label }) : s.label}
+                </option>
+              ))}
+            </select>
+          </Row>
+        )}
         <Row title={t("term.scrollback")} hints={[t("term.scrollbackHint")]} testId="term-scrollback-row">
           <Seg
             small
@@ -252,6 +297,12 @@ export function TerminalPage() {
         <Row title={t("term.gpu")} hints={[t("term.gpuHint"), using ? t(IN_USE[using]) : null]} testId="term-gpu-row">
           <Seg small label={t("term.gpu")} value={term.gpu} options={TERM_GPUS.map((g) => ({ value: g, label: t(GPU[g]) }))} onChange={(v) => set({ gpu: v as TermGpu })} testId="term-gpu" />
         </Row>
+        <Row title={t("term.kittyKeys")} hints={[t("term.kittyKeysHint")]} testId="term-kitty-row">
+          <Seg small label={t("term.kittyKeys")} value={term.kittyKeys ? "on" : "off"} options={ON_OFF()} onChange={(v) => set({ kittyKeys: v === "on" })} testId="term-kitty" />
+        </Row>
+        <Row title={t("term.images")} hints={[t("term.imagesHint")]} testId="term-images-row">
+          <Seg small label={t("term.images")} value={term.images ? "on" : "off"} options={ON_OFF()} onChange={(v) => set({ images: v === "on" })} testId="term-images" />
+        </Row>
       </div>
 
       <div className="st-gh">{t("term.clipboard")}</div>
@@ -261,6 +312,29 @@ export function TerminalPage() {
         </Row>
         <Row title={t("term.rightClickPaste")} hints={[t("term.rightClickPasteHint")]} testId="term-right-paste-row">
           <Seg small label={t("term.rightClickPaste")} value={term.rightClickPaste ? "on" : "off"} options={ON_OFF()} onChange={(v) => set({ rightClickPaste: v === "on" })} testId="term-right-paste" />
+        </Row>
+        <Row title={t("term.confirmPaste")} hints={[t("term.confirmPasteHint")]} testId="term-confirm-paste-row">
+          <Seg small label={t("term.confirmPaste")} value={term.confirmPaste ? "on" : "off"} options={ON_OFF()} onChange={(v) => set({ confirmPaste: v === "on" })} testId="term-confirm-paste" />
+        </Row>
+        <Row title={t("term.osc52")} hints={[t("term.osc52Hint")]} testId="term-osc52-row">
+          <Seg small label={t("term.osc52")} value={term.osc52 ? "on" : "off"} options={ON_OFF()} onChange={(v) => set({ osc52: v === "on" })} testId="term-osc52" />
+        </Row>
+      </div>
+
+      <div className="st-gh">{t("term.history")}</div>
+      <div className="st-grp">
+        <Row title={t("term.keepHistory")} hints={[t("term.keepHistoryHint")]} testId="term-keep-history-row">
+          <Seg small label={t("term.keepHistory")} value={term.keepHistory ? "on" : "off"} options={ON_OFF()} onChange={(v) => set({ keepHistory: v === "on" })} testId="term-keep-history" />
+        </Row>
+        <Row title={t("term.undoClose")} hints={[t("term.undoCloseHint")]} testId="term-undo-close-row">
+          <Seg
+            small
+            label={t("term.undoClose")}
+            value={String(term.undoClose)}
+            options={TERM_UNDO_CLOSE.map((n) => ({ value: String(n), label: n ? t("term.undoCloseSec", { n }) : t("set.off") }))}
+            onChange={(v) => set({ undoClose: Number(v) })}
+            testId="term-undo-close"
+          />
         </Row>
       </div>
     </div>

@@ -902,7 +902,7 @@ class NodeRoleTests(unittest.TestCase):
             node("frontend", label="frontend observe-each-change + visual-qa", scope=("ui.py",), role="build"),
             node("check", label="typecheck + pnpm test on the fix branch", depends_on=("frontend",), role="verify"),
         ], time.time())
-        self.assertEqual(named["lint"], ["no_review_node"])
+        self.assertEqual(named["lint"], ["no_review_node", "no_review_focus:frontend"])
 
     def test_a_file_writing_node_that_reads_like_a_check_must_name_its_role(self) -> None:
         for label, guess in (("Verify: typecheck + tests", "verify"), ("QA the build", "verify"),
@@ -1246,7 +1246,7 @@ class ReviewCategoryLintTests(unittest.TestCase):
             ])
         self.assertEqual(result["status"], "ok", result)
         # Defined without goal criteria: the define reply adds that advice, and the stored record does not.
-        self.assertEqual(result["lint"], ["review_not_review_category:diff", "no_goal_criteria"])
+        self.assertEqual(result["lint"], ["review_not_review_category:diff", "no_review_focus:api", "no_goal_criteria"])
         record = dag_run.new_record(PARENT, "feat", "", "", [
             node("api", scope=("src/api.py",)),
             node("diff", category="unspecified-high", depends_on=("api",), role="review"),
@@ -1274,7 +1274,8 @@ class ReviewCategoryLintTests(unittest.TestCase):
         for name, definitions in cases.items():
             with self.subTest(case=name):
                 record = dag_run.new_record(PARENT, "feat", "", "", definitions, time.time())
-                self.assertEqual(record["lint"], [])
+                # The code-writing build node names no review focus: that advice only, no category finding.
+                self.assertEqual(record["lint"], ["no_review_focus:api"])
 
     def test_a_review_only_guessed_from_a_label_or_a_stored_node_is_not_linted(self) -> None:
         """Only a declared `role=review` is asked to move: a role-less node whose label reads like a review runs as a
@@ -1335,7 +1336,7 @@ class ReviewCategoryLintTests(unittest.TestCase):
                            ("flash", "glm-5.3-flash", "low"))
         architect_only = options(("sol", "openai/gpt-6.1-sol", "medium"), ("kimi-x", "kimi-k3.1-pro", "xhigh"),
                                  ("flash", "glm-5.3-flash", "low"))
-        served = options(("sol", "openai/gpt-6.1-sol", "medium"), ("astra", "openai/gpt-6-astra", "xhigh"),
+        served = options(("sol", "openai/gpt-6.1-sol", "medium"), ("astra", "openai/gpt-6.2-astra", "xhigh"),
                          ("flash", "glm-5.3-flash", "low"))
         definitions = [node("api", scope=("src/api.py",)), node("ui", category="unspecified-low", scope=("src/ui.py",)),
                        node("diff", category="review", depends_on=("api", "ui"), role="review"),
@@ -1357,7 +1358,7 @@ class ReviewCategoryLintTests(unittest.TestCase):
             node("api", category="unspecified-high", scope=("src/api.py",)),
             node("check", category="unspecified-high", depends_on=("api",), role="verify"),
         ], time.time())
-        self.assertEqual(record["lint"], ["no_review_node"])
+        self.assertEqual(record["lint"], ["no_review_node", "no_review_focus:api"])
 
 
 class GoalVerdictTests(unittest.TestCase):
@@ -1818,9 +1819,34 @@ class VerifyAttributionAndRepairLeftoversTests(unittest.TestCase):
             f"Handoff: before you stop, write your report to {handoff_path}: what you did, the files you changed, "
             "what VERIFY showed, and anything still open. The parent reads that file and your final message.",
             f"Read first: {read_path}. A missing file means that part did not finish: stop and say so.",
+            # A quick node can escalate (dag_run.ESCALATION_LADDER), so it carries the escalate line.
+            "If the task turns on a judgement you cannot settle with confidence (a design choice, a root cause you "
+            "cannot pin down), do not guess: before editing, write ESCALATE: <the question> and what you found into "
+            "the handoff, and stop.",
+            "Commit only your own SCOPE paths: stage them by name (`git add -- <paths>`), never `git add -A`, "
+            "`git add .` or `git commit -a`, and never `git stash`; the index and stash are shared with the "
+            "parallel parts.",
+            "Other agents share this machine: run only the builds and tests you need at once, and before you stop, "
+            "stop the background jobs you started and remove the temporary files you created.",
             "Stay inside your SCOPE: other parts of this run work at the same time. If you cannot finish, "
             "say plainly that you are blocked and why; do not report blocked work as done.",
         ]))
+
+    def test_a_writing_node_is_told_to_commit_only_its_own_scope_paths(self) -> None:
+        with homes() as home:
+            record = dag_run.new_record(PARENT, "feat", "Feature", "", [
+                node("api", scope=("src/api.py",)), node("verify", role="verify", depends_on=("api",)),
+            ], time.time())
+            derived = dag_run.derive(record, [], time.time())
+            build = dag_run.task_for(record, record["nodes"][0], home.omh, derived)["context"]
+            check = dag_run.task_for(record, record["nodes"][1], home.omh, derived)["context"]
+        line = ("Commit only your own SCOPE paths: stage them by name (`git add -- <paths>`), never `git add -A`, "
+                "`git add .` or `git commit -a`, and never `git stash`; the index and stash are shared with the "
+                "parallel parts.")
+        self.assertIn(line, build)
+        self.assertLess(len(line), 260)
+        self.assertLess(build.index(line), build.index("Stay inside your SCOPE"))
+        self.assertNotIn("Commit only your own SCOPE paths", check)
 
 
 if __name__ == "__main__":

@@ -5454,7 +5454,10 @@ ROUTING_PRECISION_CASES: tuple[RoutingPrecisionCase, ...] = (
     RoutingPrecisionCase(
         "plain-pr-review-does-not-reach-slop-cleaner",
         "A plain review request does not credit the cleaner's review mode",
-        "review this PR",
+        # The bare "review this PR" now dispatches code-review through the
+        # code-review request guard; a trailing clause keeps the clarify this
+        # negative needs, and the claim (no cleaner credit) is unchanged.
+        "review this PR when you get a chance",
         "answer_clarification",
         "",
         "ai-slop-cleaner",
@@ -10568,12 +10571,112 @@ ROUTING_PRECISION_CASES: tuple[RoutingPrecisionCase, ...] = (
     RoutingPrecisionCase("ko-ops-pair-split-word", "A blocker split by a space is not the ops pair", "블로 커 리스크 정리", "answer_clarification", "", "ops-review"),
     RoutingPrecisionCase("native-debugging-dap-handshake", "A dap between friends is not a debugger session", "give me a dap, nice work today", "answer_clarification", ""),
     RoutingPrecisionCase("native-debugging-printf-opinion", "An opinion on printf and debuggers asks at most", "debugger or printf, which do people prefer", "answer_clarification", ""),
+    # A listed backlog of code changes is four or more changes to code, asked to be made, and is made in the session
+    # (below). Fewer items, a list to look at, sort or plan, one fault's notes, a fenced list, a list of chores or
+    # reading, and a list put off are not, and none of them is offered dag-ulw.
+    RoutingPrecisionCase("backlog-one-bug-is-not-a-graph", "One bug with its fix asked is one task, not a dag-ulw graph", "parse_amount('0.2') gives 2 cents instead of 20 cents. Fix it.", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-two-items-is-not-a-graph", "Two listed bugs are too few to split into a graph", "Fix these two bugs:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-three-items-is-not-a-graph", "Three listed bugs stay one agent's work", "Fix these bugs:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-question-which-first-is-not-a-graph", "Asking which listed bug to fix first is a question, not a run", "Which of these bugs should I fix first?\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-to-prioritize-is-not-a-graph", "A backlog to prioritize is sorted, not built", "Prioritize this backlog for the next sprint:\n1. fix parse_amount for one-decimal input\n2. fix export_csv quoting\n3. fix oldest_lot_age after load_lots\n4. fix the aging report buckets", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-to-explain-is-not-a-graph", "Asking why each listed bug happens is a question, not a run", "Explain why each of these bugs happens:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-held-back-is-not-a-graph", "A listed backlog with the fix refused is no request to run it", "Don't fix anything yet, just tell me what is wrong in each:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-put-off-is-not-a-graph", "A listed backlog put off to next week starts nothing now", "Fix all of these bugs next week:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-fenced-list-is-not-a-graph", "A backlog inside a fence is quoted text, not the request's own list", "Fix all of these:\n```\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice\n```", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-chores-are-not-a-graph", "Four chores asked for today name no code", "Please do all of these today:\n1. buy milk and eggs at the store\n2. call the dentist about Friday\n3. pick up the dry cleaning downtown\n4. book a table for Saturday dinner", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("backlog-reading-list-is-not-a-graph", "Four articles to summarize name no code change", "Summarize all of these articles for me:\n1. the history of the Roman empire\n2. a guide to sourdough baking at home\n3. how tides work on the Atlantic coast\n4. why cats knock things off tables", "answer_clarification", "", "dag-ulw"),
+    # A backlog of separate code changes handed over as a list, four or more, asked to be made, is made in the current
+    # session: no dag-ulw graph (paired runs measured one slower than Hermes alone at equal quality) and no lane a word
+    # in one item would score (a "stock" lot, a "price", a "crash").
+    RoutingPrecisionCase(
+        "backlog-of-six-ledger-issues-is-made-in-session",
+        "Six listed ledgerkit issues, fix all of them: made in this session, not a graph or a live-information card",
+        "You are working in the current directory, a small Python package named ledgerkit (bookkeeping helpers: amounts, stock lots, reporting periods, CSV export, invoices, receivables aging) with a unittest suite under tests/. Do not edit anything under tests/.\n\nThese six issues are open against ledgerkit. Fix all of them and keep the existing tests working.\n\n1. Amounts with one decimal digit come out wrong: parse_amount(\"0.2\") gives 2 cents instead of 20.\n2. oldest_lot_age crashes on lots that came from load_lots.\n3. Finance needs per-month totals: add periods.month_totals(entries, year).\n4. export_csv produces broken CSV when a name contains a comma or a double quote.\n5. Invoice totals are sometimes off by a cent compared with the invoices finance writes by hand.\n6. The receivables aging report counts some invoices in two buckets.",
+        "answer_directly", "direct_answer", "dag-ulw",
+    ),
+    RoutingPrecisionCase(
+        "backlog-of-four-service-bugs-is-made-in-session",
+        "Four listed bugs in one service, fix these: made in this session, not a graph",
+        "Fix these bugs in the billing service:\n1. invoice totals round the wrong way on half cents\n2. the refund endpoint returns 500 when the order has no lines\n3. currency codes are lower-cased in the CSV export\n4. parse_date crashes on ISO dates with a Z suffix",
+        "answer_directly", "direct_answer", "dag-ulw",
+    ),
+    RoutingPrecisionCase(
+        "backlog-of-four-api-features-is-made-in-session",
+        "Four listed API changes to implement: made in this session, not a graph",
+        "Please implement the following in our API, each is its own change:\n- add pagination to the /users endpoint\n- add a created_at filter to the orders list\n- return 404 instead of 500 for unknown product ids\n- add a health check endpoint that pings the database",
+        "answer_directly", "direct_answer", "dag-ulw",
+    ),
+    RoutingPrecisionCase(
+        "korean-backlog-of-four-bugs-is-made-in-session",
+        "아래 버그들 전부 고쳐줘 with four listed bugs: made in this session, not a graph",
+        "아래 버그들 전부 고쳐줘\n1. 로그인 후 세션이 만료되지 않음\n2. 결제 모듈에서 환불 금액이 음수로 저장됨\n3. 알림 API가 중복으로 발송됨\n4. 검색 결과 페이지네이션이 마지막 페이지를 건너뜀",
+        "answer_directly", "direct_answer", "dag-ulw",
+    ),
+    RoutingPrecisionCase(
+        "sprint-checklist-of-four-code-items-is-made-in-session",
+        "A sprint checklist of four code items to work through: made in this session, not a graph",
+        "Here is this sprint's backlog for the repo; work through all of it and keep the tests green:\n- [ ] the cli crashes when the config file is empty\n- [ ] export_csv drops the header row for empty reports\n- [ ] add a --dry-run flag to the sync command\n- [ ] retry the upload three times on a timeout error",
+        "answer_directly", "direct_answer", "dag-ulw",
+    ),
+    # The same backlog said in one line: three or more separate code changes joined by commas, "and", 랑 or 하고, is
+    # made in the session too, not handed to a lane one item's word scores ("API", "login", "백엔드").
+    RoutingPrecisionCase("inline-korean-backlog-of-three-is-made-in-session", "Three Korean parts to fix at once in one line: made in this session, not toolbelt-readiness", "로그인 API, 설정 화면, 문서 페이지 세 개를 한 번에 고쳐줘", "answer_directly", "direct_answer", "dag-ulw"),
+    RoutingPrecisionCase("inline-four-bugs-after-a-colon-is-made-in-session", "Four bugs listed in one line after a colon: made in this session, not browser-operator", "Fix these four bugs: the export crash, the login redirect, the empty chart, and the broken docs link", "answer_directly", "direct_answer", "dag-ulw"),
+    RoutingPrecisionCase("inline-korean-rang-backlog-is-made-in-session", "Front, back end and tests joined by 랑: made in this session, not backend", "프론트 버튼 추가랑 백엔드 엔드포인트랑 테스트 다 해줘", "answer_directly", "direct_answer", "dag-ulw"),
+    RoutingPrecisionCase("inline-migrate-update-test-is-made-in-session", "Migrate, update callers and add tests in one line: made in this session, not ultrawork", "migrate the settings store to sqlite, update the three callers, and add tests", "answer_directly", "direct_answer", "dag-ulw"),
+    # One-line lists that are no code backlog keep their route: functions to explain, a shopping list, pull requests
+    # to review, a one-line typo, a list of questions, and files to read.
+    RoutingPrecisionCase("inline-functions-to-explain-are-no-backlog", "Three functions to explain is a question, not a backlog", "explain these three functions: parse_args, load_config, and run_main", "answer_directly", "direct_answer", "dag-ulw"),
+    RoutingPrecisionCase("inline-shopping-list-is-no-backlog", "A shopping list in one line names no code", "buy milk, eggs, bread and coffee", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("inline-prs-to-review-are-no-backlog", "Three pull requests to review stay review work, not a backlog", "review these 3 PRs: #101, #102, and #103", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("inline-one-typo-is-no-backlog", "One typo fix is one change", "fix the typo in README line 3", "answer_directly", "direct_answer", "dag-ulw"),
+    RoutingPrecisionCase("inline-list-of-questions-is-no-backlog", "Three questions in one line ask to be told, not changed", "what does parse_args return, why does load_config fail on an empty file, and how do I run the tests?", "answer_clarification", "", "dag-ulw"),
+    RoutingPrecisionCase("inline-files-to-read-are-no-backlog", "Three files to read are a file lookup, not a backlog", "read src/cli.py, src/config.py and src/runner.py and tell me how they fit together", "answer_file_lookup", "file_or_text", "dag-ulw"),
+    # "current" said of the workspace is where the work is, not a live lookup: a fix in the current directory and a
+    # check of the current branch are no live-information card.
+    RoutingPrecisionCase("current-directory-fix-is-not-live-info", "A fix in the current directory with a price word is code, not a live lookup", "In the current directory, the invoice total in invoice.py rounds half cents down; fix it to round half up.", "answer_clarification", "", "live-info-operator"),
+    RoutingPrecisionCase("current-branch-check-is-not-live-info", "The current branch and when it was made is a repository question, not a live lookup", "Check the current branch and the time it was created", "answer_clarification", ""),
+    # skill-eval: "skill" as a person's ability -- chess, tennis, an interview,
+    # a staff assessment -- stays off the host-fit check.
+    RoutingPrecisionCase(
+        "chess-skill-is-not-skill-eval", "A chess skill question is not an agent skill check",
+        "is my skill any good at chess", "answer_clarification", "", "skill-eval",
+    ),
+    RoutingPrecisionCase(
+        "tennis-skill-evaluation-is-not-skill-eval", "A tennis skill evaluation is not an agent skill check",
+        "my tennis skill evaluation", "answer_clarification", "", "skill-eval",
+    ),
+    RoutingPrecisionCase(
+        "interview-skill-level-is-not-skill-eval", "Evaluating a person's skill level is not an agent skill check",
+        "evaluate my skill level in python for a job interview", "answer_clarification", "", "skill-eval",
+    ),
+    RoutingPrecisionCase(
+        "ko-sales-skill-scorecard-is-not-skill-eval", "A Korean sales skill scorecard is not an agent skill check",
+        "영업 스킬 평가표", "answer_clarification", "", "skill-eval",
+    ),
+    # A host word beside a person's skill does not make it an agent skill.
+    RoutingPrecisionCase(
+        "skill-at-using-codex-is-not-skill-eval", "A person's skill at using Codex is not an agent skill check",
+        "evaluate my skill at using Codex for Python", "answer_clarification", "", "skill-eval",
+    ),
 )
 
 
 # Positive-intervention corpus. These are real OMH-shaped turns where the router
 # should still step in after the direct-answer fallback was added.
 ROUTING_INTERVENTION_CASES: tuple[RoutingInterventionCase, ...] = (
+    # Lists that keep their own owner, not a graph: bug reports to file are GitHub work, a named coding agent's
+    # backlog is its handoff, failing test files are one fault's lane, and one fault's notes are triage.
+    # One-line look-alikes of a code backlog keep their owner: one bug's symptoms, and one feature that names its parts.
+    RoutingInterventionCase("inline-one-bug-symptoms-keep-their-route", "One login bug with three symptoms in one line stays one change, not a backlog", "Fix the login bug: it crashes, shows a blank page, and logs a 500 error", "dispatch", "ultrawork", "choose_executor", "handoff"),
+    RoutingInterventionCase("inline-one-feature-parts-keep-their-route", "One login page that names its fields is one feature, not a backlog", "add a login page with email, password and a remember-me box", "dispatch", "browser-operator", "prepare_browser_operator_card", "browser_operator"),
+    RoutingInterventionCase("backlog-to-file-as-issues-keeps-github", "Four bug reports to turn into GitHub issues stay GitHub work, not a graph", "Turn these bug reports into GitHub issues:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice", "dispatch", "github-event-ops", "prepare_github_event_ops_card", "github_event_ops"),
+    RoutingInterventionCase("backlog-for-codex-keeps-the-named-agent", "A backlog handed to codex by name stays that agent's, not a graph", "Have codex fix all of these bugs:\n1. parse_amount('0.2') gives 2 cents instead of 20\n2. export_csv breaks on names with commas\n3. oldest_lot_age crashes after load_lots\n4. the aging report counts invoices twice", "dispatch", "executor-runtime-readiness", "prepare_executor_runtime_readiness", "executor_runtime_readiness"),
+    RoutingInterventionCase("failing-test-files-list-stays-on-ultrawork", "Four failing test files listed by path are one fault's lane, not a graph", "fix these failing tests:\n- tests/test_amounts.py\n- tests/test_lots.py\n- tests/test_export.py\n- tests/test_aging.py", "dispatch", "ultrawork", "choose_executor", "handoff"),
+    RoutingInterventionCase("steps-tried-on-one-bug-stay-triage", "Four steps already tried on one login bug are one fault, not a graph", "The login bug: here is what I tried, please fix it:\n1. cleared the browser cache and cookies\n2. restarted the auth service twice\n3. checked the logs for a token error\n4. rolled back the last deploy of the api", "dispatch", "feedback-triage", "triage_feedback", "feedback_triage"),
+    # A live lookup said with "current" still reaches live information.
+    RoutingInterventionCase("current-stock-price-stays-live-info", "The current stock price stays a live lookup after workspace currents are read off", "what's the current stock price of AAPL", "dispatch", "live-info-operator", "prepare_live_info_operator_card", "live_info_operator"),
+    RoutingInterventionCase("current-time-in-a-city-stays-live-info", "The current time in a city stays a live lookup", "check the current time in Tokyo", "dispatch", "live-info-operator", "prepare_live_info_operator_card", "live_info_operator"),
     RoutingInterventionCase('frontend-design-case-1', 'UI design or neighbouring request keeps its route', '대시보드 다시 디자인해줘', 'dispatch', 'frontend', 'prepare_frontend_handoff', 'frontend_handoff', ''),
     RoutingInterventionCase('frontend-design-case-2', 'UI design or neighbouring request keeps its route', '이 화면 모바일에서 깨지는데 폰 화면 고쳐줘', 'dispatch', 'frontend', 'prepare_frontend_handoff', 'frontend_handoff', ''),
     RoutingInterventionCase('frontend-design-case-3', 'UI design or neighbouring request keeps its route', '폰에서 가로 스크롤 생기는데 고쳐줘', 'dispatch', 'frontend', 'prepare_frontend_handoff', 'frontend_handoff', ''),
@@ -10630,7 +10733,8 @@ ROUTING_INTERVENTION_CASES: tuple[RoutingInterventionCase, ...] = (
     RoutingInterventionCase("sysrev-telehealth-scoping", "A scoping review of a topic reaches literature screening", "I need a scoping review of telehealth in rural clinics", "dispatch", "systematic-review", "prepare_systematic_review", "systematic_review"),
     # systematic-review negative controls that dispatch to their real owner.
     RoutingInterventionCase("sysrev-systematic-code-review", "A systematic code review stays code review", "do a systematic code review of this PR", "dispatch", "code-review", "choose_executor", "handoff"),
-    RoutingInterventionCase("sysrev-plain-pr-review", "A plain PR review clarifies toward code review", "review this PR", "clarify", "oh-my-hermes", "answer_clarification", "clarification", expected_candidate="code-review"),
+    # A whole-sentence review of a PR dispatches code-review (code-review request guard).
+    RoutingInterventionCase("sysrev-plain-pr-review", "A plain PR review dispatches code review", "review this PR", "dispatch", "code-review", "prepare_review_or_followup_handoff", "review_check"),
     RoutingInterventionCase("sysrev-find-papers", "Finding papers is source finding, not screening", "find papers about diffusion models", "dispatch", "source-finder", "prepare_source_finder_plan", "source_finder"),
     RoutingInterventionCase("sprite-game-character-sheet", "A game character sheet request reaches QC-gated frame processing", "Make a pixel sprite sheet for my game character.", "dispatch", "sprite-forge", "prepare_sprite_forge", "sprite_forge"),
     RoutingInterventionCase("gis-metric-overlay", "Supplied geometry requires actual metric computation", "Intersect these two GeoJSON layers in a metric CRS and compute overlap area.", "dispatch", "geospatial-analysis", "prepare_geospatial_analysis", "geospatial_analysis"),
@@ -21647,6 +21751,26 @@ ROUTING_INTERVENTION_CASES: tuple[RoutingInterventionCase, ...] = (
     RoutingInterventionCase("korean-market-size-with-softener", "A softener before the verb keeps a market sizing request", "치과 시장 규모 좀 추정해줘", "clarify", "oh-my-hermes", "answer_clarification", "clarification", "market-research"),
     RoutingInterventionCase("release-gate-in-a-film-stays-out", "A release gate in a film asks at most", "the movie had a scene with a release gate at a racetrack", "clarify", "oh-my-hermes", "answer_clarification", "clarification", "deploy-and-monitor"),
     RoutingInterventionCase("native-debugging-dap-still-asks-for-it", "Asking for a dap debugger still reaches native debugging though no route promises one", "use a dap debugger on this core dump", "dispatch", "native-debugging", "prepare_native_debug_plan", "native_debug_plan"),
+    # skill-eval: checking an agent skill against its hosts, in English and Korean,
+    # and the asks its siblings own stay with them.
+    RoutingInterventionCase("skill-eval-is-my-skill-any-good", "Asking whether a skill is any good reaches the host-fit check", "is my skill any good", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("skill-eval-will-it-load-in-claude-code", "Asking whether a skill loads in Claude Code reaches the host-fit check", "will my skill load in claude code", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("skill-eval-harness-check", "A skill harness check reaches the host-fit check, not skill management", "skill harness check", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("skill-eval-compatibility", "Skill compatibility reaches the host-fit check, not skill management", "skill compatibility", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("ko-skill-eval-is-my-skill-ok", "A Korean ask to check whether my skill is fine reaches the host-fit check", "내 스킬 괜찮은지 점검해줘", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("ko-skill-eval-assess", "The Korean pack phrase for evaluating a skill reaches the host-fit check", "스킬 평가해줘", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("ko-skill-eval-compatibility", "The Korean pack phrase for skill compatibility reaches the host-fit check", "스킬 호환성 확인해줘", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("skill-portfolio-dashboard-keeps-skill-health", "A skill portfolio dashboard stays with skill health", "show me the skill portfolio health dashboard", "dispatch", "skill-health", "prepare_skill_health", "skill_health"),
+    RoutingInterventionCase("ko-skill-dashboard-keeps-skill-health", "A Korean skill dashboard ask stays with skill health", "스킬 대시보드 보여줘", "dispatch", "skill-health", "prepare_skill_health", "skill_health"),
+    RoutingInterventionCase("find-a-skill-keeps-skill-scout", "Looking for a skill to adopt stays with the skill scout", "skill scout for changelog", "dispatch", "skill-scout", "prepare_skill_scout", "skill_scout"),
+    RoutingInterventionCase("coding-agent-comparison-keeps-agent-evaluation", "Comparing coding agents on one task stays with agent evaluation", "compare codex and claude code on the same bug fix task", "dispatch", "agent-evaluation", "prepare_agent_evaluation", "agent_evaluation"),
+    RoutingInterventionCase("ko-find-a-skill-keeps-skill-scout", "A Korean ask to find a skill stays with the skill scout", "스킬 찾기", "dispatch", "skill-scout", "prepare_skill_scout", "skill_scout"),
+    # The skill artifact is the object of the check: natural wording reaches it
+    # (base: clarify, file-lookup fallback), and a staff assessment that names
+    # "this skill" keeps its base owner.
+    RoutingInterventionCase("skill-eval-agent-skill-loads-in-codex", "Asking whether this agent skill loads in Codex reaches the host-fit check", "Please evaluate whether this agent skill loads in Codex", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("skill-eval-skill-md-compatibility", "SKILL.md compatibility reaches the host-fit check, not a file lookup", "check SKILL.md compatibility", "dispatch", "skill-eval", "prepare_skill_eval", "skill_eval", "skill-eval"),
+    RoutingInterventionCase("ko-staff-skill-criteria-keeps-deep-interview", "A Korean staff skill assessment beside this skill keeps deep interview", "이 스킬로 일하는 직원 스킬 평가 기준 만들어줘", "dispatch", "deep-interview", "answer_clarification", "clarification", "deep-interview"),
 )
 
 

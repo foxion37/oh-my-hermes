@@ -6,28 +6,12 @@ import type { SlotProps } from "../features";
 import { useStore } from "../state/store";
 import { hhmm } from "../app/time";
 import { ChevronDown, ChevronRight } from "../ui";
-import { t, type Key } from "../i18n";
+import { t } from "../i18n";
+import { isFailure, statusText } from "../elsewhere/format";
+
+export { isFailure, statusWord } from "../elsewhere/format";
 
 export const slot = "routineLine";
-
-const WORD: Record<string, "done" | "failed"> = {
-  ok: "done",
-  success: "done",
-  done: "done",
-  completed: "done",
-  error: "failed",
-  failed: "failed",
-  failure: "failed",
-};
-const WORD_KEY: Record<"done" | "failed", Key> = { done: "rt.done", failed: "rt.failed" };
-
-export const statusWord = (status: string): string => WORD[status.trim().toLowerCase()] ?? (status.trim() || "done");
-export const isFailure = (status: string): boolean => statusWord(status) === "failed";
-/** The status word in the current language; a status omher does not know stays as Hermes wrote it. */
-const statusText = (status: string) => {
-  const w = WORD[status.trim().toLowerCase()] ?? (status.trim() ? null : "done");
-  return w ? t(WORD_KEY[w]) : status.trim();
-};
 
 export default function RoutineLine({ bot, item }: SlotProps["routineLine"]) {
   const s = useStore();
@@ -37,6 +21,8 @@ export default function RoutineLine({ bot, item }: SlotProps["routineLine"]) {
   const last = (known ?? item.status ?? "").toString();
   const word = statusText(item.status);
   const at = hhmm(new Date(item.ts * 1000));
+  // failed runs folded into this line: "×12 · 03:56–09:37"
+  const times = (item.count ?? 1) > 1 && item.since ? t("rt.times", { n: item.count!, from: hhmm(new Date(item.since * 1000)), to: at }) : at;
 
   return (
     <div className="routine" data-testid="routine-line" data-open={open}>
@@ -52,7 +38,8 @@ export default function RoutineLine({ bot, item }: SlotProps["routineLine"]) {
         </span>
         <span className="routine-t">
           {t("rt.routine")} · <span className="routine-name">{item.name}</span> ·{" "}
-          <span className={isFailure(item.status) ? "routine-bad" : undefined}>{word}</span> {at}
+          <span className={isFailure(item.status) ? "routine-bad" : undefined}>{word}</span>{" "}
+          <span data-testid="routine-when">{times}</span>
         </span>
         <span className="routine-chev" aria-hidden>
           {open ? <ChevronDown /> : <ChevronRight />}
@@ -61,7 +48,7 @@ export default function RoutineLine({ bot, item }: SlotProps["routineLine"]) {
       {open && (
         <div className="routine-detail" data-testid="routine-detail">
           <span className="routine-k">{t("rt.last")}</span>
-          <span className={isFailure(last) ? "routine-bad" : undefined}>{last || t("rt.unknown")}</span>
+          <span className={isFailure(last) ? "routine-bad" : undefined}>{last ? statusText(last) : t("rt.unknown")}</span>
         </div>
       )}
     </div>

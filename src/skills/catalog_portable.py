@@ -314,6 +314,8 @@ _PORTABILITY: dict[str, str] = {
     'omh-skill-scout': PORTABILITY_PORTABLE,
     # expected_outputs inspect catalog/generated/reference/harness status via local OMH catalog, not host loading.
     'omh-skill-health': PORTABILITY_REQUIRES_OMH_CLI,
+    # opening_steps run `omh skill-eval`, the offline host-fit checker; the reference is plain method text.
+    'omh-skill-eval': PORTABILITY_REQUIRES_OMH_CLI,
     # artifact_expectations require browser promotion approval and native managed-skill visibility.
     'omh-workflow-learning': PORTABILITY_HERMES_ONLY,
     # expected_outputs query reviewed rejected-decision records; final_checklist excludes expired candidates.
@@ -357,6 +359,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'research/references/search-fields.md',
     'web-research/references/search-examples.md',
     'source-finder/references/search-examples.md',
+    'source-finder/references/literature-retrieval.md',
     'research/references/search-examples.md',
     'market-research/references/procedure.md',
     'market-research/references/market-sizing.md',
@@ -378,6 +381,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'loop/references/goal-constraint-discipline.md',
     'loop/references/measured-loop-discipline.md',
     'loop/references/loop-design-review.md',
+    'loop/references/experiment-tree.md',
     'adversarial-consensus/references/consensus-protocol.md',
     'ultrawork/references/dependency-topology.md',
     'idea-to-deploy/references/project-bootstrap.md',
@@ -420,6 +424,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'show-reel/references/game-capture.md',
     'show-reel/references/kinetic-type.md',
     'show-reel/references/launch-film.md',
+    'show-reel/references/cut-sheet.md',
     'show-reel/references/genres.md',
     'show-reel/references/craft-workflow.md',
     'show-reel/references/craft-brief.md',
@@ -489,6 +494,7 @@ PORTABLE_REFERENCE_PATHS = frozenset({
     'data-pipelines/references/pipeline-method.md',
     'model-finetuning/references/finetuning-method.md',
     'model-compression/references/compression-method.md',
+    'skill-eval/references/with-without-eval.md',
     'mobile-release/references/mobile-release-method.md',
     'internal-audit/references/control-audit-method.md',
     'data-share-review/references/data-share-method.md',

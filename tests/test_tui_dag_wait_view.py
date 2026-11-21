@@ -32,6 +32,11 @@ from test_tui_modes import drawn, make_app
 from omh.tui.background import BackgroundProcess, tool_call
 from omh.tui.keys import CHAR, Key
 
+
+def after_glyph(row: str) -> str:
+    """A wait row's words after its spinner frame and the space (a frame can be two code points, `✳︎`)."""
+    return row.split(" ", 1)[1] if " " in row else row
+
 RUN = "pr-a"
 SONNET = "claude-sonnet-5-5"
 PARKED_AT = 1_800_000_000.0
@@ -459,7 +464,7 @@ class WaitingRowTests(unittest.TestCase):
 
     @staticmethod
     def waiting(app) -> list[str]:
-        return [row for row in drawn(app) if "Waiting…" in row]
+        return [row for row in drawn(app) if "Testing…" in row]  # the process runs the tests (`wait_kinds`)
 
     def test_it_shows_in_the_working_rows_place_while_the_process_runs(self) -> None:
         from omh.tui.app import WORKING_GLYPHS
@@ -470,8 +475,8 @@ class WaitingRowTests(unittest.TestCase):
                 screen = drawn(app)
                 rule = next(at for at, row in enumerate(screen) if row.startswith("─"))
                 (row,) = self.waiting(app)
-                self.assertEqual(row[2:], "Waiting… (10m 6s · terminal)")
-                self.assertIn(row[0], WORKING_GLYPHS)
+                self.assertEqual(after_glyph(row), "Testing… (10m 6s)")
+                self.assertTrue(row.startswith(WORKING_GLYPHS))
                 self.assertLess(screen.index(row), rule, "above the composer, where the working row stands")
                 self.assertEqual(app._working_rows(), 1)
                 self.assertIn("🔔 will ping you", mode_row(app), "the info line says what main says")
@@ -497,7 +502,7 @@ class WaitingRowTests(unittest.TestCase):
         self.assertNotEqual(self.waiting(app)[0][0], first[0], "the spinner turned")
         clock[0] += 1
         wall[0] += 1
-        self.assertIn("(10m 7s ·", self.waiting(app)[0], "the clock ticked")
+        self.assertIn("(10m 7s)", self.waiting(app)[0], "the clock ticked")
         app.decoder.unfocused_at = clock[0]
         held = self.waiting(app)[0]
         clock[0] += 0.5
@@ -531,19 +536,23 @@ class WaitingAgentsTests(unittest.TestCase):
 
     @staticmethod
     def waiting(app) -> list[str]:
-        return [row[2:] for row in drawn(app) if "Waiting…" in row]
+        from omh.tui.app import WORKING_GLYPHS
+
+        return [after_glyph(row) for row in drawn(app) if row.startswith(WORKING_GLYPHS) and "… (" in row and "Working…" not in row]
 
     def test_a_running_dag_node_alone_is_one_agent_with_its_time(self) -> None:
         app, _clock, wall = self.app(lanes=(2027.0,))
-        self.assertEqual(self.waiting(app), ["Waiting… (33m 47s · 1 agent)"])
+        self.assertEqual(self.waiting(app), ["Running 인용 영수증 (PR A)… (33m 47s · 3/7 nodes)"])
         wall[0] += 1
-        self.assertEqual(self.waiting(app), ["Waiting… (33m 48s · 1 agent)"], "counted on since the HUD read it")
+        self.assertEqual(self.waiting(app), ["Running 인용 영수증 (PR A)… (33m 48s · 3/7 nodes)"],
+                         "counted on since the HUD read it")
 
     def test_agents_and_terminals_together_the_longest_wait_and_plural_counts(self) -> None:
         app, _clock, _wall = self.app(lanes=(2027.0, 30.0), terminals=2)
-        self.assertEqual(self.waiting(app), ["Waiting… (33m 47s · 2 agents · 2 terminals)"])
+        # The run is one wait (its two running nodes), the two test runs are counted after it.
+        self.assertEqual(self.waiting(app), ["Running 인용 영수증 (PR A)… (33m 47s · 3/8 nodes · +2 test runs)"])
         app, _clock, _wall = self.app(lanes=(5.0,), terminals=1)
-        self.assertEqual(self.waiting(app), ["Waiting… (33m 20s · 1 agent · terminal)"], "the terminal waited longer")
+        self.assertEqual(self.waiting(app), ["Testing… (33m 20s · 1 agent)"], "the terminal waited longer")
 
     def test_the_rosters_agents_alone_draw_no_row(self) -> None:
         # The count is the HUD reader's: its delegation graph's running lanes. The roster's frames alone (no graph read
@@ -587,6 +596,82 @@ class ParkedGraphTests(unittest.TestCase):
         self.assertTrue(built["dag_open"])
         self.assertNotIn("unknown", header_text(built))
         self.assertIn("Parked 1m 27s", render_delegation_view(built, width=120).text())  # the box view too
+
+
+
+class DueParkTests(unittest.TestCase):
+    """A parked node past its wake time (the owner, 2026-11-20, of a node still spinning `until 16:30` hours after
+    16:30: "왜 하단에 계속 돌고있냐 버근가"): its wait is over, so it no longer spins or says `until`, and reads `due`,
+    with its time since it became due. Before the wake time it is the parked node it was."""
+
+    def _row(self, app, title: str) -> str:
+        return next(row for row in rows_of(app) if title in row)
+
+    def test_past_its_wake_time_the_parked_node_stops_spinning_and_reads_due(self) -> None:
+        from omh.tui.panels import SPINNER_FRAMES
+
+        late = WAKE_AT + 125
+        app, _client = waiting_app()
+        app.wall_clock = lambda: late
+        drawn(app)
+        row = self._row(app, "Full baseline check")
+        self.assertFalse(any(frame in row for frame in SPINNER_FRAMES), row)
+        self.assertIn("due 2m 5s", row)
+        self.assertNotIn("parked", row)
+        detail = rows_of(app)[rows_of(app).index(row) + 1]
+        self.assertIn(f"due · waits for the parent · since {until()}", detail)
+        self.assertNotIn("until", detail)
+        self.assertNotIn("waits on", detail)
+
+    def test_before_its_wake_time_it_still_spins_and_says_until(self) -> None:
+        from omh.tui.panels import SPINNER_FRAMES
+
+        app, _client = waiting_app()
+        app.wall_clock = lambda: WAKE_AT - 60
+        drawn(app)
+        row = self._row(app, "Full baseline check")
+        self.assertTrue(any(frame in row for frame in SPINNER_FRAMES), row)
+        self.assertIn("parked", row)
+        self.assertIn(f"until {until()}", "\n".join(rows_of(app)))
+
+    def test_a_due_nodes_row_is_the_same_from_frame_to_frame(self) -> None:
+        from omh.tui.dag_tree import tree_lines
+
+        app, _client = waiting_app()
+
+        def row(frame: int, wall: float) -> str:
+            lines, _state = tree_lines(app.hud.payload["delegation_graph"], app.roster, 120, 20, app.theme, frame, {},
+                                       None, wall=wall)
+            return next("".join(span.text for span in line) for line in lines
+                        if "Full baseline check" in "".join(span.text for span in line))
+
+        self.assertEqual(row(0, WAKE_AT + 1), row(1, WAKE_AT + 1), "a due node's row does not turn")
+        self.assertNotEqual(row(0, WAKE_AT - 1), row(1, WAKE_AT - 1), "a parked one's still does")
+
+    def test_a_shut_layer_and_the_header_count_it_due_not_parked(self) -> None:
+        from omh.tui.dag_tree import tree_lines
+        from omh.plugin_bundle.omh.delegation_view import header_text
+
+        built = owners_run()
+        baseline = next(node for node in built["nodes"] if node.get("dag_node") == "baseline")
+        baseline.update(parked_due=True, status="due")
+        self.assertIn("1 due", header_text(built))
+        self.assertNotIn("parked", header_text(built))
+        app, _client = waiting_app(built)
+        lines, _state = tree_lines(built, app.roster, 120, 20, app.theme, 0, {"layer:layer 4": False}, None)
+        shut = next("".join(span.text for span in line) for line in lines
+                    if "layer 4" in "".join(span.text for span in line))
+        self.assertIn("1 due", shut)
+
+    def test_the_graph_reader_marks_a_park_past_its_wake_at_due(self) -> None:
+        from omh.plugin_bundle.omh.delegation_graph import _parked_fields
+
+        node = {"attempts": [{"outcome": "parked", "settled_at": PARKED_AT, "wake_at": WAKE_AT, "handle": PROC}]}
+        before = _parked_fields(node, WAKE_AT - 1)
+        self.assertNotIn("parked_due", before)
+        self.assertNotIn("status", before)
+        after = _parked_fields(node, WAKE_AT + 90)
+        self.assertEqual((after["parked_due"], after["status"], after["elapsed_seconds"]), (True, "due", 90.0))
 
 
 if __name__ == "__main__":

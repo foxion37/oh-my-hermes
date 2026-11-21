@@ -48,7 +48,7 @@ const run = async (page: Page, line: string) => {
 test.describe("credit through the engine's feed", () => {
   test.use({ colorScheme: "dark" });
 
-  test("a flood the terminal takes over several frames: every message acknowledged once, with its size, in order", async ({ page }) => {
+    test("a flood the terminal takes over several frames: every message acknowledged once, with its size, in order", async ({ page }) => {
     await openApp(page);
     await newTerminal(page);
     const [id] = await hostIds(page);
@@ -95,7 +95,7 @@ test.describe("credit through the engine's feed", () => {
     expect([...frames].sort((a, b) => a - b)).toEqual(frames);
   });
 
-  test("a session that is not on the page keeps acknowledging: another session shown, then Settings, then a bot's chat", async ({ page }) => {
+    test("a session that is not on the page keeps acknowledging: another session shown, then Settings, then a bot's chat", async ({ page }) => {
     await openApp(page);
     const a = await newTerminal(page);
     const b = await newTerminal(page);
@@ -154,7 +154,7 @@ test.describe("the renderer, from Settings", () => {
     await expect(page.getByTestId("terminal")).toBeVisible();
   };
 
-  test("the row says what draws the terminals; Auto, On and Off reach a terminal that is already open", async ({ page }) => {
+    test("the row says what draws the terminals; Auto, On and Off reach a terminal that is already open", async ({ page }) => {
     const requested: string[] = [];
     page.on("request", (r) => {
       if (/addon-webgl/.test(r.url())) requested.push(r.url());
@@ -166,10 +166,11 @@ test.describe("the renderer, from Settings", () => {
     await settings(page);
     await expect(row.getByRole("radio")).toHaveText(["Auto", "On", "Off"]);
     await expect(row.getByRole("radio", { name: "Auto" })).toHaveAttribute("aria-checked", "true");
-    await expect(row).toContainText("Auto uses the standard renderer for now");
+    await expect(row).toContainText("Auto draws with the GPU where the hardware allows it");
     await expect(row).not.toContainText("In use now");
 
-    // Auto, the default: the standard renderer, and the GPU add-on is never fetched
+    // Auto, the default, on the test browser's software WebGL (SwiftShader): the standard renderer, and the GPU
+    // add-on is never fetched (on real hardware Auto draws with the GPU: engine-policy.test.ts)
     await page.getByTestId("bot-kami").click();
     await newTerminal(page);
     expect(await inUse(page)).toBe("standard");
@@ -203,8 +204,8 @@ test.describe("the renderer, from Settings", () => {
     expect(await canvases(page)).toBe(0);
   });
 
-  for (const platform of ["Win32", "Linux x86_64"]) {
-    test(`Auto stays on the standard renderer on ${platform} too, and never asks for a WebGL context to decide`, async ({ page }) => {
+  for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
+    test(`Auto on ${platform} asks one WebGL2 context what the hardware is; on a software rasterizer it keeps the standard renderer`, async ({ page }) => {
       const requested: string[] = [];
       page.on("request", (r) => {
         if (/addon-webgl/.test(r.url())) requested.push(r.url());
@@ -221,10 +222,11 @@ test.describe("the renderer, from Settings", () => {
       }, platform);
       await openApp(page);
       await newTerminal(page);
+      // the test browser's WebGL is SwiftShader, software: the hardware rule says no on every platform
       expect(await inUse(page)).toBe("standard");
       expect(await canvases(page)).toBe(0);
       expect(requested).toEqual([]);
-      expect(await page.evaluate(() => (window as unknown as { __glAsked: number }).__glAsked)).toBe(0);
+      expect(await page.evaluate(() => (window as unknown as { __glAsked: number }).__glAsked)).toBe(1);
     });
   }
 });
@@ -241,14 +243,14 @@ test.describe("the look reaches a hidden terminal", () => {
       return [...(set ?? [])].filter((t) => t.element?.closest(".term-host")).map((t) => ({ background: t.options.theme?.background, fontSize: t.options.fontSize, cols: t.cols, rows: t.rows, connected: !!t.element?.isConnected }));
     });
 
-  test("a theme and a font size picked while a terminal is hidden are on it when it is shown again, and its program is told the new size", async ({ page }) => {
+    test("a theme and a font size picked while a terminal is hidden are on it when it is shown again, and its program is told the new size", async ({ page }) => {
     await openApp(page);
     const a = await newTerminal(page);
     const b = await newTerminal(page);
     const [idA] = await hostIds(page);
     const before = await terms(page);
     expect(before.map((t) => t.connected)).toEqual([false, true]); // A is hidden, B is shown
-    expect(before[0]).toMatchObject({ background: "#0b090d", fontSize: 12.5 });
+    expect(before[0]).toMatchObject({ background: "#0b090d", fontSize: 13 });
     expect(before[0].cols).toBeGreaterThan(40);
 
     await settings(page);
@@ -322,7 +324,7 @@ for (const th of THEMES) {
   test.describe(`${th.id} (${th.app})`, () => {
     test.use({ colorScheme: th.app });
 
-    test(`find's matches and a link's underline are readable on ${th.id}, and the active match is the most visible`, async ({ page }) => {
+        test(`find's matches and a link's underline are readable on ${th.id}, and the active match is the most visible`, async ({ page }) => {
       // `contrast: "theme"`: xterm lifts no colour, so what is read here is what the theme and find-colors.ts give
       await openApp(page, { theme: th.app, term: { [th.app === "light" ? "themeLight" : "themeDark"]: th.id, contrast: "theme" } });
       await newTerminal(page);
