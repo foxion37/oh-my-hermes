@@ -2786,8 +2786,13 @@ class App(ModesMixin, AgentViewMixin):
         self.turn_shown = 0  # the most tokens the working row has said this turn: it never goes back
         self.spinner_verb = ""  # Hermes' last spinner verb this turn: it stays in the verb slot while a status says more
         self.session_title = ""  # Hermes' auto-title for the session (`session.title`)
-        # fork q-design: the OMP look (opt-in), the last usage block and when the TUI started, for its status line
-        self.omp_look, self.omp_usage, self.omp_started_at = resolve_look(self.environ) == LOOK_OMP, None, time.monotonic()
+        # fork q-design: the OMP look (opt-in), the last usage block and when the TUI started, for its status line.
+        # The look file is read only under an explicit OMH_HOME: a bare environment must not pick up $HOME/.omh,
+        # or a run with no OMH home draws the OMP look and never settles its first frame.
+        look_home = self.environ.get("OMH_HOME", "").strip()
+        look_environ = self.environ if look_home else {k: v for k, v in self.environ.items() if k != "HOME"}
+        look = resolve_look(look_environ, Path(look_home).expanduser() if look_home else None)
+        self.omp_look, self.omp_usage, self.omp_started_at = look == LOOK_OMP, None, time.monotonic()
         self.shown_title: str | None = None  # the terminal title last written
         self.title_words = ""  # what that title was cut from: the same words need no new cut
         # The info line's right side last composed: what it showed, and the theme and HUD snapshot it was composed with.
