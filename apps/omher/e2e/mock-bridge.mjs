@@ -42,7 +42,9 @@
 // mock.steers (every steer the mock took),
 // mock.ready {bot, ok, signIn?} (what `bots.ready` answers for a bot: ok false = Hermes says it cannot answer; with
 // signIn: the strict check for that provider passes, as after `hermes auth add <id>`, and its models show in
-// models.options).
+// models.options),
+// mock.move {on} (the bridge died and came back on a new port: answers `{port}` once a second listener is up, then drops
+// every connection to the first port, which refuses WebSockets until `mock.move {on: false}` or mock.reset).
 import http from "node:http";
 import crypto from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -665,8 +667,10 @@ const COMMAND_SEED = [
 // `after`-th skills.list read on (0 = at once). Cleared by mock.reset.
 let skillsLater = { add: [], after: 0 };
 
-// Subscription usage (usage.read). "default": Codex 73 % / 60 %, Claude limited (no %), Grok on PATH only.
-// "stale": the same Codex record after both reset times passed (no numbers). Switch with mock.usage {fixture}.
+// Subscription usage (usage.read). "default": Codex 73 % / 60 %, Claude limited (a refused request: no %), Grok on
+// PATH only. "stale": the same Codex record after both reset times passed (no numbers). "claude": Claude Code's
+// percentages from omher's own record of what it reported (12 % / 6 %), with an omher login at 81 % and one with no
+// record yet. "claudeNone": Claude Code on PATH with no record yet. Switch with mock.usage {fixture}.
 let usageFixture = "default";
 const USAGE = {
   default: () => [
@@ -685,6 +689,19 @@ const USAGE = {
       ] },
     { id: "grok", state: "connected", source_mtime: null, windows: [] },
   ],
+  claude: () => [
+    { id: "claude", state: "ok", source_mtime: now() - 30,
+      windows: [
+        { label: "5 hours", used_percent: 12.4, resets_at: now() + 107 * MIN },
+        { label: "Weekly", used_percent: 6, resets_at: now() + (4 * 24 + 23) * 3600 },
+      ],
+      accounts: [
+        { email: "owner@example.com", label: "", source: "cli", in_cpa: false, state: "ok", used_percent: 12.4, resets_at: now() + 107 * MIN },
+        { email: "work@example.com", label: "Work", source: "omher", in_cpa: false, state: "near", used_percent: 81, resets_at: now() + 3 * 3600 },
+        { email: "new@example.com", label: "", source: "omher", in_cpa: false, state: "no_record" },
+      ] },
+  ],
+  claudeNone: () => [{ id: "claude", state: "connected", source_mtime: null, windows: [] }],
   stale: () => [
     { id: "codex", plan: "pro", state: "stale", source_mtime: now() - 9 * 24 * 3600,
       windows: [
@@ -924,7 +941,27 @@ const server = http.createServer((req, res) => {
   res.end("omher mock bridge: WebSocket only\n");
 });
 
+/** The listener that stands in for the bridge after `mock.move`; `null` while the first port serves. */
+let moved = null;
+function unmove() {
+  if (!moved) return;
+  const gone = moved;
+  const port = gone.address()?.port;
+  moved = null;
+  // a beat later, so a control connection on that port (mock.reset asked there) gets its answer first
+  setTimeout(() => {
+    for (const c of clients) if (c.localPort === port) c.destroy();
+    gone.close();
+  }, 20);
+}
+
 server.on("upgrade", (req, sock) => {
+  // moved: the old bridge is gone, so its port takes no connection
+  if (moved) sock.destroy();
+  else accept(req, sock);
+});
+
+function accept(req, sock) {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const key = req.headers["sec-websocket-key"];
   if (!TOKENS.has(url.searchParams.get("token") ?? "")) {
@@ -945,7 +982,7 @@ server.on("upgrade", (req, sock) => {
   sock.on("close", () => clients.delete(sock));
   sock.on("error", () => clients.delete(sock));
   attach(sock, (text) => handleFrame(sock, text));
-});
+}
 
 // ---- ops -------------------------------------------------------------------------------------
 
@@ -1912,8 +1949,28 @@ const OPS = {
     return {};
   },
   "mock.reset": () => {
+    unmove();
     reset();
     return {};
+  },
+  "mock.move": (p) => {
+    unmove();
+    if (!p.on) return {};
+    return new Promise((resolve) => {
+      const next = http.createServer((req, res) => {
+        res.writeHead(426, { "content-type": "text/plain" });
+        res.end("omher mock bridge: WebSocket only\n");
+      });
+      next.on("upgrade", accept);
+      next.listen(0, "127.0.0.1", () => {
+        moved = next;
+        // every connection to the old port drops, as when the bridge process dies; the one asking gets its answer first
+        setTimeout(() => {
+          for (const c of clients) if (c.localPort === PORT) c.destroy();
+        }, 20);
+        resolve({ port: next.address().port });
+      });
+    });
   },
   // a node of a run changes (a helper returned): its state, and the run's `updated`, as the next runs.list reads it
   "mock.runNode": (p) => {
@@ -2032,7 +2089,15 @@ function handleFrame(sock, text) {
   try {
     const fn = Object.hasOwn(OPS, op) ? OPS[op] : null;
     if (!fn) throw new OpError("unknown_op", `no such op: ${op}`);
-    sendJson(sock, { id, ok: true, result: fn(params) });
+    const result = fn(params);
+    if (result instanceof Promise) {
+      result.then(
+        (r) => sendJson(sock, { id, ok: true, result: r }),
+        (e) => sendJson(sock, { id, ok: false, error: { code: "internal", message: e?.message ?? String(e) } }),
+      );
+      return;
+    }
+    sendJson(sock, { id, ok: true, result });
   } catch (e) {
     const code = e instanceof OpError ? e.code : "internal";
     sendJson(sock, { id, ok: false, error: { code, message: e?.message ?? String(e) } });

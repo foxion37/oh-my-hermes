@@ -44,6 +44,19 @@ describe("resume snapshot", () => {
     expect(back.sessions[0].messages).toEqual([{ id: "m1", role: "user", text: "fix the 502s", ts: 1 }]);
   });
 
+  it("keeps every session, however many; only the newest 20 keep their chat's messages", () => {
+    const many = Array.from({ length: 25 }, (_, n) => ({ id: `s${n + 1}`, agent: "claude" as const, cwd: "/w", startedAt: T, view: "terminal" as const, running: true, agentSession: `1111111${n % 10}-2222-4333-8444-555555555555` }));
+    const msgs = (id: string) => [{ id: `m-${id}`, role: "user" as const, text: `hi ${id}`, ts: 1 }];
+    const snap = buildResume(input({ sessions: many, messages: msgs, view: "session", session: "s25" }), T);
+    expect(snap.sessions.map((s) => s.id)).toEqual(many.map((s) => s.id));
+    expect(snap.session).toBe("s25");
+    expect(snap.sessions.filter((s) => s.messages).map((s) => s.id)).toEqual(many.slice(0, 20).map((s) => s.id));
+    const back = parseResume(JSON.stringify(snap))!;
+    expect(back.sessions.map((s) => [s.id, s.agentSession])).toEqual(many.map((s) => [s.id, s.agentSession]));
+    expect(back.sessions.filter((s) => s.messages).length).toBe(20);
+    expect(back.session).toBe("s25");
+  });
+
   it("an open session is the view; Settings is not (a restart opens the chat behind it)", () => {
     expect(buildResume(input({ view: "session", session: "s2" }), T)).toMatchObject({ view: "session", session: "s2" });
     expect(buildResume(input({ view: "settings" }), T)).toMatchObject({ view: "chat", session: null });
@@ -93,6 +106,14 @@ describe("resume snapshot", () => {
     expect(named.sessions[0].promptTitle).toBeUndefined();
     // the open session was dropped: back to the chat
     expect(parseResume(JSON.stringify({ ...raw, session: "s2" }))).toMatchObject({ view: "chat", session: null });
+  });
+
+  it("keeps that an ended session's CLI could not continue its conversation, and only for an ended one", () => {
+    const good = buildResume(input(), T);
+    const raw = (resumeFailed: unknown, running: boolean) => JSON.stringify({ ...good, sessions: [{ ...good.sessions[2], running, resumeFailed }] });
+    expect(parseResume(raw(true, false))!.sessions[0].resumeFailed).toBe(true);
+    expect(parseResume(raw(true, true))!.sessions[0].resumeFailed).toBeUndefined();
+    expect(parseResume(raw("yes", false))!.sessions[0].resumeFailed).toBeUndefined();
   });
 
   it("an unknown bot takes its panel, Plans view and draft with it", () => {

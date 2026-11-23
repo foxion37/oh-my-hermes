@@ -12,7 +12,9 @@ export const RESUME_KEY = "omher.resume";
 export const RESUME_VERSION = 1;
 
 const PANEL_TABS: readonly PanelTabId[] = ["details", "terminal", "schedule", "worktrees", "diff", "runs"];
-const MAX_SESSIONS = 20;
+/** Every session is kept, however many there are: a row left out of the snapshot would lose its history and
+ *  files at the next boot. Only the newest this many keep their chat's last messages, which is what takes room. */
+const MAX_CHATS = 20;
 const MAX_MESSAGES = 40;
 const MAX_TEXT = 4_000;
 const MAX_DRAFT = 20_000;
@@ -41,6 +43,10 @@ export interface SavedSession {
   draft?: boolean;
   /** Ended ones: how. */
   failed?: boolean;
+  /** Its CLI could not continue its conversation: it also offers a new one (SessionRec `resumeFailed`). */
+  resumeFailed?: boolean;
+  /** Its conversation was used (SessionRec `used`). */
+  used?: boolean;
   exitCode?: number | null;
   error?: string;
   /** The agent's own conversation id (Claude Code session, Codex thread). */
@@ -82,6 +88,7 @@ export interface ResumeSnap {
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown, max = 4096): string | undefined => (typeof v === "string" && v && v.length <= max ? v : undefined);
 const cut = (s: string, max: number) => (s.length > max ? s.slice(0, max) : s);
+const withoutMessages = ({ messages: _, ...s }: SavedSession): SavedSession => s;
 
 function parseMsg(v: unknown): SavedMsg | null {
   if (!isObj(v)) return null;
@@ -106,6 +113,8 @@ function parseSession(v: unknown): SavedSession | null {
   if (isLinkId(v.linkId)) out.linkId = v.linkId;
   if (v.open === "chat" || v.open === "terminal") out.open = v.open;
   if (v.failed === true) out.failed = true;
+  if (v.resumeFailed === true && v.running !== true) out.resumeFailed = true;
+  if (v.used === true) out.used = true;
   if (v.draft === true) {
     out.draft = true;
     out.running = false;
@@ -154,7 +163,7 @@ export function parseResume(raw: string | null | undefined): ResumeSnap | null {
     runsFull: v.runsFull === true,
     runId: typeof v.runId === "string" && v.runId ? v.runId : null,
     drafts,
-    sessions: sessions.slice(0, MAX_SESSIONS),
+    sessions: sessions.map((s, n) => (n < MAX_CHATS ? s : withoutMessages(s))),
   };
 }
 
@@ -186,7 +195,8 @@ export interface ResumeInput {
 }
 
 export function buildResume(i: ResumeInput, now: number): ResumeSnap {
-  const sessions: SavedSession[] = i.sessions.slice(0, MAX_SESSIONS).map((s) => {
+  const sessions: SavedSession[] = i.sessions.map((s, n) => {
+    if (n >= MAX_CHATS) return { ...s };
     const msgs = i
       .messages(s.id)
       ?.filter((m) => m.text)

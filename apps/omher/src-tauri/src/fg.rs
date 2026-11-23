@@ -704,15 +704,24 @@ mod tests {
         let pid = child.id();
         assert_eq!(wait_for(|| Probe::default().agent(pid).map(String::from)).as_deref(), Some("claude"));
         let t0 = Instant::now();
+        // the cache is what is under test, not the OS: read the real argv once (retrying, as a loaded macOS runner's
+        // KERN_PROCARGS2 can fail for a moment) and hand those bytes to every read the cache asks for
+        let mut real = Vec::new();
+        assert!(wait_for(|| argv_bytes(pid, &mut real).then(String::new)).is_some(), "the real argv could not be read");
         let mut reads = 0;
-        let mut counted = |p: u32, out: &mut Vec<u8>| {
+        let mut counted = |_: u32, out: &mut Vec<u8>| {
             reads += 1;
-            argv_bytes(p, out)
+            out.clear();
+            out.extend_from_slice(&real);
+            true
         };
         let mut p = Probe::default();
         for i in 0..60 {
             let got = p.agent_at(pid, t0 + Duration::from_secs(i), &mut counted);
-            assert_eq!(got, Probe::default().agent(pid), "probe {i}");
+            // the uncached reference reads the argv afresh, and on a loaded macOS runner that read can fail for a
+            // moment (KERN_PROCARGS2), answering None once; retry it so the comparison is about the cache
+            let fresh = wait_for(|| Probe::default().agent(pid).map(String::from));
+            assert_eq!(got, fresh.as_deref(), "probe {i}");
             assert_eq!(got, Some("claude"));
         }
         let _ = child.kill();

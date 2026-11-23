@@ -4,6 +4,173 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **Fanout hands coding units to a harness CLI you declare, or to one of nine presets.** Put an executor in
+  `<omh_home>/routing/executors.toml` (never read from a repository or the working directory) as an `argv` list
+  with exactly one `{prompt}` or `{prompt_file}` element, or opt in to a preset with `omh coding executors add
+  <preset>` (`list`, `remove` and `check` come with it). A configured id is then accepted wherever a built-in owner is:
+  `--owner` on `omh coding run` and `fanout prepare`, a unit's `owner` in the `--units` JSON,
+  `executor-readiness --executor`, and a dag-ulw node when the request names it. The lane is the built-in lane: a
+  worktree per unit, a unit that must commit, `fanout_unit_result/v1`,
+  postconditions judged from git and never from the CLI's output, the confinement fence and a HUD row. Entries
+  with a shell, an interpreter, a path, a second prompt placeholder or a built-in's id are left out with a reason,
+  and the entries beside them still load. The presets are Devin CLI (run locally as `devin -p ...`), gemini, qwen,
+  kimi, cursor-agent, amp, droid, aider and goose; all are marked unvalidated until their first live dispatch. An
+  entry that declares `session.export` records a bounded `fanout_executor_session/v2` receipt (the export file's
+  hash and its session id, never its contents), and one that declares `session.resume` can re-enter that session on
+  a budgeted repair. The remote PR lane is not available yet: `remote_pr = true` and `--allow-remote-pr` are
+  refused with `remote_pr_not_available`, and nothing is launched or fetched.
+  The external executor lane is supported only on macOS and Linux; Windows refuses it with
+  `user_executor_platform_unsupported`.
+  (`src/coding/user_executors.py`, `src/coding/executor_presets.py`, `src/coding/fanout_remote_pr.py`,
+  `src/commands/coding.py`; `docs/FANOUT.md` "Your own harness", `docs/FANOUT-EXECUTOR-EVIDENCE.md`)
+- **`omh setup` connects to a Hermes config whose root keys hold column-0 lists, or whose section keys carry a
+  comment.** Step 2 stopped with "non-mapping or unsupported root YAML is user-owned" on a `config.yaml` that writes a
+  root key's list items at the left edge (`toolsets:` then `- hermes-cli`), the spelling older Hermes releases, hand
+  edits and other YAML tools produce (current Hermes indents lists). The config editor took every such line for a
+  document that is itself a list; it now reads the list as the key's value, the way the route guard has since #2917,
+  so `skills.external_dirs` and `plugins.enabled` are registered and every line around them stays as written, long
+  quoted or plain values PyYAML wrapped onto indented lines included. A document that opens with a list, the column-0
+  lists Hermes' loader refuses, an indented root mapping, and a quoted string that continues at column 0 (where every
+  line scan would read a key) are left alone; so is a list directly under `plugins:` or `memory:`, rather than having
+  an `enabled:` or `provider:` key written above it, which Hermes could not load. A section key with a comment on its
+  line (`memory: # mine`, `plugins:  # third-party`) is now that section: setup used to append a second `memory:`, a
+  duplicate key Hermes refuses the file over, and refused the commented `plugins:` outright; it now writes under the
+  key, and a `memory:` it cannot fill (`{}`, a scalar, an anchor, twice) is left alone. Every setup writer and
+  uninstall remover now edits the document inside its `%YAML` / `%TAG` / `---` opening and before a closing `...`,
+  where the plugin and memory writers used to append past the `...`; a file with a second document, or a shape setup
+  would not write into, is refused only when there is something to write, so `omh update` on a registered install
+  writes nothing, and `omh doctor` no longer fails the plugin check on an enabled install because of its envelope, and
+  names a second document as such. A quoted string whose text looks like a tag, an anchor or an alias (`"say: !x"`,
+  `'a: &b'`) no longer keeps setup from recording `omh_home` or a compression chain; nor does a flow sequence of
+  quoted strings (`['a', 'b']`); nor do a shared list item (`- &id001`) or a quoted list key (`- 'on': x`) in another
+  section, so setup binds the store and uninstall takes every write back beside them; real anchors, aliases and quoted
+  keys still do. Reported by @chhxbchhxb in #3075. (`src/install/config_adapter.py` `_root_is_plain_block_mapping`,
+  `_section_node_is_sequence`, `_block_header`, `_document_parts`, `_with_document_body`, `_scalar_continuations`,
+  `_yaml_code`)
+  quoted strings (`['a', 'b']`); a real one, a list item's included, and a quoted key still do. Reported by
+  @chhxbchhxb in #3075. (`src/install/config_adapter.py` `_root_is_plain_block_mapping`, `_section_node_is_sequence`,
+  `_block_header`, `_document_parts`, `_with_document_body`, `_scalar_continuations`, `_yaml_code`)
+  `'a: &b'`) no longer keeps setup from recording `omh_home` or a compression chain; a real one, a list item's
+  included, still does. Reported by @chhxbchhxb in #3075. (`src/install/config_adapter.py`
+  `_root_is_plain_block_mapping`, `_section_node_is_sequence`, `_block_header`, `_document_parts`,
+  `_with_document_body`, `_scalar_continuations`, `_yaml_code`)
+  `_with_document_body`, `_scalar_continuations`)
+  `_with_document_body`)
+  anchor, twice) is left alone. And the skills writer now refuses what every other writer refuses: it used to edit
+  past `%TAG`, `%YAML 1.2` and a `...` document end, after which the plugin and memory writers appended past the
+  `...`. Reported by @chhxbchhxb in #3075. (`src/install/config_adapter.py` `_root_is_plain_block_mapping`,
+  `_section_node_is_sequence`, `_block_header`, `_skills_document_parts`)
+  `enabled:` or `provider:` key written above it, which Hermes could not load. Reported by @chhxbchhxb in #3075.
+  (`src/install/config_adapter.py` `_root_is_plain_block_mapping`, `_section_node_is_sequence`)
+- **omher 1.1.3.** GitHub across your repositories and accounts, a Claude usage meter that shows numbers, and terminals
+  and bridges that recover by themselves.
+  - **GitHub:** Tasks gains a "나" scope: your review requests, your pull requests, issues assigned to you and mentions,
+    across every repository, CI and review state first. Several GitHub accounts from `gh` are picked up in Settings ›
+    Accounts and switched with one chip; omher passes each account's token only to that one `gh` call. (#3076)
+  - **Claude usage:** the meter shows the percentages and reset times Claude Code reports, from omher's chats and from
+    the terminals omher starts for someone with their own status line. (#3065)
+  - **Recovery:** the bridge comes back after it dies, with a bar and Retry if it keeps failing (#3064). A failed
+    resume keeps the agent and its conversation, with "Start a new conversation" when it is gone (#3062). A bot comes
+    back after its gateway restarts outside omher (#3055).
+  - **Terminals and keys:** every TERMINALS row survives a restart, European Option signs type on macOS, AltGr types on
+    Windows, and the bottom panel gives the keyboard back when it hides (#3063).
+  - **Chat:** a message sent mid-answer steers into the running turn (#3071), clarify choices are numbered one per row
+    (#3052), and the Slack briefing opens with a greeting (#3066). Korean copy reads more naturally (#3054, #3061).
+- **omher's Claude Code usage meter shows what Claude Code reports.** The meter used to say "No usage yet" / "No
+  record" for every Claude login, because Claude Code writes its usage to a file only when a request hits a limit.
+  omher now keeps its own record per login (`~/.omher/usage/claude/<account>.json`), from the `rate_limit_event` in a
+  chat's stream-json and from the status line input of the TERMINALS Claude Code sessions it starts. The meter shows
+  each window's % and reset time the way the Codex meter does, per login, from the newer of that record and a refused
+  request; readings are merged per window, so an older one never lowers the meter. On macOS and on Linux outside an
+  AppImage, a TERMINALS Claude Code started while you have a status line of your own now gets `--settings` whose
+  `statusLine` runs omher as a relay: it records the usage, then runs your status line command with the same input and
+  prints its output unchanged. Your hooks, permissions and other settings stay as they are. Without a status line of
+  your own, and on Windows and inside an AppImage, omher adds nothing, nothing on screen changes, and the percentages
+  come from chats only. Before the first reading the meter says it shows after your next
+  Claude turn in omher. Local only: nothing is sent and no token is read.
+  (`docs/OMHER-BOUNDARY.md` rules 11, 17 and 18)
+- **omher Tasks shows my pull requests, reviews and issues across repositories and GitHub accounts.** The Tasks page
+  has a scope toggle, "이 저장소 | 나". "나" lists, across every repository, the open pull requests asking for my
+  review, my open pull requests, the open issues assigned to me and the last 7 days' mentions (folded until opened).
+  What needs action comes first: CI failed, changes requested, merge conflict, then review requests by how long they
+  waited. Each row shows the repository, number, title, the account's colour dot and chips for draft, CI, review and
+  conflict, and how long a review request has waited. j / k move, Enter opens the drawer, o opens the browser, t
+  starts a thread; the list groups by section or by repository. The sidebar's Tasks row counts the review requests.
+  - **GitHub accounts:** Settings › Accounts has a GitHub section listing the accounts your `gh` is signed in to, with
+    "Add" for each and "Sign in to another account", which runs `gh auth login` (or `--hostname` for GitHub
+    Enterprise) in a terminal tab; gh itself makes the account it signs in its active one. omher keeps only each chosen account's host, login and colour. Account chips in
+    "나" filter to one account; an account whose login fails shows "다시 로그인" while the others keep working.
+  - **Per-account reads:** every call is pinned to the account it names, active or not, since gh's active account can
+    change under omher from any shell. The account's own token is read with `gh auth token --hostname <host> --user
+    <login>` for each call and passed only as `GH_TOKEN` in that one `gh` call's environment; it is never stored,
+    shown, logged or sent, and omher's copy is wiped when the call ends. omher never runs `gh auth switch`, and takes
+    inherited tokens and gh's debug and pager variables out of every gh child and the sign-in tab. The status query must name that account as its viewer, or the account shows "다시 로그인".
+  - **Reads:** four fixed `gh search` argv and one fixed `gh api graphql` query (CI, review decision, mergeability),
+    each answer kept 60 seconds per account, read again on window focus, on ⟳ and every 5 minutes; at most 27
+    search requests a minute per account (one per 100 rows asked for), and GitHub's rate limit shows "잠시 후 다시"
+    instead of a failure. "이 저장소" on GitHub reads as the github.com account whose login owns the repository, or
+    the github.com account picked on its chip.
+    (apps/omher `src-tauri/src/gh_me.rs`, `src/tasks/MeView.tsx`, `src/settings/accounts/GithubAccounts.tsx`;
+    `docs/OMHER-BOUNDARY.md` rules 11, 18 and 33)
+- **OMH TUI: a `/` after a space opens skill completion, as in Claude Code.** Typing `asdf /dag` opens a menu of
+  Hermes' skills filtered by `dag`; a bare `/` after a space lists them all. As in Claude Code, a `/skill` after
+  other text names a skill for that message, while a built-in command (`/model`, `/compact`, `/help`, Hermes' own)
+  means something only at the line's start, so only skills are offered there, by name prefix or substring:
+  `path /opt` offers nothing unless a skill's name holds `opt`. The leading `/` menu is unchanged. The token runs
+  from its `/` to the caret, so moving the caret onto a `/name` mid-line opens it too, in multi-line input as well;
+  taking a row replaces only that `/name` and keeps the text on both sides. A path-like slash (`./x`, `../x`, `~/x`,
+  `a/b`, `http://`, `//`) opens nothing. The menu never takes a key the line needs: Enter sends the line as typed
+  and Up stays history and caret movement until Down moves into the menu; Tab always takes the highlighted row. Text
+  from history recall, a paste or a loaded draft opens no mid-line menu until the next typed key. A line that does
+  not start with `/` still goes as a prompt with the `/skill` text in it. (`src/tui/slash.py` `slash_token_at`,
+  `skill_completions`, `src/tui/app.py`)
+- **omher: the bridge comes back after it dies.** If the Python bridge stopped after it was ready, nothing started it
+  again: Hermes bots and folder chats stayed on "Connecting to Hermes…" until omher was restarted, because the shell
+  kept handing the page the dead bridge's port. The shell now notices the exit (the bridge's output closes, or a check
+  when the page asks for the URL) and starts it again on a new port with a new token after 0.5 s, then 1 s, 2 s, 4 s
+  and 8 s for each quick death in a row. The page asks for the URL again on each reconnect, so open chats resume by
+  themselves. A sixth quick death in a row (after five restarts) shows the error in a bar at the top with Retry; the
+  bar covers nothing else, so the app and its terminals stay visible and usable. A bridge omher stopped itself (quit,
+  Retry) is not started again, and one that stops while the installer runs waits for it to end. TERMINALS were never
+  affected. (apps/omher `src-tauri/src/bridge.rs`, `src/app/BridgeGate.tsx`)
+  themselves. After five quick deaths in a row the error shows over the app (which stays open underneath, terminals
+  included) with Retry. A bridge omher stopped itself (quit, Retry) is not started again, and one that stops while
+  the installer runs waits for it to end. TERMINALS were never affected. (apps/omher `src-tauri/src/bridge.rs`,
+  `src/app/BridgeGate.tsx`)
+- **omher: make a TERMINALS folder from the right-click menu, and see sharp pictures in its terminals.**
+  - **New folder…:** right-clicking empty TERMINALS space (or a folder header) offers New folder… under New
+    session. It opens the system folder dialog, where you can make a new folder or pick one; the folder shows as a
+    group at once, even with no terminal in it, and stays after a restart. A folder you added has Remove from list in
+    its header menu (nothing on disk is touched). One folder is one group however its path is spelled (a trailing
+    `/` no longer makes a second group), and a terminal started in a folder that is gone is listed where it really
+    runs, with "This folder no longer exists" on the old group. ⌘⇧[ ] steps through terminals in the same order.
+  - **Sharp pictures:** omher's terminals now draw kitty Unicode-placeholder images (the form Hermes' TUI and the OMH
+    TUI use for pasted pictures), so a pasted screenshot shows as the picture itself instead of a coarse block
+    mosaic. The layer stays above the GPU renderer, keeps one canvas per terminal, and shares the 32 MB per-terminal
+    picture budget with the other image kinds; Settings › Terminal › Show images turns it off.
+- **OMH TUI: kitty previews inside omher, and a quiet Ctrl+Enter.** Under `TERM_PROGRAM=omher` the OMH TUI asks for
+  kitty previews (tmux and screen keep half-blocks). Ctrl+Enter on a prompt with images during a turn now stops the
+  turn and sends the prompt without an `Interrupted.` notice, like Claude Code's send-now; Hermes' "Operation
+  interrupted: waiting for model response (…)" line never shows as the reply, while it streams, at the end, or in a
+  resumed conversation. Esc and `/stop` still say `Interrupted.`.
+
+- **omher: the Slack briefing opens with a greeting and what it is about.** A brief could open with what the bot did
+  or could not do ("could not open the log...") with nothing saying which alert or thread it meant, so the person had
+  to guess. The briefing prompt now asks for a short greeting ("안녕하세요." in Korean), then a first line naming the
+  channel or thread, what happened and whether they need to do anything. The automation-blueprint reference quotes
+  the same prompt, and a bridge test keeps the two identical. Applies to briefings omher sets up from now on; an
+  existing `omher-brief` job keeps its prompt until it is edited.
+- **omher keeps every TERMINALS row over a restart, types European Option signs, and gives the keyboard back.**
+  - **Restart:** every TERMINALS row comes back, however many there are. Before, only the newest 20 were saved and the
+    next start deleted the older rows' history and files, even for a running Claude. Only the newest 20 keep their
+    chat's last messages in the snapshot, which is what takes room. (apps/omher `app/resume.ts`)
+  - **Option on a European Mac layout:** Option+L, Option+5 and the rest type @ [ ] { } | \ ~ again, with Option as
+    Meta on (the default) or off and in Claude Code or Codex. They used to send Esc and the key's letter. On a US
+    layout Option is still Meta. (apps/omher `sessions/term/engine-input.ts`)
+  - **AltGr on Windows:** AltGr+= types } on French AZERTY (~ Swiss, | Danish) instead of evening out the panes. The
+    bottom panel with one pane leaves the pane keys to the program. (apps/omher `terminal/layout.ts`, `Panel.tsx`)
+  - **Bottom panel:** hiding it with Ctrl+` or closing its last tab gives the keyboard back to the terminal or chat
+    you were typing in, instead of leaving it nowhere. (apps/omher `terminal/Panel.tsx`)
 - **omher 1.1.2.** Terminals keep their screen when you switch back, and splits and rows behave as expected.
   - **Switching back:** a TUI shown again (omh, Codex, OmO, vim, htop) no longer shows a doubled line, a blank band or
     a misplaced cursor. Showing a terminal now fits it once instead of twice, and when xterm had to reflow it the
@@ -17,6 +184,29 @@ All notable changes will be documented here.
   - **Keys:** ⌘A selects the whole terminal, also in Claude Code and Codex. (#3050)
   - **Speed:** saving a long scrollback no longer stalls on trailing blank lines (98 ms to 0.1 ms on the same input).
     (#3050)
+
+- **omher: a message you send while a bot is answering goes out at once, as in a messenger.** The bot does not stop:
+  it keeps working and takes the new message into account (Hermes' steer joins the running turn, no interrupt). The
+  bubble stays at the bottom in the order you sent it, with a small muted "Read · 14:02" beside its bottom-left corner,
+  and the typing dots and activity line move under it. The ↵ mark and the "Waiting", "Steering…" and "Sent to … ·
+  joins the running answer" lines are gone. The Settings › General "While it answers" choice (Wait / Steer) is gone
+  too: steering is always the behaviour. Where a steer cannot happen (Hermes refuses it, the turn already ended, the
+  bridge is coming back, or the message is a `/` command or carries files or a Reply there target) the message waits with its ↵ ↓ × buttons
+  and no text line, and goes out as the next message right after the turn, so nothing is lost. SESSIONS agent chats
+  are unchanged. (apps/omher `state/store.ts`, `chat/parts/Bubble.tsx`)
+- **omher: a terminal that cannot continue its conversation keeps it.** A Claude Code or Codex terminal continues its
+  conversation after omher restarts. When that CLI ended at once (the conversation, its account folder or the login
+  was gone) the row turned into a Shell and dropped the conversation id, and when the CLI was missing, Restart started
+  a new conversation over the old id. Now omher first looks for the conversation's file (by name only). A Claude Code
+  terminal nobody typed in has none, so it starts again under the same id instead of failing; a conversation you used
+  whose file was deleted, and a Codex conversation with no rollout, are not started at all. A continued CLI that
+  prints its refusal of that id, ends with an error before you press a key, or ends cleanly before a key and before it
+  draws its screen (or within 1.8 s) leaves the row Claude Code or Codex, ended or failed, with the same id: Restart
+  continues that conversation, and "Start a new conversation" (kept across restarts) is the way out when it is gone
+  for good. When Claude Code says it already has an id the look missed, the terminal continues it. A new Claude Code
+  terminal keeps its id only once its CLI started. A continued CLI you pressed a key in and then left goes on as the
+  login shell without its id, unless it printed its refusal; so does one that waited for input (a login) and was left
+  later. (apps/omher `sessions/sessions.ts`, `termEnd`, `conversation_state`)
 
 - **omher reads more naturally in Korean.** A pass over the Korean UI copy: one register (해요체) on every screen
   instead of 합니다체 in some hints and dialogs, `shell` instead of `셸`, and literal translations replaced with what
@@ -47,6 +237,43 @@ All notable changes will be documented here.
   next message reconnects, or that a request attached during a Restart that then failed, says so too. Two requests
   at once no longer make two Bot Chats.
   BOUNDARY rule 39.
+
+- **omher's Korean names Watch "모니터링".** The feature that has a bot check a channel or page on a schedule read
+  `감시` (surveillance) in Korean; it is now `모니터링` on every screen (`새 모니터링`, `모니터링하는 곳`). Four short
+  labels left by the Korean copy pass read right too: a browser step reads `열림` (it read like a button, `열기`), the
+  bubble style with no bot bubble reads `본문처럼`, the terminal theme slot's label reads `적용 대상`, and a route
+  whose chain ran out reads `chain exhausted` like its `chain head` and `fallback` siblings. Only string values
+  changed.
+- **Inside a Hermes chat, a request to review a diff or PR now loads the code-review skill.** The router already
+  sent these to `code-review`, but the route hint OMH adds to each message still named visual QA (for the word
+  "diff"), feedback triage ("bug") or coding delivery ("review", "PR"), so the model never opened the skill and its
+  replies had no `Not checked` list. "review this diff for bugs", "can you review my PR?", "does this change
+  introduce a bug?", "이 diff 리뷰해줘" and "코드 리뷰 해줘" now get `code-review` first, with a line telling the
+  model to load the skill and follow it. The hint reads the same check as the router, so the two cannot drift; a
+  review asked together with a fix ("review this PR, then fix the bug in auth.py") and look-alikes such as a
+  screenshot diff, a customer bug report or "review my essay" keep their old hint.
+
+- **Bare `omh` opens the OMH TUI on native Windows.** Since the TUI started on Windows (#3009), its gateway child
+  always failed to mint a session ticket, because it asked Hermes' POSIX control socket (`os.getuid`), so `omh` fell
+  back to Hermes' own TUI every time. On Windows the child now attaches the way Hermes' Ink bootstrap does, through
+  Hermes' `attach_gateway`, which needs Hermes 0.23.1 or later. An older Hermes gets a one-line "cannot attach on
+  Windows" verdict and the fallback, and a control pipe that is not answering yet is waited for, as on macOS and
+  Linux. macOS and Linux are unchanged. Contributed by @Gudals0320 (#3060).
+- **The OMH pane in Hermes Desktop is redrawn, with a run timeline and TPS/TTFT in view.** USAGE is one card: the
+  token total large, cache hit and cost beside it, the four-way split, and the speed (TPS) and the last turn's wait for
+  its first token (TTFT), which used to sit only in a tooltip. CATCHES and PLAN read as rows with marks; PLAN groups
+  its items by phase. DAG gains a timeline: folded, one strip shaded by how many nodes ran at once, its gaps the run's
+  idle time; open, a row per node with its wait on upstream. A subagent the run did not orchestrate is a row under
+  Outside DAG and in AGENTS, never a start node of the run. Detail moved into hover cards that the keyboard can open
+  too. The pane also reads in Chinese. Contributed by @yqm-307 (#3058).
+- **A diff review inside Hermes gets the code-review rules even when the skill is never opened.** The hint OMH adds
+  to a review request only told the model to load the code-review skill, and in live runs it never did, so no reply
+  ended with a "Not checked" list. The hint now states the rules itself: report a bug only with a step-by-step trace
+  (input or state, `path:line`, wrong result); read the callers and tests the diff relies on first and drop what is
+  guarded, intended or only theoretical; end with a `Not checked:` line. A reply format the request sets still comes
+  last, and loading the skill stays an optional last clause. The hint grows by 225 characters, only on review
+  requests.
+- omher connects over SSH to a Windows computer whose Hermes has only the `hermes.cmd` shim and no venv: the remote discovery now reads the shim's interpreter too (a UTF-8 BOM included), in the same order the local app reads launchers (the agent's bin before the user bin, `.exe` before `.cmd` in each), so a stale launcher from an older install is never picked over the current one. Reported and first fixed by @jundev0001 in #3077.
 
 ## 5.0.0 - 2026-11-21
 

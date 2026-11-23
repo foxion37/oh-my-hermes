@@ -1373,8 +1373,9 @@ wake pipe on real Windows pipes.
   The prompt keeps the `[Image #N]` labels in its text so the model can name
   them, and the transcript lists under it each image Hermes accepted for it
   (`⎿  [Image #1]`), with a small preview under each: real pixels on kitty,
-  Ghostty and Otty at truecolor, coloured half-blocks elsewhere (tmux, Terminal.app,
-  iTerm2, WezTerm, VS Code), even where Hermes' config names kitty, none under
+  Ghostty, Otty and omher's terminals at truecolor, coloured half-blocks
+  elsewhere (tmux, Terminal.app, iTerm2, WezTerm, VS Code), even where Hermes'
+  config names kitty, none under
   `NO_COLOR`; `display.inline_images: off` in Hermes' config turns it off. The
   prompt waits up to 2 seconds for its previews before it is printed, and
   prints with only the image names when they do not come in time. `/history`
@@ -1475,7 +1476,7 @@ Esc closes it):
 | `\` then Enter, Alt+Enter, Shift+Enter, Ctrl+J | Adds a line; with a list or menu focused, Ctrl+J moves down instead. Alt+Enter and Shift+Enter still add a line in an open menu; backslash then Enter may accept a completion |
 | Ctrl+Enter | While a turn runs, sends the composer's text into it now as a steer (`/steer <text>` too); with images, stops the turn and sends the prompt with them as soon as it ends; idle, sends as Enter does |
 | Ctrl+Enter, Ctrl+J | While a turn runs, on an empty composer, send the oldest queued prompt into it now as a steer, or, with images, stop the turn and send it with them as soon as it ends; the row under the queue names the key (Ctrl+J where the terminal has not shown it tells Ctrl+Enter from Enter). A queued `!` line, slash command, skill prompt or plan prompt waits its turn |
-| Tab | Completes a slash command, or the `@` reference being typed; on an open menu, Enter takes the highlighted row too, and sends a command already typed in full |
+| Tab | Completes the slash command or skill at the start of the input, a skill typed as `/name` after a space, or the `@` reference being typed; on an open menu, Enter takes the highlighted row too, and sends a command already typed in full; a menu opened after a space leaves Enter and ↑ to the line until ↓ moves into it |
 | Shift+Tab | Cycles the input mode: normal, accept all (Hermes asks no approvals in this session), plan (prompts go as /plan); while Hermes itself has approvals off, turns plan on and off |
 | Ctrl+T | Steps the reasoning effort: low, medium, high, xhigh, max; the info line shows it as effort medium |
 | `@` | Starts a file or folder reference; Hermes offers matches above the composer |
@@ -1802,7 +1803,9 @@ lines are already queued, which queue as before. Ctrl+Enter on a prompt with
 images stops the turn instead (Hermes takes text alone into a running turn):
 the prompt shows above the working row as a dim prompt and goes, with its
 images, as soon as that turn ends; Esc again gives it back to the composer.
-Its images show under it there, as under any prompt. A steer you sent before
+The stopped turn ends quietly, with no `Interrupted.` notice, as Claude
+Code's send-now does (Esc and `/stop` still say it), and its partial answer
+stays as it streamed. Its images show under it there, as under any prompt. A steer you sent before
 it that the stopped turn had not read yet goes with it, ahead of its text, as
 one prompt, so nothing you sent is dropped or goes out of order.
 A prompt with images that Enter queued gets the same offer: its queue row
@@ -2395,9 +2398,15 @@ figures: what Hermes recorded for the chat, or the gateway's live
 `session.stats` counters where they count more, or the status bar's stream
 where neither has any), CATCHES (what OMH caught earlier in the session), PLAN
 (the plan as it stands), DAG (the session's one graph, a dag-ulw run, the
-native delegation tree or a fanout, drawn as cards) and AGENTS (one summary
-line for the subagents Desktop's Agents panel lists, beside the routes OMH
-dispatched). Each section folds, and the folds are kept in the app's local
+native delegation tree or a fanout, drawn as cards, with a timeline: folded,
+one strip beside the run's span, coloured by how many nodes ran at once (one,
+two to five, more), its gaps the run's idle time (only time no drawn node ran
+where the graph is cut or a node that ran has no clock); open, a line per node with its
+name and time; hovering any part opens a card with its nodes, clocks, waits,
+idle time and layers; a
+subagent the run did not orchestrate is a row under Outside DAG, below the
+cards and out of their edges) and AGENTS (a row for each subagent the DAG does not draw, up to six and then
+a count of the rest, beside the routes OMH dispatched). Each section folds, and the folds are kept in the app's local
 storage. The DAG section follows the focused chat: a pane that names its chat
 does not draw a fanout whose record names another chat as its origin, draws
 one that names this chat as this chat's, and draws one with no recorded origin
@@ -2410,9 +2419,27 @@ freshness window, the chip still shows, whichever session ticked last, since a w
 is the safer error. The pane reads idle when nothing is
 running and keeps the plan and status bar in agreement. A failed lane reads as
 failed (red), apart from blocked (yellow), and done DAG work is green.
-The pane keeps Desktop's own look (its sans, components and theme tokens) with the
-OMH TUI's colour character: a rose brand, warm section labels and muted violet
-frames. The DAG's cards fold by layer. A bar over the cards picks Auto (from
+The pane is laid out like Desktop's own right-hand panes (Files, Review): its
+sans, row heights and small section labels. Its colours are the OMH TUI's
+default look (spectrum), mixed from the theme's tokens: a pink brand, peach
+section labels, violet rules and card edges, a pastel blue for what runs and
+softened red, amber and green for the states. Token use is what the pane
+shows largest: USAGE is a card with the total in large type, the cache hit and
+cost beside it, the split as one bar and the four parts (cache read, uncached
+input, cache write, output) under it in the bar's colours, then the speed (TPS)
+and the last turn's wait for its first token (TTFT). The DAG reads in
+four levels: the section; a card with the run's name, its tokens, cache, cost
+and node time and their bar; its blocks (stats, timeline, graph, Outside DAG)
+under one kind of heading, each body on a rail, the layer-fold modes in the
+graph's heading; then the layers and node cards. The rest is a hover away: a
+node card shows its name, state and usage bar. Every hover in the pane and on the status-bar item opens one kind of card
+in the app's tooltip layer (a head with a mark and a figure, label/value rows,
+small bars, a muted note): USAGE's has every figure, where they came from and
+what the prompt is made of; a node's has its route, layer, upstream, usage and the start of its task,
+and a timeline row's adds its clocks. PLAN marks each step with a ring in its state on a
+rule that joins the steps, the step in hand lit; each CATCHES entry is a small
+card with its icon. The DAG's cards fold by layer. The graph's heading picks
+Auto (from
 nine lanes on, finished layers and those more than two past the work in hand
 fold), Focus (the running layers and the layers either side), Unfold all, or
 Fold all (the work in hand stays open); a layer's chip or tag opens or folds
@@ -2428,7 +2455,7 @@ drawn dotted, and the layers drawn open are asked for again within the larger
 open-view bound: a layer bigger than that comes back cut, with its hidden
 count. A run too deep for
 even its layer rows reads as its counts by state. The pane follows Desktop's
-language when Korean is selected.
+language when Korean or Chinese is selected.
 `omh uninstall --registration-only` does not disable the plugin or
 change `plugins.enabled`. Desktop mounting must be observed separately.
 

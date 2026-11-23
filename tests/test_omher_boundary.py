@@ -100,10 +100,43 @@ RULES = (
     "omher makes no LLM or API call itself. Every model call is Hermes'.",
     "The bridge listens on 127.0.0.1 only and refuses any connection that lacks the random token",
     "The app starts the bridge as a child process and stops it when the app exits.",
+    "A bridge that stops on its own after it was ready is started again, on a new port with a new token,",
+    "A bridge the app stopped (quit, Retry) is never started again that way; one that stops while the installer runs is started when the installer ends.",
     "The Python `omh` package never imports omher, and nothing under `src/` refers to `apps/omher`.",
     "omher writes to a Hermes profile only its display name (`profile.yaml` `display_name`) and its picture",
     "Outside Hermes, omher reads only the usage records coding CLIs write about themselves",
     "it never reads their auth files or tokens, writes nothing there and sends nothing anywhere.",
+    # Claude Code's own usage report, kept by omher (2026-11-22, the Claude meter; relay on macOS and Linux only)
+    "from the end of their newest session files, and, for the status line relay below, the `statusLine` key of Claude"
+    " Code's settings files;",
+    "so omher also keeps its own record of the usage Claude Code reports: the `rate_limit_event` in a chat session's"
+    " stream-json, on every system, and the `rate_limits` in the status line input of the TERMINALS Claude Code sessions"
+    " omher starts, on macOS and on Linux outside an AppImage only, and only for a person who has a status line of their"
+    " own.",
+    "Each reading is laid over `~/.omher/usage/claude/<account>.json` (the omher account's id, or `default` for Claude"
+    " Code's own login) window by window, and the file is replaced through a temporary file that is then renamed:",
+    "an older reading changes nothing,",
+    "on macOS and on Linux outside an AppImage, a TERMINALS Claude Code whose person already has a status line of their"
+    " own when it starts (resolved exactly as the relay resolves it, below) starts with `--settings` holding only a"
+    " `statusLine` whose command is omher's own binary as a relay (`omher --statusline-relay <account>`),",
+    "A person with no status line of their own gets no `--settings` and no relay, because Claude Code keeps a row for any"
+    " configured status line, even an empty one, and nothing on screen may change; their percentages come from chats"
+    " only.",
+    "(a non-negative integer, a number of at least 1, a boolean; anything else is dropped).",
+    "On Windows and inside an AppImage omher adds no `--settings` and no relay,",
+    "The relay records the input's `rate_limits` (nothing for an account name omher does not give, never under another"
+    " name), then runs the person's own status line command with the same input, through the shell Claude Code uses for"
+    " it (`/bin/sh -c`, behind `CLAUDE_CODE_SHELL_PREFIX` when that is set, joined as Claude Code joins it), and prints"
+    " its output and exit code unchanged, or prints nothing when they have none;",
+    "that command is read only from the `statusLine` key of the project's `.claude/settings.local.json`, then"
+    " `.claude/settings.json`, then `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` for an omher account),",
+    "managed (policy) settings, which win over `--settings`, so a `statusLine` set there runs instead of the relay and"
+    " omher records nothing from it.",
+    "A chat (`claude -p`) session has no status line and gets no relay. The relay starts none of the app, sends nothing"
+    " anywhere and reads no token.",
+    "On macOS and on Linux outside an AppImage, a TERMINALS Claude Code whose person has a status line of their own also"
+    " gets `--settings <json>` holding one key, a `statusLine` that runs omher's status line relay (rule 17);",
+    "Without a status line of their own, and on Windows and inside an AppImage, it gets no `--settings`.",
     "Accounts (Settings › Accounts) are the one exception to rules 4, 10 and 17.",
     "a local CLIProxyAPI's Claude logins are listed, read-only, from its auth file names alone",
     "omher never opens those files, never calls CLIProxyAPI or its management API, and never starts a session with, switches to or removes such a login.",
@@ -204,8 +237,34 @@ RULES = (
     " through the person's own GitHub CLI (`gh`) and GitLab CLI (`glab`) under their own logins:",
     "The only argv are `auth status` (only its exit code is read; its output, which can name a token, goes nowhere:"
     " it is never piped to omher),",
-    "omher passes no token to them, asks for none and shows none, and never comments, closes, assigns, labels, merges"
-    " or edits anything on GitHub, GitLab or Linear.",
+    "Without a chosen GitHub account (\"이 저장소\" read as gh's active account) and for `glab`, omher passes no token,"
+    " asks for none and shows none.",
+    "The token exception, to rules 5, 10 and 18's \"omher reads no token\": for a chosen GitHub account, whether or not gh"
+    " has it active (which one is active can change under omher at any time, from any shell), omher reads that account's"
+    " token with `gh auth token --hostname <host> --user <login>` only to pass"
+    " it, with `GH_HOST`, as `GH_TOKEN` (`GH_ENTERPRISE_TOKEN` for a GitHub Enterprise Server host) in the environment"
+    " of that one `gh` call; it reads it again for every call and never stores, caches, logs, shows or sends it, never"
+    " puts it in an argv or an error line, and wipes the copy it keeps for the call when that call ends",
+    "(a few short-lived copies inside the runner and std's `Command` are freed without being wiped).",
+    "Every `gh` child of the \"나\" scope and Settings › Accounts (the account list, `gh auth token` and every call as an"
+    " account) takes any `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN` omher inherited,"
+    " and `GH_DEBUG`, `DEBUG`, `GH_PAGER` and `PAGER`, out of its environment,",
+    "When gh's list shows an account changed (made active or not, failing, gone), what was read as it is dropped.",
+    "only a chosen account on the repository's host, github.com, is offered or used for \"이 저장소\", which the shell"
+    " checks again; a \"나\" row's drawer is read as that row's account on that account's own host.",
+    "omher never runs `gh auth switch`; only gh's own sign-in of rule 18, which the person runs and answers, makes the"
+    " account it signs in gh's active one, as gh always does.",
+    "omher never comments, closes, assigns, labels, merges or edits anything on GitHub, GitLab or Linear.",
+    "The \"나\" scope adds only these gh argv: `auth status --json hosts` (of each account only its host, login, active,"
+    " state and scopes are read; never `--show-token`),",
+    "`api graphql -f query=<one fixed query>`, whose text is a constant in the shell (`STATUS_QUERY`:",
+    "it makes at most 27 search requests a minute per account, under GitHub's 30 (a search of more than 100 rows counts"
+    " one per 100 it asks for), and a rate-limit answer shows \"try again soon\", not a failure.",
+    "and for \"나\" only an account id, a section word (`review`, `authored`, `assigned`, `mentions`) and a page number;",
+    "Settings › Accounts also has a GitHub section: the GitHub accounts the person's `gh` is signed in to,",
+    "\"Add\" keeps an account in omher's own setting (`omher.tasks` on this computer: its host, login and a colour,"
+    " nothing else), \"Remove\" takes it out of omher's list only, and omher never writes gh's config, its keyring or"
+    " its active account.",
     "A token-like string (also one broken over lines) inside an item's own text (title, label, description, comment,"
     " check name) or a CLI's error"
     " line is shown as `••••`, in the list, the drawer, the error line and the text \"Start in thread\" sends, by omher's"
@@ -220,7 +279,12 @@ RULES = (
     " has `linear` in it and"
     " whether it is turned on, so a server is Linear by its name alone; it never sends, logs, stores or displays any"
     " other value of the file,",
-    "Besides the TERMINALS agents and the GitHub and GitLab CLIs' read-only lists of rule 33,",
+    "Besides the TERMINALS agents, the status line command a TERMINALS Claude Code runs through omher's relay (rule 17),"
+    " the GitHub and GitLab CLIs' read-only lists of rule 33 and gh's own sign-in of rule 18 (in a panel tab, below),",
+    "A panel tab runs one other program: gh's own sign-in (`gh auth login`, or `gh auth login --hostname <host>`) when"
+    " the person asks for another GitHub account in Settings › Accounts (rule 18);",
+    "the page sends only that host, checked as a lowercase DNS name, and a size (`gh_login_start`), the program is the"
+    " `gh` found on this computer, it starts in the home folder, omher types nothing into it,",
     "This is the one exception to rules 5 and 10: the request is `gh`'s own, under its own login; omher passes no token,"
     " reads none and changes nothing on GitHub.",
     "An answer is kept 5 minutes, a call is stopped after 3 seconds,",
@@ -301,7 +365,26 @@ RULES = (
     "When the app starts, the page asks the shell once for this computer's name (`host_name`, read from the system, no"
     " program run), which it uses only to accept OSC 7 folders from this computer in any terminal (below); it is not"
     " kept or sent anywhere.",
-    "a new Claude Code terminal gets `--session-id <id>`, a random UUID omher makes and keeps with the session,",
+    "a new Claude Code terminal gets `--session-id <id>`, a random UUID omher makes and keeps with the session once its"
+    " CLI started,",
+    "Restart on a TERMINALS Claude Code or Codex session that has ended and has its conversation id continues it the"
+    " same way.",
+    "A Claude Code conversation with no file that nobody used (no key was pressed in it and it has no title of its own;"
+    " Claude Code writes the file on the first message) is not continued: its terminal starts again with `--session-id`"
+    " and the same id, and when Claude Code refuses that id as one it already has (`Session ID <id> is already in use`),"
+    " the terminal continues it with `--resume` instead, once.",
+    "A used Claude Code conversation with no file (deleted) and a Codex conversation with no rollout are not started: the"
+    " row ends as below. When the look cannot tell (a folder it cannot read, an account whose folder is gone), the"
+    " conversation is continued.",
+    "A CLI started with the conversation id its row kept that prints its refusal of that id (Claude Code's `No"
+    " conversation found with session ID: <id>`, Codex's `No saved session found with ID <id>`) and ends with an error,"
+    " that ends with an error before the person pressed a key or pasted in its output, or that ends cleanly before such"
+    " a key and either before it set up its screen (the alternate screen, bracketed paste, focus reports or Kitty"
+    " keyboard flags turned on, or 2 KB of output) or within 1.8 seconds of being started (a fallback for a refusal"
+    " omher does not know), or that cannot start, could not continue it: its row keeps its agent and that id and shows it ended or failed instead of going on as the login shell, and an ended"
+    " one also offers Start a new conversation, which forgets the id and starts the agent as a new terminal does.",
+    "A continued CLI that ends any other way, one that waited for input (a login) and was left later included, goes on"
+    " as the login shell without its id, as a new one does.",
     "The page sends only the id; the shell (`sessions::terminal_args`) checks it is a UUID, gives `--session-id` to"
     " Claude Code only, never sends both, and refuses every other agent or shape.",
     "omher also listens for three escapes a shell or CLI sends by itself, and puts no hook, script or variable into the"
@@ -315,6 +398,8 @@ RULES = (
     " omher sends no keys of its own and reads nothing new from the program.",
     "On macOS, Cmd with any key is the app's (Copy, Paste and the rest of the menu) and is never sent to the program,"
     " with the Kitty keyboard protocol on or off, except the line-edit keys below.",
+    "On macOS, Option with a key that types a plain ASCII sign on the person's layout (@ [ ] { } | \\ ~ on a European"
+    " layout) types that sign, with Option as Meta on or off.",
     "A TERMINALS row dragged onto another row of its folder moves there; that order is kept with the rows in"
     " `omher.resume` and starts nothing.",
     "the desktop app writes it, only under omher's own folder, to `~/.omher/term-history/<key>.txt`,",
@@ -583,9 +668,10 @@ class TheOneInstaller(unittest.TestCase):
         # `hermes auth add <id> --type api-key` (rule 23); dsh_chat.rs runs a DSH chat's message through DeepSeek
         # Harness's headless profile (rule 11); folder_open.rs opens the person's own system terminal in a session's
         # folder with no command (rule 30); peers.rs starts the person's own `ssh` with a fixed argv (rule 31); tasks.rs
-        # runs the person's own `gh` / `glab` with a fixed read-only argv (rule 33).
+        # runs the person's own `gh` / `glab` with a fixed read-only argv (rule 33); claude_usage.rs is the status line
+        # relay, which runs the person's own Claude Code status line command as Claude Code would (rule 17).
         # Terminal sessions start theirs through the PTY's `spawn_command`, not `Command::new`.
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1, "tasks.rs": 1})
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "claude_usage.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1, "tasks.rs": 1})
 
     def test_the_install_command_takes_nothing_from_the_page(self) -> None:
         lib = (SHELL_SRC / "lib.rs").read_text(encoding="utf-8")
@@ -1256,6 +1342,32 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         self.assertNotIn("keyring", lib + src)
         self.assertNotIn("cpa_send", lib)
 
+    def test_every_rust_spawn_site_takes_the_host_environment(self) -> None:
+        # inside a Linux AppImage AppRun's library and Python paths would break a host program: every file that starts
+        # one with `Command::new` also applies `crate::appimage::host_env` (appimage.rs), the status line relay included
+        for path in sorted((ROOT / "apps" / "omher" / "src-tauri" / "src").glob("*.rs")):
+            text = path.read_text(encoding="utf-8")
+            prod = text[: text.index("#[cfg(test)]")] if "#[cfg(test)]" in text else text
+            if "Command::new(" in prod:
+                self.assertIn("crate::appimage::host_env", prod, path.name)
+        relay = (ROOT / "apps" / "omher" / "src-tauri" / "src" / "claude_usage.rs").read_text(encoding="utf-8")
+        run_user = relay.split("pub fn run_user", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("crate::appimage::host_env(&mut cmd);", run_user)
+
+    def test_the_relay_is_added_only_for_claude_on_macos_and_linux_outside_an_appimage(self) -> None:
+        # rule 11 / 17: start_agent asks claude_usage for the relay's argument with this host; it adds nothing for any
+        # other agent, without the person's own status line, on Windows or inside an AppImage (the Rust tests pin each case)
+        src = ROOT / "apps" / "omher" / "src-tauri" / "src"
+        sessions = (src / "sessions.rs").read_text(encoding="utf-8")
+        start = sessions.split("pub fn start_agent", 1)[1].split("\n    }\n", 1)[0]
+        self.assertEqual(start.count("crate::claude_usage::terminal_args(agent_id, cwd, account_env, &crate::claude_usage::RelayHost::current())"), 1)
+        relay = (src / "claude_usage.rs").read_text(encoding="utf-8")
+        args = relay.split("pub fn terminal_args", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('if agent_id != "claude" || !host.enabled() {', args)
+        # only for a person with a status line of their own (rule 17): none means no --settings at all
+        self.assertIn("let Some(user) = user_status_line(Some(cwd), &config_dir(home, account_env, host.claude_config.as_deref())) else {", args)
+        self.assertIn("!self.windows && !self.appimage", relay)
+
     def test_rust_spawns_only_in_bridge_and_accounts(self) -> None:
         spawns = {}
         for path in sorted((ROOT / "apps" / "omher" / "src-tauri" / "src").glob("*.rs")):
@@ -1268,8 +1380,9 @@ class AccountsNeverCarryAToken(unittest.TestCase):
         # agent_chat.rs starts an allow-listed agent in its structured mode (rule 11); hermes_auth.rs opens the
         # system terminal for `hermes auth add` (rule 23); dsh_chat.rs runs DeepSeek Harness's headless profile (rule 11);
         # folder_open.rs opens the system terminal in a session's folder with no command (rule 30); peers.rs starts the
-        # person's own `ssh` with a fixed argv (rule 31); tasks.rs runs `gh` / `glab` read-only (rule 33).
-        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1, "tasks.rs": 1})
+        # person's own `ssh` with a fixed argv (rule 31); tasks.rs runs `gh` / `glab` read-only (rule 33);
+        # claude_usage.rs runs the person's own Claude Code status line command through the relay (rule 17).
+        self.assertEqual(spawns, {"accounts.rs": 2, "agent_chat.rs": 1, "bridge.rs": 1, "claude_usage.rs": 1, "dsh_chat.rs": 1, "folder_open.rs": 1, "hermes_auth.rs": 1, "peers.rs": 1, "setup.rs": 1, "tasks.rs": 1})
 
 
 
@@ -1644,12 +1757,13 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         """`Command::new` only in bridge.rs (Hermes' Python), setup.rs (the one fixed installer,
         rule 12), once in agent_chat.rs (the chat spawner), in accounts.rs (rule 18's fixed status /
         sign-in argv), in hermes_auth.rs (rule 23's terminal), in folder_open.rs (rule 30's terminal in a session's
-        folder), in peers.rs (rule 31's `ssh`) and in tasks.rs (rule 33's read-only `gh` / `glab`); `spawn_command` only
+        folder), in peers.rs (rule 31's `ssh`), in tasks.rs (rule 33's read-only `gh` / `glab`) and in claude_usage.rs
+        (rule 17's status line relay running the person's own status line command); `spawn_command` only
         in sessions.rs."""
         for path in sorted(SHELL.glob("*.rs")):
             text = path.read_text(encoding="utf-8")
             prod = text.split("#[cfg(test)]", 1)[0]
-            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs", "peers.rs", "tasks.rs"):
+            if path.name not in ("bridge.rs", "setup.rs", "agent_chat.rs", "dsh_chat.rs", "accounts.rs", "hermes_auth.rs", "folder_open.rs", "peers.rs", "tasks.rs", "claude_usage.rs"):
                 self.assertNotIn("Command::new", prod, path.name)
             if path.name != "sessions.rs":
                 self.assertNotIn("spawn_command", text, path.name)
@@ -2229,7 +2343,7 @@ class PastConversationsAreOnlyRead(unittest.TestCase):
         for banned in ("auth.json", ".credentials", "credentials.json", "config.toml", "settings.json", ".claude.json", "oauth", "token"):
             self.assertNotIn(banned, code.lower(), banned)
         # only these names under the CLI's home
-        self.assertEqual(sorted(set(re.findall(r'\.join\("([a-z_.]+)"\)', code))), ["projects", "session_index.jsonl", "sessions"])
+        self.assertEqual(sorted(set(re.findall(r'\.join\("([a-z_.]+)"\)', code))), ["archived_sessions", "projects", "session_index.jsonl", "sessions"])
 
     def test_links_and_paths_outside_the_home_are_refused_and_reads_are_bounded(self) -> None:
         inside = self.past.split("pub fn inside(", 1)[1].split("\n}\n", 1)[0]
@@ -2250,11 +2364,29 @@ class PastConversationsAreOnlyRead(unittest.TestCase):
             body = self.past.split(fn, 1)[1].split("\n}\n", 1)[0]
             self.assertIn("if !is_uuid(id) {", body, fn)
         text = _flat(DOC.read_text(encoding="utf-8"))
-        self.assertIn("It refuses a symlink anywhere under those folders and any file that is not inside that home once its links are resolved", text)
+        self.assertIn("It refuses a symlink anywhere under those folders (except `conversation_state` below, which only stats names and"
+                      " follows links as the CLI does) and any file that is not inside that home once its links are resolved", text)
         self.assertIn("never opens a credential, token or config file of either CLI", text)
+
+    def test_a_conversation_is_looked_for_by_name_only_before_a_terminal_continues_it(self) -> None:
+        text = _flat(DOC.read_text(encoding="utf-8"))
+        self.assertIn(
+            "Before a TERMINALS Claude Code or Codex session continues its own conversation (rule 11), the shell looks for"
+            " that conversation's file by name only (`conversation_state`): `<claude config>/projects/*/<uuid>.jsonl`, or a"
+            " rollout named `rollout-*-<uuid>.jsonl` under `<codex home>/sessions` or `<codex home>/archived_sessions`,"
+            " following links as the CLI does and opening no file, in the home of the account that session runs with. The"
+            " page sends only the agent, the id (a UUID) and the account, and the answer is only `exists`, `absent` or"
+            " `unknown` (an account whose folder is gone, or a folder it cannot read).",
+            text,
+        )
+        look = self.past.split("pub fn conversation_state(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("if !is_uuid(id) {", look)
+        for banned in ("File::open", "read_to_string", "fs::read(", "last_part", "head("):
+            self.assertNotIn(banned, look, banned)
 
     def test_the_commands_take_only_an_agent_folders_and_an_id(self) -> None:
         for cmd, params in (("past_chats_list", "agent: String, cwds: Vec<String>"), ("past_chat_messages", "agent: String, id: String, cwd: String"),
+                            ("conversation_state", "agent: String, id: String, account: Option<String>"),
                             ("codex_conversation", "shell: State<'_, Shell>, id: u32"),
                             ("session_reveal", "cwd: String"), ("session_open_terminal", "cwd: String"),
                             ("asks_badge", "window: tauri::WebviewWindow, count: u32")):
@@ -2379,6 +2511,19 @@ class SshPeersOnlyOverTheOwnSsh(unittest.TestCase):
         self.assertIn('mkdir -p "$d"', script)
         self.assertIn('mv -f "$t" "$f"', script)
         self.assertIn("--exit-on-stdin-eof", script)
+
+    def test_a_windows_peer_reads_its_launchers_per_bin_as_the_local_bridge(self) -> None:
+        # rule 31: on a Windows peer the interpreter comes from `hermes.exe`'s shebang or `hermes.cmd`'s first command
+        # word, the agent's bin before the user bin and each bin's `.exe` before its `.cmd`, as bridge.rs reads them
+        discover = self.peers.split("pub const DISCOVER_PYTHON: &str = ", 1)[1].split('"#;', 1)[0]
+        windows = discover.split("\nelse\n", 1)[1].split('  x="Scripts/python.exe"', 1)[0]
+        self.assertIn('for b in "$h/hermes-agent/.hermes/bin" "$h/bin"; do', windows)
+        self.assertLess(windows.index('l="$b/hermes.exe"'), windows.index('l="$b/hermes.cmd"'))
+        self.assertEqual(re.findall(r"^  for (\w+) in ", windows, re.M), ["b"])  # one loop over bins, not one per launcher kind
+        self.assertIn('bins.iter().flat_map(|bin| ["hermes.exe", "hermes.cmd"]', (SHELL / "bridge.rs").read_text(encoding="utf-8"))
+        rule = self.doc.split("\n31. ", 1)[1].split("\n32. ", 1)[0]
+        self.assertIn("`hermes.cmd` shim", rule)
+        self.assertIn("each bin's `.exe` before its `.cmd`", rule)
 
     def test_only_connect_writes_the_peer_list(self) -> None:
         self.assertEqual(self.peers.count("write_peers(&self.home"), 2)  # add (Connect) and remove (Remove)
@@ -2505,11 +2650,14 @@ class TasksReadOnly(unittest.TestCase):
 
     def test_the_page_sends_only_words_and_numbers(self) -> None:
         for cmd, want in (("tasks_status", "source: String, fresh: Option<bool>"),
-                          ("tasks_list", "source: String, repo: String, kind: String, filter: String, page: u32"),
-                          ("tasks_view", "source: String, repo: String, kind: String, number: u64"),
-                          ("tasks_remote", "cwd: String")):
+                          ("tasks_list", "source: String, repo: String, kind: String, filter: String, page: u32, account: Option<String>,"),
+                          ("tasks_view", "source: String, repo: String, kind: String, number: u64, account: Option<String>,"),
+                          ("tasks_remote", "cwd: String"),
+                          ("gh_accounts", "fresh: Option<bool>"),
+                          ("tasks_me", "account: String, section: String, page: u32, fresh: Option<bool>"),
+                          ("gh_login_start", "host: Option<String>, cols: u16, rows: u16,")):
             sig = self.lib[self.lib.index(f"async fn {cmd}("):]
-            sig = sig[: sig.index(") ->")]
+            sig = _flat(sig[: sig.index(") ->")])
             self.assertIn(want, sig, cmd)
             self.assertNotRegex(sig, r"\b(argv|args|program|command|token)\b", cmd)
         # the repository is checked before any argv is built
@@ -2570,7 +2718,123 @@ class TasksReadOnly(unittest.TestCase):
         self.assertEqual(re.findall(r'(threadReq|bridge\.request)\("([a-z.]+)"', start), [("threadReq", "thread.create")])
         self.assertIn("await actions.threadSend(bot, row.thread, text);", start)
         host = (UI_SRC / "tasks" / "host.ts").read_text(encoding="utf-8")
-        self.assertEqual(sorted(set(re.findall(r'invoke<[^>]+>\("([a-z_]+)"', host))), ["tasks_list", "tasks_remote", "tasks_status", "tasks_view"])
+        self.assertEqual(sorted(set(re.findall(r'invoke<[^>]+>\("([a-z_]+)"', host))), ["gh_accounts", "tasks_list", "tasks_me", "tasks_remote", "tasks_status", "tasks_view"])
+
+
+class GithubMeReadOnly(unittest.TestCase):
+    """Rules 18 and 33: Tasks › 나 and Settings › Accounts › GitHub run only fixed gh reads through tasks.rs's one
+    runner; a non-active account's token goes only into that one call's environment; gh's active account never
+    changes."""
+
+    def setUp(self) -> None:
+        text = (SHELL / "gh_me.rs").read_text(encoding="utf-8")
+        self.prod = text.split("#[cfg(test)]\nmod tests", 1)[0]
+        self.code = "\n".join(l for l in self.prod.splitlines() if not l.lstrip().startswith("//"))
+        self.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+
+    def test_no_spawn_of_its_own_and_only_fixed_reads(self) -> None:
+        for bad in ("Command::new", "spawn(", "/bin/sh", '"-c"', "std::fs::", "File::", "OpenOptions"):
+            self.assertNotIn(bad, self.code, bad)
+        # every call goes through tasks.rs's runner (no shell, nothing on stdin, 20 s)
+        # one runner call (Me::run, every child without SCRUB) for three uses: `auth status --json hosts`, `auth token`
+        # (read_token) and every other argv (call)
+        self.assertEqual(self.code.count("run_full("), 1)
+        self.assertIn("run_full(exe, argv, true, &inherited, env, &SCRUB)", self.code)
+        self.assertEqual(self.code.count("self.run(&exe") + self.code.count("self.run(exe"), 3)
+        self.assertNotIn("run_env(", self.code)
+        # the argv words: reads only, never a sign-out, a switch, a write verb or the token flag
+        for bad in ("switch", "logout", "--show-token", "create", "edit", "comment", "merge", "close", "-X", "--method", "--input"):
+            self.assertNotIn(f'"{bad}"', self.code, bad)
+        self.assertNotIn("mutation", self.code)
+        for want in ("--review-requested=@me", "--author=@me", "--assignee=@me", "--mentions=@me", "--include-prs", "--state=open", "graphql", "hosts"):
+            self.assertIn(f'"{want}"', self.code, want)
+        self.assertIn('pub const STATUS_QUERY: &str = "query { viewer {', self.prod)
+        self.assertIn('vec!["api".into(), "graphql".into(), "-f".into(), format!("query={STATUS_QUERY}")]', self.prod)
+        self.assertIn('vec!["auth".into(), "status".into(), "--json".into(), "hosts".into()]', self.prod)
+        self.assertIn("const SEARCHES_PER_MINUTE: usize = 27;", self.prod)
+
+    def test_auth_status_reads_five_fields(self) -> None:
+        row = self.prod.split("struct StatusRow {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(re.findall(r"^\s+(\w+): ", row, re.M), ["host", "login", "active", "state", "scopes"])
+        self.assertNotIn("token", row)
+
+    def test_the_token_goes_only_into_one_calls_environment(self) -> None:
+        # read fresh for each call, wiped on drop, never cached, logged or put in an error
+        read = self.prod.split("fn read_token(", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("let out = Zeroizing::new(ran.out);", read)
+        self.assertIn("Ok(Zeroizing::new(t.to_string()))", read)
+        self.assertNotIn("format!", read.split("let t = out.trim();", 1)[1])
+        call = self.prod.split("    fn call(&self", 1)[1].split("\n    }\n", 1)[0]
+        # every call is pinned to the account named, active or not
+        self.assertIn("let token = self.read_token(&exe, a)?;", call)
+        self.assertNotIn("a.active", call)
+        self.assertIn("let env = account_env(&a.host, token.as_str());", call)
+        self.assertIn("let ran = self.run(&exe, &argv, &env);", call)
+        self.assertIn("let ran = self.run(exe, &argv, &[])", read)
+        detect = self.prod.split("    fn detect(&self", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("let ran = self.run(&exe, &status_argv(), &[]).ok()?;", detect)
+        self.assertIn("dedupe(parse_auth_status(&out).ok()?)", detect)
+        self.assertIn("self.forget(&changed);", detect)
+        self.assertIn('pub const SCRUB: [&str; 8] = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_DEBUG", "DEBUG", "GH_PAGER", "PAGER"];', self.prod)
+        self.assertEqual(self.code.count("&SCRUB)"), 1)
+        self.assertLess(call.index("drop(token);"), call.index("self.keep("))
+        self.assertIn("self.keep(key, ran.out.clone());", call)
+        env = self.prod.split("pub fn account_env<", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('vec![("GH_HOST", host), (token_var(host), token)]', env)
+        for bad in ("println!", "eprintln!", "dbg!", "log::", "tracing::"):
+            self.assertNotIn(bad, self.code, bad)
+        # every account must be the status query's viewer
+        run_as = self.prod.split("pub fn run_as(", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("let who = viewer_login(&self.call(&a, graphql_argv(), false)?);", run_as)
+        self.assertNotIn("a.active", run_as)
+        # the rate limiter counts one request per 100 rows a search asks for
+        self.assertIn("!self.search_slot(&a.id(), search_cost(&argv))", call)
+        self.assertIn("limit.max(1).div_ceil(100)", self.prod)
+        # tasks.rs's runner adds the env to that one child only
+        tasks = (SHELL / "tasks.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
+        self.assertIn("run_full(exe, argv, keep, &[], env, unset)", tasks.split("pub fn run_env(", 1)[1].split("\n}\n", 1)[0])
+        runner = tasks.split("pub(crate) fn run_full(", 1)[1].split("\n}\n", 1)[0]
+        # what omher inherited (a test's injected stand-in first), then the scrub, then the call's own variables
+        self.assertIn("for (k, v) in inherited {\n        cmd.env(k, v);\n    }\n    for k in unset {\n        cmd.env_remove(k);\n    }\n    for (k, v) in env {\n        cmd.env(k, v);\n    }", runner)
+
+    def test_the_page_never_gets_a_token(self) -> None:
+        # what the page gets: accounts (host, login, active, state, scopes), items and errors; none has a token field
+        for shape, fields in (("pub struct GhAccount {", ["host", "login", "active", "state", "scopes"]), ("pub struct MeError {", ["kind", "line"]),
+                              ("pub struct MePage {", ["items", "more"])):
+            body = self.prod.split(shape, 1)[1].split("\n}\n", 1)[0]
+            self.assertEqual(re.findall(r"pub (\w+): ", body), fields, shape)
+        item = self.prod.split("pub struct MeItem {", 1)[1].split("\n}\n", 1)[0]
+        self.assertFalse([f for f in re.findall(r"pub (\w+): ", item) if "token" in f])
+        # omher's own setting keeps a chosen account's host, login and colour only
+        types = (UI_SRC / "tasks" / "types.ts").read_text(encoding="utf-8")
+        chosen = types.split("export interface ChosenAccount {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(re.findall(r"^\s+(\w+): ", chosen, re.M), ["host", "login", "color"])
+        state = (UI_SRC / "tasks" / "state.ts").read_text(encoding="utf-8")
+        self.assertIn("s.accounts.push({ host: a.host, login: a.login, color:", state)
+        self.assertIn("set({ accounts: [...state.accounts, { host: a.host, login: a.login, color }] });", state)
+
+    def test_the_sign_in_tab_runs_only_gh_auth_login(self) -> None:
+        login = self.prod.split("pub fn login_argv(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('let mut a = vec!["auth".to_string(), "login".to_string()];', login)
+        self.assertIn("if !host_ok(h) {", login)
+        sessions = (SHELL / "sessions.rs").read_text(encoding="utf-8")
+        start = sessions.split("pub fn start_gh_login<", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("self.spawn_cmd(gh_login_command(gh, args, home), home, &[], cols, rows, sink)", start)
+        built = sessions.split("pub fn gh_login_command(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("scrub_gh_env(&mut cmd);", built)
+        scrub = sessions.split("pub fn scrub_gh_env(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("for k in crate::gh_me::SCRUB {\n        cmd.env_remove(k);\n    }", scrub)
+        # "이 저장소" lists only as a github.com account; a "나" row's drawer reads on its own account's host
+        self.assertIn("Some(acc) => m.repo_list(&t, kind, &repo, filter, page, &acc),", self.lib.split("async fn tasks_list(", 1)[1].split("\n}\n", 1)[0])
+        view = self.lib.split("async fn tasks_view(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("Some(acc) => m.view(&t, kind, &repo, number, &acc),", view)
+        self.assertNotIn("repo_account_ok", view)
+        repo_list = self.prod.split("pub fn repo_list(", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("repo_account_ok(id)?;", repo_list)
+        self.assertNotIn("repo_account_ok", self.prod.split("    pub fn view(", 1)[1].split("\n    }\n", 1)[0])
+        cmd = self.lib.split("async fn gh_login_start(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("let args = gh_me::login_argv(host.as_deref())?;", cmd)
+        self.assertIn('let gh = tasks::find("gh").ok_or("gh is not installed")?;', cmd)
 
 
 class TerminalLinksAndBotRequests(unittest.TestCase):
