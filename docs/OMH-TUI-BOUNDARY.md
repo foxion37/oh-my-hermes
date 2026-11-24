@@ -287,6 +287,42 @@ child, act on that agent, and only on the person's keypress: `x` interrupts it
 (`subagent.steer`) with text the person then types and sends; the TUI never
 interrupts, steers or answers for a subagent on its own.
 
+Enter on an agent (the list, a click on its row, a tree node's child) shows
+that subagent's session on the main screen, as Claude Code shows a
+teammate's, and only on the person's key. What it reads depends on the
+gateway: on Hermes' stdio entry, `session.resume` of the child's session with
+`lazy: true`, which answers its history and an agent-less watch session whose
+mirrored `message.*` and `tool.*` events the view draws; on the shared gateway,
+`session.transcript` with the parent session and the `subagent_id`, read
+forward from its cursor. Those reads are the only calls the view makes without
+a key: one read at a time per view, fenced so only the latest read's answer,
+asked from the cursor the view still holds, applies (the cursor only moves
+forward, and a child that ended is never marked running again); at most one a
+second while the child runs and the view is open; a completion schedules the
+next read on that same pace; a read unanswered for 10 s is forgotten before
+the next goes. Once the child ended (or when a finished child is opened) its
+pages are read one after another until a page with no rows, the host's
+caught-up mark (its wire `rows` empty, from a read sent after the end was
+seen), at most 50 reads after it ends, each read sent counting whether
+answered, refused or unanswered; then the view says in one dim line that the
+rest could not be read. A plain resume of a child is never sent (on
+the shared gateway it would mount the child and move the attach adapter's
+current session). Each open is one intent: only the latest open's answer
+shows a view, and `main`, Esc, a switch, `/new` or a restart cancels one still
+out. What it sends, only when the person presses Enter in the view:
+`subagent.steer` on the parent session while the child runs; after it ended,
+`prompt.submit` on the watch session (stdio only; the shared gateway cannot
+continue a child, and the view says so and sends nothing); and during that
+continued turn, `session.steer` on the watch session. An approval's deny
+interrupts the session that asked (`session.interrupt` on the watch session
+for a continued child, main's turn for main), and what the person tells
+Hermes instead goes to that session too (`session.redirect` on the watch
+session while the continued turn runs, else `prompt.submit` there). Leaving the view (Esc, `main`, a
+session switch, `/new`, a restart) sends `session.close` for the watch
+session, never one a view on screen still owns. A refused read falls back on
+the agent's log above. Main's transcript keeps folding every main event while
+a subagent is on screen, held to the transcript's block cap.
+
 The waiting row above the composer between turns (`src/tui/wait_kinds.py`)
 names what the session waits on from what the TUI already holds, read-only:
 the words of a background process's command as Hermes' `processes.json`
@@ -352,7 +388,13 @@ process's SQLite locks on it. It probes the pid a gateway record names with
 signal 0 and reads that process's start time and state (`/proc` on Linux,
 `sysctl(KERN_PROC_PID)` on macOS) and, for a running gateway, its resident
 memory (`/proc/<pid>/statm`, or `proc_pidinfo`, which answers only for this
-user's processes); it sends no other signal, and nothing to the gateway. It reads on one thread for the session, never on the render path,
+user's processes); it sends no other signal, and nothing to the gateway. For
+each bot's messaging platforms it also reads, through `omh doctor`'s own
+gateway health reader (`maintenance.gateway_health.bot_platforms`), the tail
+of the root's and each profile's `logs/gateway.log` (at most 1 MiB, with the
+rotated `gateway.log.1` before it when the log is shorter), keeping only each
+platform's classified state, Hermes' bounded and cleaned reason and the fix,
+never a log line. It reads on one thread for the session, never on the render path,
 and reads nothing while the board is closed.
 
 ## The reasoning before a silent question
@@ -385,7 +427,16 @@ and `O_NONBLOCK`), keeps its bytes in memory and nowhere else, and has
 Hermes let go of it (`image.detach`). A prompt that goes with the image
 stages those bytes again through Hermes' `image.attach_bytes`, the call
 Hermes' own remote clients use, and nothing else is staged until Hermes has
-taken them. Proofreading's dictionary, `<omh_home>/proofread/dictionary.txt`
+taken them. When Hermes finds no image for a Ctrl+V, the TUI pastes the
+clipboard's text into the composer instead, as a terminal that pastes on
+Ctrl+V itself would have (`src/tui/clipboard.py`): only with no SSH variable
+set (inside tmux, also only when its last client did not attach over SSH),
+through the Win32 clipboard API on Windows, one fixed `pbpaste` on a Mac, or
+on Linux `wl-paste`, `xclip` or `xsel`, each with a one-second timeout (the
+first that runs past it ends the search), never reading more than 4 MiB and
+a byte of it; text past 4 MiB counts as none. The text goes nowhere but the
+composer: a prompt the person sent before Hermes answered goes as they typed
+it, and the text waits in the composer with a notice. Proofreading's dictionary, `<omh_home>/proofread/dictionary.txt`
 (mode 0600, at most 64 KiB) and its `.dictionary.txt.lock` sidecar, is written
 only by an explicit Add or Remove ([Proofreading](#proofreading)). The explicit `/omh-model` save also edits the person's existing
 `routing/identities.json` under the active OMH home: only the chosen identities'
@@ -442,6 +493,23 @@ pinned to its literal tuple. That blocks the realistic drift of a later edit
 calling another Hermes, network or subprocess helper; it is not a sandbox, and
 does not catch an allowed Hermes function called with other arguments, or check
 where the grant's url points.
+
+## Turn progress and the bell
+
+The TUI tells its terminal the state its title shows as OSC 9;4 progress:
+working (`ESC ] 9 ; 4 ; 3 ST`, indeterminate) as the state turns `running`, and
+done (`ESC ] 9 ; 4 ; 0 ST`) as it leaves it for `idle` or `waiting on you`, each
+time that state changes and never per frame, and done on the way out (and at a
+Ctrl+Z suspend) if working was the last word. It writes it only where the
+terminal reads it as progress: `TERM_PROGRAM` `omher`, `WezTerm`, `ghostty` or
+`iTerm.app`, Windows Terminal (`WT_SESSION` set) or ConEmu (`ConEmuPID` set);
+any other terminal might print it, so it gets none. It is state, not a ring:
+`OMH_TUI_BELL=0` leaves it on. A turn of 10 s or more ends with the terminal's
+attention signal (the bell, or OSC 9 / 777 where the terminal shows that as a
+notification), except inside omher (`TERM_PROGRAM=omher`). There the done is
+the signal and omher marks the session as news itself, because a bell is not
+a warning (the owner's decision of 2026-11-23). A question or an approval rings
+the bell on every terminal, omher included, unless `OMH_TUI_BELL=0`.
 
 ## herdr
 

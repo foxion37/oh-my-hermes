@@ -1016,7 +1016,26 @@ def count_metrics() -> tuple[CountMetric, ...]:
             # check of the current directory or branch stay off a graph and off live information (+13).
             # skill-eval: a chess, tennis, job-interview and Korean sales skill stay off the host-fit check (+4).
             # Its review round: a person's skill at using Codex stays off it too (+1).
-            expected=1545,
+            # PR watch: a PR queue, a video (English and Korean), a how-to question, a CI concept question and a
+            # watch-out warning stay off github-event-ops (+6).
+            # Its verification round: a PR metric, a deploy watched before a PR is opened, and a staging deploy
+            # watched beside a merged PR stay off it (+3).
+            # Its final round: a PR merge rate until a sprint ends, a weekly merge count, and review speed until a
+            # sprint ends are measures, not waits on one PR (+3).
+            # Its hold round: four declined watches (three English, one Korean) and CI on main stay off it (+5).
+            # Monitor recipes: an inbox summary, a Gmail tidy-up, today's calendar, a Sentry root cause, Obsidian
+            # plugins, a one-time reminder, email as the delivery target, a video, a linear regression and adding a
+            # meeting stay off automation-blueprint (+10).
+            # Its review round: twelve time questions, outages, APIs, `in linear`/`on linear`, 이전에 and a plugin
+            # update stay off it (+12).
+            # Cross-platform workflows: an email reply (English and Korean), a calendar question (English and
+            # Korean), a reminder alert, a Sentry concept question, a bare vault, and a Figma export (English and
+            # Korean) stay off app-work-intake, operating-rhythm, wiki, and frontend (+9).
+            # Its review round: Linear as a common noun, 지라 inside 지라도, a Sentry alert read, a reply about work in
+            # Korean, a secrets vault, a bolt (볼트), and two questions about meeting notes stay off them (+8).
+            # Merged with monitor recipes: 1584 (#3153) + 17 cross-platform cases = 1601, re-derived from the producer.
+            # Its anchor round: viewing a Figma frame in presentation mode is a question, not design to code (+1).
+            expected=1602,
             # The one reviewed test pin. Every other test compares its payload
             # against build_routing_precision_demo() rather than a literal.
             sites=("tests/test_routing_precision.py",),
@@ -1632,7 +1651,29 @@ def count_metrics() -> tuple[CountMetric, ...]:
             # skill-health, skill-scout and agent-evaluation (+12).
             # Its review round: an agent skill loading in Codex and SKILL.md compatibility reach it, and a
             # Korean staff assessment keeps deep-interview (+3).
-            expected=1352,
+            # PR watch: five waits on one PR (three English, two Korean) reach github-event-ops, and a PR review
+            # and CI on main keep code-review and verification-gate (+7).
+            # Its verification round: a deploy monitored after a PR merges keeps deploy-and-monitor (+1).
+            # Its final round: five PR waits that name logs, production, a server or a deploy elsewhere still
+            # reach github-event-ops (+5).
+            # Its hold round: a declined review followed by a PR watch, in English and Korean, still reaches it (+2).
+            # Monitor recipes: twelve platform triggers (six English, six Korean) reach automation-blueprint, and an
+            # issue creation in Linear and Jira, a notification how-to, a wait on the bot's own reading and a GitHub
+            # issue opening keep connector-operator and github-issue-intake (+17).
+            # Its review round: an API question, a trigger followed by a write, a Korean check before sending, and
+            # three Korean calendar-alert settings and questions keep connector-operator and gateway-intent-card (+6).
+            # Cross-platform workflows: eleven app items reach app-work-intake (spec to PR, inbox to work, alert to
+            # fix; three Korean), three meeting records reach operating-rhythm and three vault uses reach wiki (one
+            # Korean each), two Figma frames reach frontend, and eight sentences in another lane keep their owner
+            # (+27).
+            # Its review round: four one-action connector sentences, an inbox on a cadence, research collected into a
+            # vault on a cadence, a transcript to translate, and a Sentry SDK crash keep their owners (+8).
+            # Cross-platform, merged with monitor recipes: two trigger sentences that name the work they become (a
+            # Linear issue to a PR, a Korean Notion change to a PR) stay with automation-blueprint (+2).
+            # Merged: 1390 (#3153) + 37 cross-platform cases = 1427, re-derived from the producer.
+            # Its verification round: an existing PR link opened from a Jira ticket keeps connector-operator, and an
+            # urgent Linear issue to PR and a recall said apart from the vault still reach their recipes (+3).
+            expected=1430,
             # The one reviewed test pin. Every other test compares its payload
             # against build_routing_precision_demo() rather than a literal.
             sites=("tests/test_routing_precision.py",),

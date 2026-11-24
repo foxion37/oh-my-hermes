@@ -7,6 +7,10 @@ import { shortTime } from "../app/time";
 import { t, tx, type Key } from "../i18n";
 import { SourceIcon, Spinner } from "../ui";
 import { cadence, isFailure, nextRun, sourceName, statusText } from "./format";
+import { rowMoving } from "./rowMotion";
+import { loadTrees } from "./trees";
+import { HandoverCard, handBots, type HandoverFrom } from "../handover/HandoverCard";
+import { SessionMenu, MENU_W_PX, menuHeight } from "../sessions/SessionsSection";
 import "./panel.css";
 
 export type PanelTab = "details" | "terminal" | "schedule" | "worktrees" | "diff" | "runs";
@@ -182,26 +186,27 @@ type Box = { at: number; x0: number; x1: number; y0: number; y1: number };
 let swept: Box[] = [];
 let sweepEnd = 0;
 
+/** Where the row's free space starts: right of its last tab. */
+function rowEdge(row: HTMLElement): number {
+  const tabs = [...row.querySelectorAll(".pn-tab")].map((t) => t.getBoundingClientRect().right);
+  return tabs.length ? Math.max(...tabs) : row.getBoundingClientRect().left;
+}
 function freeBox(row: HTMLElement): Box | null {
   const b = row.getBoundingClientRect();
-  const tabs = [...row.querySelectorAll(".pn-tab")].map((t) => t.getBoundingClientRect().right);
   const rest = [...row.querySelectorAll("button:not(.pn-tab)")].map((t) => t.getBoundingClientRect().left);
-  const x0 = tabs.length ? Math.max(...tabs) : b.left;
+  const x0 = rowEdge(row);
   // the row's own buttons sit past the window's edge while the panel grows: only what the window shows counts
   const x1 = Math.min(rest.length ? Math.min(...rest) : b.right, window.innerWidth);
   return x1 > x0 ? { at: performance.now(), x0, x1, y0: b.top, y1: b.bottom } : null;
 }
-/** The row moved more than a pixel in the last MOVE_MS, or the slide itself still runs (the window's grid, or the
- *  overlay panel): what is under the pointer is not what the person aimed at. A busy main thread draws the slide's
- *  frames further apart than MOVE_MS, so two samples alone can miss a row that is still moving. */
-const MOVE_MS = 60;
+/** The slide itself still runs (the window's grid, or the overlay panel). A busy main thread draws the slide's frames
+ *  far apart, so the recorded frames alone can miss a row that is still moving. */
 const sliding = () =>
   [document.querySelector(".window"), document.querySelector(".details")].some((el) => el?.getAnimations().some((a) => a instanceof CSSTransition));
-const moving = (now: number) => {
-  if (sliding()) return true;
-  const last = swept.filter((b) => now - b.at <= MOVE_MS).map((b) => b.x0);
-  return last.length > 1 && Math.max(...last) - Math.min(...last) > 1;
-};
+/** Is what is under the pointer not what the person aimed at: the row slid between the frame they saw and the hit
+ *  test, or had just slid into that frame (rowMotion.ts). A tab that held still from the frame before the press to the
+ *  hit test is the tab's, however much an earlier frame moved it. */
+const moving = (now: number, row: HTMLElement) => rowMoving(swept, now, rowEdge(row), sliding());
 
 function onSweptPress(e: PointerEvent) {
   // the press's own time, not when this handler runs: a busy main thread hands it over late, and the person aimed at
@@ -215,7 +220,10 @@ function onSweptPress(e: PointerEvent) {
   // a control the person actually hit outside the row (the model pill, the places chip) always wins: only the
   // header's bare background (and tabs still moving) can be claimed
   if (onControl(hit)) return;
-  if (row && !moving(now)) return;
+  if (row && !moving(now, row as HTMLElement)) return;
+  // the free space covered the spot in a frame of the aim window, also one drawn after the press and before this
+  // late handler: what the hit test found there slid in, and swallowing its click loses nothing the person aimed at
+  // (a tab that stopped never gets here: moving() above, and the bare header has no click)
   const aimed = (b: Box) => now - b.at <= AIM_MS && e.clientX >= b.x0 && e.clientX <= b.x1 && e.clientY >= b.y0 && e.clientY <= b.y1;
   if (!swept.some(aimed)) return;
   const swallow = (c: MouseEvent) => {
@@ -284,17 +292,6 @@ function useLoad<T>(key: string, load: () => Promise<T>): { data: T | null; erro
 
 const act = () => getStore().actions;
 
-/** One worktree list per bot, shared by the Worktrees and Diff tabs; Refresh (or 10 s) reads it again. */
-const TREES_TTL = 10_000;
-const trees = new Map<string, { at: number; p: Promise<{ worktrees: Worktree[] }> }>();
-function loadTrees(bot: string, fresh = false): Promise<{ worktrees: Worktree[] }> {
-  const hit = trees.get(bot);
-  if (hit && !fresh && Date.now() - hit.at < TREES_TTL) return hit.p;
-  const p = act().panelWorktrees(bot);
-  trees.set(bot, { at: Date.now(), p });
-  p.catch(() => trees.get(bot)?.p === p && trees.delete(bot));
-  return p;
-}
 function Loading({ error, empty }: { error: string | null; empty?: string }) {
   if (error) return <div className="pn-empty bad">{error}</div>;
   if (empty) return <div className="pn-empty">{empty}</div>;
@@ -440,8 +437,15 @@ export function WorktreesTab({ bot, onOpenDiff }: { bot: Bot; onOpenDiff: (path:
     fresh.current = false;
     return loadTrees(bot.name, f);
   });
+  // right-click a row: its menu ("Hand to <bot>"), then the handover card at the same place
+  const [menu, setMenu] = useState<{ x: number; y: number; w: Worktree } | null>(null);
+  const [hand, setHand] = useState<{ at: { x: number; y: number }; from: HandoverFrom } | null>(null);
   if (!data) return <Loading error={error} />;
   const list: Worktree[] = data.worktrees;
+  const handCard = hand && <HandoverCard at={hand.at} from={hand.from} onClose={() => setHand(null)} />;
+  // Hand to <bot> only for a bot of this computer (a bot over SSH lists folders on another computer) and only while a
+  // bot of this computer is online to take it; read, not subscribed, when the row is right-clicked
+  const canHand = () => !bot.host && handBots(getStore().getSnapshot().bots).length > 0;
   return (
     <div className="pn-body" data-testid="panel-worktrees">
       <div className="pn-sec">
@@ -456,7 +460,23 @@ export function WorktreesTab({ bot, onOpenDiff }: { bot: Bot; onOpenDiff: (path:
       </div>
       {list.length === 0 && <div className="pn-empty">{t("pn.noTrees", { bot: bot.display_name })}</div>}
       {list.map((w) => (
-        <button key={w.path} type="button" className="pn-row link" onClick={() => onOpenDiff(w.path)} data-testid="panel-tree" title={w.path}>
+        <button
+          key={w.path}
+          type="button"
+          className="pn-row link"
+          onClick={() => onOpenDiff(w.path)}
+          onContextMenu={(e) => {
+            if (!canHand()) return;
+            e.preventDefault();
+            // the ContextMenu key or Shift+F10 reports no pointer (0, 0): the menu opens under the row instead
+            const r = e.currentTarget.getBoundingClientRect();
+            const px = e.clientX || e.clientY ? e.clientX : r.left + 12;
+            const py = e.clientX || e.clientY ? e.clientY : r.bottom;
+            setMenu({ x: Math.max(6, Math.min(px, window.innerWidth - MENU_W_PX - 6)), y: Math.max(6, Math.min(py, window.innerHeight - menuHeight(1) - 6)), w });
+          }}
+          data-testid="panel-tree"
+          title={w.path}
+        >
           <b className="mono">{w.branch || (w.head ? t("pn.detachedAt", { sha: w.head.slice(0, 7) }) : t("pn.detached"))}</b>
           <span className="pn-r">{shortTime(w.last)}</span>
           <span className="pn-s">
@@ -467,6 +487,16 @@ export function WorktreesTab({ bot, onOpenDiff }: { bot: Bot; onOpenDiff: (path:
           </span>
         </button>
       ))}
+      {menu && (
+        <SessionMenu
+          at={menu}
+          name={menu.w.branch || leaf(menu.w.path)}
+          actions={["hand"]}
+          onPick={() => setHand({ at: { x: menu.x, y: menu.y }, from: { kind: "worktree", bot: bot.name, worktree: menu.w } })}
+          onDismiss={() => setMenu(null)}
+        />
+      )}
+      {handCard}
     </div>
   );
 }

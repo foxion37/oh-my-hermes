@@ -796,25 +796,51 @@ wake pipe on real Windows pipes.
   is open, so nothing on the screen moves; the list scrolls when there are
   more agents than rows; and
   the info line says its keys (`↑↓ select
-  · ⏎ log · x interrupt · s steer · esc back`). In a DAG run Down gives
+  · ⏎ view · x stop · s steer · esc back`). In a DAG run Down gives
   the keys to the tree instead, on its first running node, the same way:
   ↑↓ move over its rows, ← shuts the highlighted row (or, shut, goes to its
   parent), → opens it and Space flips it (an `N more` row gives way to
   the nodes it held), a fold you make stays, the rows scroll between `… N more nodes
   above` and `below`, and Enter, `x` and `s` act on the highlighted node's
-  agent as they do in the list (`↑↓ select · ←/→ or space fold · ⏎ log · x
+  agent as they do in the list (`↑↓ select · ←/→ or space fold · ⏎ view · x
   interrupt · s steer · esc back`); on a layer's row, or a node no agent ran
   for, they do nothing. A click on a tree row highlights it, and on a node's
-  row opens its agent's log. With fewer than three rows for the tree, Down
+  row shows its agent's session as Enter does. With fewer than three rows for the tree, Down
   opens the list instead. Esc, `q` or Ctrl+C closes the list or the tree,
   and so does Left in the list (in the tree Left shuts a row or goes to its
   parent, and never closes the tree); the composer comes back on its row as
   you left it; any other key does
   nothing while the list is open, so nothing typed there lands in the
-  composer. Enter, or a click on its row,
-  opens that agent's log on the alternate screen (its thinking lines, tool
-  calls and reply, read-only, refreshed while it runs); Left and Right move
-  between agents and q or Esc goes back. Two keys in the list act on the
+  composer. Enter, or a click on its row, shows that agent's session on the
+  main screen, as Claude Code shows a teammate's: a dim `› From main` row, its
+  brief as the first prompt, its tool rows and its reply, and its own working
+  row while it runs. The agent list stays under the info line with that
+  agent's row marked `⏺` and the others, `main` included, `◯`; the
+  composer's top rule ends with its name and reads `Message @<name>…` when
+  empty. What you send there goes to that agent: a steer while it runs
+  (`subagent.steer`); once it ended, on Hermes' own stdio gateway a turn that
+  continues its conversation, while the shared gateway, which cannot, says
+  `<name> finished · continuing it is not supported by this Hermes` and keeps
+  your text. Slash commands, `!` lines and images go to main, so the view
+  refuses them with one notice and keeps your text; a paste or drop still
+  being read is waited for first, and an image in it refuses the whole
+  prompt. The view's composer is its own: what you had typed for main is set
+  aside as you open it and comes back exactly when you leave, and what you
+  typed in the view and did not send comes back when you open that agent
+  again. `s` on another agent's row still steers that agent. Esc goes back to
+  main (in Vim INSERT the first Esc leaves INSERT, as anywhere), and so does
+  the list's `main` row with Enter; a session switch, `/new`, a gateway
+  restart, or a question from main (an approval, a clarify, a sudo or secret
+  prompt) goes back first, so main's question is answered on main's screen.
+  Main's transcript keeps everything that happened meanwhile and is drawn
+  again on the way back; stopping main's turn (Esc, `/stop`, Ctrl+C, Vim
+  `Space c`) works on the main screen only. Ctrl+O pages the transcript on
+  screen, the agent's in its view. Opening a view is refused with one notice
+  while a rewind or a tell row is armed: send or cancel it first. Where Hermes cannot
+  show the session (an older Hermes, no child session yet, a refused read)
+  Enter opens that agent's log on the alternate screen instead (its thinking
+  lines, tool calls and reply, read-only, refreshed while it runs); Left and
+  Right move between agents and q or Esc goes back. Two keys in the list act on the
   highlighted agent and nothing else does: `x` asks on the info line
   (`x again interrupts <agent> · any other key cancels`) and a second `x`
   interrupts it (`subagent.interrupt`); `s` makes the next line you send that
@@ -1373,7 +1399,8 @@ wake pipe on real Windows pipes.
   The prompt keeps the `[Image #N]` labels in its text so the model can name
   them, and the transcript lists under it each image Hermes accepted for it
   (`⎿  [Image #1]`), with a small preview under each: real pixels on kitty,
-  Ghostty, Otty and omher's terminals at truecolor, coloured half-blocks
+  Ghostty, Otty and omher's terminals (omher 1.1.4 and later) at truecolor,
+  coloured half-blocks
   elsewhere (tmux, Terminal.app, iTerm2, WezTerm, VS Code), even where Hermes'
   config names kitty, none under
   `NO_COLOR`; `display.inline_images: off` in Hermes' config turns it off. The
@@ -1497,10 +1524,10 @@ Esc closes it):
 | Ctrl+W, Alt+Backspace, Ctrl+Backspace | Deletes the word before the caret (Ctrl+Backspace where the terminal reports it apart from Backspace) |
 | Ctrl+U / Ctrl+K | Delete to the start or the end of the line; with a list or menu focused, Ctrl+K moves up instead |
 | Ctrl+_ / Ctrl+Y | Undo or redo an edit in the composer (Ctrl+_ is what Ctrl+- and Ctrl+/ send on most terminals); a run of typed characters is one edit |
-| Esc | Closes the `/` or `@` menu; else interrupts a running turn, with a draft typed too, which stays in the composer (the activity row shows how long it has run, then `interrupting…`, and what you queued comes back to an empty composer unsent, or waits); cancels a rewind you picked; cancels an agent steer you picked and keeps what you typed; after an approval's tell row, sends nothing more and brings your draft back |
+| Esc | Closes the `/` or `@` menu; in a subagent's session, goes back to main (in Vim INSERT the first Esc leaves INSERT); else interrupts a running turn, with a draft typed too, which stays in the composer (the activity row shows how long it has run, then `interrupting…`, and what you queued comes back to an empty composer unsent, or waits); cancels a rewind you picked; cancels an agent steer you picked and keeps what you typed; after an approval's tell row, sends nothing more and brings your draft back |
 | Esc Esc | Between turns, with text, clears it and keeps it in this session's history; on an empty composer, lists your prompts to rewind to (`/rewind` does too) |
 | Esc (vim mode) | With display.vim_mode on in Hermes' config, the composer starts in INSERT and Esc goes to NORMAL and does nothing else; in NORMAL, . repeats the last completed local change and [n]. overrides its count rather than multiplying it. Insert/change sessions complete on Escape and undo as one transaction; put repeats its captured payload even after another yank. External paste/image edits and oversized insertion sessions do not replace the saved change. Submit, clear, history/draft replacement, masked transitions and Vim toggles reset it; motion, yank and undo do not. Repeat is local to this composer, not a macro. In NORMAL, v enters character VISUAL; motions extend its inclusive atom selection, d/c/y delete, change or yank, and v or Esc cancels (Esc drops a pending command first). Visual j/k clamp to draft rows without history; counts before v or d/c/y do not scale the selection. Visual delete/change dot repeats the selected atom length forward, with [n]. scaling that length. In NORMAL, V enters VISUAL LINE over whole hard lines; v/V converts modes retaining endpoint columns, and V again cancels line selection. Linewise d/c/y use a linewise register without a terminal separator; put supplies it. Line delete/change dot repeats the selected hard-line count forward, with [n]. scaling that count. NORMAL-only gv restores the last completed selection with exact anchor/head, type and direction; its count is ignored (vl Esc h 9999gv restores the original two atoms). Escape, toggle-out and yank save it. Text or paste/image metadata generation changes, undo/redo, submit, clear, history/draft replacement, masking and Vim toggles invalidate it, even when text becomes identical again; failed/no-op edits do not. Resize and navigation preserve it; absent/stale gv is a consumed no-op and gv inside VISUAL is unsupported. Space is not a visual leader; Enter sends unchanged text and Ctrl+V invalidates active and saved selection before attaching the clipboard image, never block visual. In NORMAL, h l 0 ^ $ w W b B e E ge gE j k gg G move, f F t T and a character find on the line and ; , repeat the find, i a I A o O insert, x X dd D C cc S s r, d c y with a motion (operator j/k select logical hard lines, never wrapped rows or history; gg/G select through the first/last hard line, or an absolute line with a count), iw aw, a quote object (i or a with double quote, single quote or backtick; inner count 1 selects inside, count 2 or more includes the quotes, around includes quotes and adjacent blanks without extra pairs; quote objects never cross a logical line; empty inner y keeps the register and moves inside, d keeps register and caret, and c enters INSERT inside), or a bracket object (i or a with (, ), [, ], {, }; closing aliases identical; inner and around count selects enclosing ancestor; empty inner y keeps register and moves to interior, d keeps register and caret, and c enters INSERT at interior), p P, u and Ctrl+R edit, a motion or edit count scales or repeats, and Esc does what it does without vim mode, except that during a turn it takes two to interrupt on an empty composer, and two clear a draft as between turns. In NORMAL, Space is the leader: Space s opens sessions, Space b opens bots, Space p folds the plan, Space r or Space / searches history, Space m cycles the input mode, and Space t steps reasoning effort. Space Enter submits or steers typed text, or sends the oldest eligible queued prompt now on an empty composer; Space c interrupts a running turn, else clears the draft into session history. Esc or an unmapped key cancels the leader; Ctrl+C, Ctrl+O, Ctrl+L and Ctrl+Z cancel it and do what they always do. A picker taking input also cancels pending leader and Vim commands; a session picker waiting while you type leaves typing, leader shortcuts and Enter with the composer until ↑, ↓, Esc or Ctrl+C or Ctrl+N / Ctrl+P takes the picker; Ctrl+J / Ctrl+K still edit a typed draft. The info line says INSERT, NORMAL, VISUAL or VISUAL LINE, NORMAL · SPC while the leader is armed (steady block), or REPLACE while r waits for one character (steady underline, CSI 4 SP q). A non-character follower cancels r without editing or firing a mode shortcut; continuous R is unsupported |
-| Ctrl+V | Attaches the clipboard image as an `[Image #N]` token at the caret |
+| Ctrl+V | Attaches the clipboard image as an `[Image #N]` token at the caret; with no image, pastes the clipboard's text |
 | Ctrl+O | Opens the whole transcript with every detail (thinking, tool output, whole diffs) at its end, or, while Hermes asks something, the whole question (it answers nothing); q leaves it |
 | Ctrl+L | Redraws the screen |
 | Ctrl+Z | Suspends the OMH TUI to the shell, as Ctrl+Z does in any terminal program (Hermes stops with it); fg brings it back |
@@ -1513,10 +1540,11 @@ Esc closes it):
 | Esc, Ctrl+C | On a question Hermes asked, decline it (an approval is denied and the running turn stops); Ctrl+C first clears an answer being typed |
 | ↑ / ↓, PageUp / PageDown, Enter, Esc | In the `/sessions`, `/rewind` or `/model` list, move, take the highlighted row (switch to that session, put that prompt in the composer to send again, or switch this session to that model), or close it; typing filters the list |
 | Ctrl+R, Ctrl+D | In the `/sessions` list, rename or delete the highlighted session: Ctrl+R makes the search box (the list's last row on a short terminal) its title (Enter renames it, Esc cancels, an empty title is refused); Ctrl+D asks on the row and a second Ctrl+D deletes it, any other key keeps it; the session you are in is not deleted, and what Hermes refuses is said on the row |
-| ↑ / ↓, Enter, Esc, ←, q, Ctrl+C | In the agent list, move, open the highlighted agent's log (on main, only leave), or go back; any other key does nothing there |
+| ↑ / ↓, Enter, Esc, ←, q, Ctrl+C | In the agent list, move, show the highlighted agent's session on the main screen (its log where Hermes cannot show it; on main, back to main's session), or go back; any other key does nothing there |
 | x, s | In the agent list, on an agent: x twice interrupts it; s steers it with the next line you send (Esc cancels) |
 | ↑ / ↓ or a click, Enter, Esc | In the `/theme` picker, preview a launch look (spectrum, violet, gold, graphite, sakura, moonlit, aurora, ember, kanagawa-wave) on the logo, the card and the chrome, keep it, or put the one in use back; `/theme <look>` keeps one at once |
-| Click | On a row of the agent list, opens that agent's log (on main, only leaves the list) |
+| Click | On a row of the agent list, shows that agent's session as Enter does (on main, leaves the list and goes back to main's session) |
+| Enter, Esc | In a subagent's session on the main screen, Enter sends what you typed to that agent (a steer while it runs; after it ended, a turn that continues it where Hermes can); Esc goes back to main; slash commands, `!` lines and images stay in the composer |
 | ← / →, q or Esc | In an agent's log, show the agent before or after, or go back; the pager's keys scroll it |
 | Tab / n, Shift+Tab / p, Space / Enter, d | In `/dag`, highlight the next or the previous box, fold or unfold the highlighted one, or show or hide Node details; ↑ / ↓, PageUp / PageDown and g / G scroll, q or Esc leaves |
 | ↑ / ↓, Enter or →, ← or Esc or q, r | On the bot board, move, open a profile's sessions or a session's last messages, go back (on the profiles, close the board), or read it again now; it reads again every 5 s by itself |
@@ -3059,6 +3087,80 @@ record, so a model pinned by hand will not come back. Deleting the file by
 hand is safe and means only that OMH stops claiming it knows what the keys
 held before it.
 
+#### The rest of the chain inside the child (opt-in)
+
+By default a route names only the chain head, and the rest of the chain is
+used only after a child has failed and the agent calls `action=fallback` to
+re-dispatch. On a quota error (HTTP 429) Hermes retries the head several times,
+waiting between attempts, before the child gives up, so the later positions sit
+idle for minutes. With this option on, `omh_delegate_route set` also writes the
+chain positions after the head into `delegation.fallback_providers`, in chain
+order and each as `{provider, model, reasoning_effort}`, so a child whose head
+fails moves to position 2 at position 2's effort in the same dispatch. Turn it
+on with `~/.omh/routing/delegate-route.json`:
+
+```json
+{"schema_version": "delegate_route_options/v1", "write_fallback_providers": true}
+```
+
+It is off without that file and with an invalid one, and it applies only on a
+Hermes that honours a fallback entry's own `reasoning_effort`. Older Hermes
+releases give every fallback the `agent.reasoning_overrides` or global effort
+instead (hermes-agent #136441), and a chain run at efforts the operator did not
+choose is worse than no chain. OMH looks for hermes-agent PR #144787's
+`resolve_fallback_reasoning(agent, entry, ...)`, reading the entry's
+`reasoning_effort`, in `agent/fallback_reasoning.py` of the Hermes source. It
+reads the file as text and never imports it. On a Hermes without it, only the
+three scalars are written, the `set` result's `in_child_fallback` says
+`host_unsupported`, and `omh doctor` (`plugin_delegate_route_fallback_chain`)
+says why. The file on disk is not always the code that runs. Inside a running
+Hermes, the capability module already loaded counts as support. A capability
+file changed after that Hermes loaded OMH's plugin is `restart_pending` instead,
+and nothing beyond the scalars is written until Hermes restarts. `omh doctor`
+compares the file with the gateway's `gateway.pid` the same way.
+
+What OMH writes is what Hermes will try, in chain order:
+
+- A position whose provider you have not configured is passed over. A
+  fallback sends the child's whole task to its provider, and the re-dispatch
+  passes it over too.
+- Writing stops at the first position Hermes would not try or OMH cannot
+  write. That is a position with no provider route in
+  `~/.omh/routing/model-providers.json` (Hermes drops such an entry), an effort
+  the model refuses, or a provider and model that the head or an earlier entry
+  already has (`same_backend_as_earlier`: Hermes drops the duplicate or skips
+  its own backend). Those positions are left for the re-dispatch.
+- Skipped positions are listed with their reason. An explicit `model` routes no
+  chain.
+
+OMH records the chain it wrote with the route and takes it back out at the end
+of the turn and on `clear`, so an absent key stays absent. The lost-update
+guard and the per-conversation route both include it. A dispatch puts a
+conversation's chain back only while the option is on and the host honours it.
+A value you set yourself is never written over: `set` reports `person_owned`
+and writes only the three scalars. Your value can be any of these:
+
+- `[]`, which tells Hermes to give delegated children no fallback at all.
+  Unsetting it (`hermes config unset delegation.fallback_providers`) is how you
+  opt in.
+- A list with `base_url`, or with any key other than the three.
+- A comment anywhere in the block.
+- A list in OMH's own shape that OMH did not write.
+
+A person's chain is never part of OMH's route, so editing or removing it
+during a route does not stop the route coming back out. If you edit or remove
+the chain OMH wrote during the turn and leave the scalars alone, the chain
+becomes yours and stays as you left it, and the scalars still come back out
+(`chain_foreign_edit`). A bare `null`, or a `fallback_providers:` with nothing
+under it, is Hermes' "absent": OMH may replace it, and the restore leaves the
+key absent.
+
+`action=fallback` is still how a child that ended in failure gets
+re-dispatched. It continues after the last position the route wrote into
+`delegation.fallback_providers` (`walked_in_child`), which it identifies by
+chain index, so an alias that appears twice is not confused. The child already
+tried those positions.
+
 A fourth sibling, `~/.omh/routing/dispatch-models.json`
 (`omh_dispatch_model_preferences/v1`), applies to a different surface:
 `omh coding fanout dispatch`'s `--model` fallback for a spawned agent CLI,
@@ -4184,6 +4286,100 @@ shown only when it has something to say). Both read Hermes'
 
 All of it is local files only, in bounded reads; OMH stops, kills and
 restarts nothing, and the doctor row warns without failing.
+
+`omh doctor` also prints a **Hermes gateways (read-only)** section, whatever
+it finds, and carries the same report as the `gateway_health` row's `detail`
+in `--json` (`omh_gateway_health/v1`, its printed `lines` included). It
+answers three questions for the root Hermes home and every profile under it
+(the OMH TUI's own runtime profile too):
+
+- **Fleet against build.** Each running gateway with the profiles it serves
+  and its start time, from Hermes' own `gateway_state.json` (a record counts
+  only while the process it names is the one that wrote it), plus every
+  `hermes gateway run` the process table shows. Each is compared
+  with the installed Hermes build stamp (`hermes-agent/install-stamp.json`,
+  `builtAt`); a record that stamps the commit it runs (`code_sha`) is
+  believed over its start time. Beside it, Hermes' own pending-fleet-restart
+  record (the host obligation file in Hermes' host state directory, or a
+  home's `fleet_restart_pending` marker) and its latest update receipt
+  (`logs/update_receipts/latest.json`, an incomplete gateway restart or a
+  fleet row marked stale). The remedy is Hermes' own restart with the
+  gateway's profile named, `hermes -p default gateway restart` for the host
+  (`hermes -p <name> gateway restart` for a standalone profile), since a bare
+  `hermes gateway restart` follows Hermes' sticky active profile: while
+  turns are live Hermes asks first, refuses with no terminal to ask on, and
+  interrupts them only with `--yes`.
+- **Fleet shape.** A gateway process no record under this Hermes root names
+  (another Hermes home's, such as a scratch or test home, or one left
+  running), and a profile two recorded gateways both serve, by PID. Which
+  home and which checkout an unrecorded process runs is not known, so it is
+  never counted as a stale gateway: its start is only compared with this
+  install's build, and a profile name it shares with a recorded gateway is
+  said as a shared name. The listing recognizes `python -m hermes_cli.main …
+  gateway run`, `python …/hermes-agent/hermes gateway run` and Hermes' own
+  launcher (`python -I -c <bootstrap> … gateway run`, which service units
+  use). A process Hermes retitled to just `hermes` is named as unreadable,
+  not counted.
+- **Messaging adapters.** Per profile and platform, the state now: the
+  serving gateway's own entry in its `gateway_state.json` when that process
+  stamped it (its state, error code and Hermes' "needs attention" flag),
+  else the newest line of this gateway run in the gateway log tails, read
+  with the rotated `.1` when short. Both the host's `<home>/logs/gateway.log`
+  and each profile's own are read, because a served profile's lines land in
+  either: its reconnect lines, for one, are only in the profile's own log.
+  Within one log the line written last wins; across logs, the stamps decide.
+  A later "connected" supersedes an earlier failure, and a later failure or
+  stop supersedes a "connected". The log also
+  supplies the reason: a served profile's reconnect writes only the
+  adapter's own failure line, with no `✗` line, and that line counts. A line
+  from before the serving gateway started, or for a profile no running
+  gateway serves, is shown as that and never as the state now. Hermes'
+  in-process `local` adapter is not a bot and is left out. A reconnect Hermes
+  is still retrying is not a finding until Hermes flags it as needing
+  attention. A Discord bot refused for privileged intents gets which
+  intents Hermes requests (Message Content always; Server Members when the
+  profile has a role allowlist or a username rather than a numeric id in its
+  user allowlist, as Hermes' own record says when it holds the guidance) and
+  where to enable them: the Discord Developer Portal, the application's Bot
+  page, Privileged Gateway Intents. Hermes does not retry that failure on its
+  own, so the gateway needs a restart afterwards. A rejected token is named
+  too; any other reason is shown, bounded, as unrecognized. Hermes' reason
+  text never keeps an escape sequence or control character, a bot token, a
+  bearer or labelled secret (`token=`, `password=` and the like), a webhook's
+  credential path, a long opaque run of letters and digits, an id, an email
+  address or a URL's query. When Hermes serves a profile again after a
+  config or `.env` change (`Re-scanned profile`, `Now serving profile`), it
+  drops that profile's old verdicts, and so does this check: an adapter line
+  logged more than two minutes before that says nothing about now, and a fix
+  names a log as `~/…`, never with the home folder spelled out.
+
+The same adapter states, per bot, are what `omh hermes platforms` prints
+(read-only JSON, `omh_bot_platforms/v1`): each platform's status (connected,
+degraded, connecting, turned off, failed, disconnected, reconnecting, or
+unknown when nothing read says what it is now), whether a person must act,
+since when it is not connected, the reason and Hermes' own guidance, the fix
+and the restart command for the gateway that serves it. The OMH TUI bot board
+(`/bots`, Ctrl+S) draws them on each bot's card and box, and omher's sidebar
+and bot page show them by running that command (its boundary rule 43).
+Nothing on any of them restarts or changes anything.
+
+Missing evidence is said as missing: no Hermes install, no build stamp, no
+receipt, no running gateway, a log that is absent, unreadable or not in
+Hermes' format, and a process table that cannot be read (on Windows, where
+only recorded gateways are counted). Nothing is reported healthy from what
+was not read. Doctor spawns no process for this: the process table is read
+from the kernel, for your own processes only (`/proc/<pid>/cmdline` of the
+processes you own on Linux; `proc_listallpids` and `sysctl(KERN_PROCARGS2)`
+on macOS), and only each process's command-line arguments are decoded,
+never its environment. Times are shown in UTC; a log stamp is read in this
+machine's local time, as Hermes wrote it. Log reads are
+bounded tails that tolerate a cut first line and bytes that are not UTF-8;
+only lines in an adapter-state shape are kept, never a message, and a reason
+text loses Discord, Slack and Telegram bot tokens, Discord and Slack ids,
+email addresses and a URL's query. A failure to read any of it costs only
+this section: doctor prints it as not read and runs every other row. `--no-personal-files` does not
+change this section: it names SOUL.md and Hermes' memory files, and the
+gateway log is read here as the `hermes_gateway` row already reads it.
 
 To opt one bot out of managed skill registration, unregister that profile only:
 

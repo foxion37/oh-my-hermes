@@ -68,6 +68,12 @@ class ClassifiedSite(NamedTuple):
 
 CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
     ClassifiedSite(
+        "src/maintenance/doctor.py", "_gateway_health_check", INTENTIONAL,
+        "The gateway health row reads Hermes' files and the kernel's process table; an unexpected failure becomes "
+        "an observed=False warning row naming the exception class ('gateway health could not be read'), never a "
+        "healthy report, and the other doctor rows still run.",
+    ),
+    ClassifiedSite(
         "src/tui/proofread.py", "_run", INTENTIONAL,
         "The daemon worker surfaces an unexpected failure as Outcome.error naming the exception class; "
         "the main loop displays that failure instead of claiming a clean draft or applying corrections.",
@@ -76,6 +82,13 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
         "src/skills/channel_watch_toolkit/scripts/channel_watch.py", "main", INTENTIONAL,
         "The cron collector's last guard: an unexpected error prints only its class name and exits 1, which Hermes "
         "reports as a Script Error the watch row shows as not readable; a traceback could quote the bot token.",
+    ),
+    ClassifiedSite(
+        "src/skills/monitor_watch_toolkit/scripts/api_watch.py", "call", INTENTIONAL,
+        "The monitor's HTTP read: http.client's malformed-reply errors (BadStatusLine and its kin) become "
+        "Transient('bad_response'), an exit 1 with one fixed stderr line that Hermes reports as a failed monitor "
+        "source, never a change; naming them would mean importing http.client into a network client the safety "
+        "invariants keep at urllib's surface, and the class or traceback never reaches stderr.",
     ),
     ClassifiedSite(
         "src/workflows/repro_audit/operations.py", "_publish", INTENTIONAL,
@@ -954,7 +967,9 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
         "Runs in transform_tool_result after a terminal / execute_code call and must never fail or alter that "
         "result. A failure is logged as a warning naming the exception class (`consistency_trigger "
         "shell_changed failed=`) and reports no changed file, so the call's result goes out as it did before "
-        "the shell round end existed.",
+        "the shell round end existed. A `_Budget` walk (past `MAX_SCAN_ENTRIES` or the deadline) is the "
+        "designed undecidable case, not a fault: it is logged at debug as `shell_changed skipped=` so a "
+        "large workspace does not warn on every command.",
     ),
     ClassifiedSite(
         "src/plugin_bundle/omh/lsp_nav.py",
@@ -1139,8 +1154,12 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
 # 114 -> 115 / 103 -> 104: the channel-watch collector's `main` (an unexpected error names its class only, exit 1;
 # a traceback could quote the bot token).
 # 115 -> 116 / 104 -> 105: proofread.Worker._run reports unexpected failure as Outcome.error.
-EXPECTED_HANDLER_COUNT = 116
-EXPECTED_ANCHOR_COUNT = 105
+# 116 -> 117 / 105 -> 106: doctor's `_gateway_health_check` (#3147: an unexpected failure is an observed=False
+# warning row naming the exception class, never a healthy report).
+# 117 -> 118 / 106 -> 107: the monitor-recipe HTTP read, `api_watch.Client.call` (a malformed reply is a
+# fixed `unreachable reason=bad_response`, exit 1, never a change).
+EXPECTED_HANDLER_COUNT = 118
+EXPECTED_ANCHOR_COUNT = 107
 
 
 class DerivedSite(NamedTuple):

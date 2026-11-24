@@ -1033,6 +1033,7 @@ _WORKFLOW_CONTEXT_CARD_BY_WORKFLOW = {
     "deploy-and-monitor": "coding_handoff",
     "executor-runtime-readiness": "coding_handoff",
     "github-event-ops": "automation_and_status",
+    "app-work-intake": "automation_and_status",
     "github-issue-intake": "automation_and_status",
     "buzz": "automation_and_status",
     "idea-to-deploy": "coding_handoff",
@@ -7001,6 +7002,7 @@ def awareness_primer_payload() -> dict[str, object]:
                 "live-incident-response",
                 "automation-blueprint",
                 "github-event-ops",
+                "app-work-intake",
                 "github-issue-intake",
                 "buzz",
                 "agent-board",
@@ -8019,8 +8021,9 @@ _CODE_REVIEW_REQUEST_REASON = (
 _CODE_REVIEW_REQUEST_RESPONSE = (
     "Report a bug only with a step-by-step trace: concrete input or state -> path:line -> wrong output or state. "
     "First read the callers and tests the diff relies on; drop a finding that is guarded, intended or documented "
-    "there, or theoretical only. End the review body with a `Not checked:` line naming what you did not read or "
-    "run. A reply format the request sets, such as a required last line, still comes last. Full method "
+    "there, or theoretical only. Open every provided file that defines, constructs or calls what the diff touches "
+    "before deciding; a file you could read never goes under Not checked. End the review body with a `Not checked:` "
+    "line naming what you did not read or run. A reply format the request sets, such as a required last line, still comes last. Full method "
     f"(optional): skill_view(name='{_loadable_skill_label('code-review')}')."
 )
 

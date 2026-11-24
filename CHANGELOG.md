@@ -4,6 +4,124 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **omher: Ctrl+V pastes and Ctrl+C copies in a Windows terminal, as in Windows Terminal.** On Windows, Ctrl+V in a
+  terminal used to reach the program as ^V; only Ctrl+Shift+V and Shift+Insert pasted. Now Ctrl+V pastes through the
+  same path as those keys (the multi-line confirm, and a pasted picture's saved path), and the paste happens once.
+  Ctrl+C copies while text is selected and then clears the selection; with nothing selected it is the program's ^C.
+  Ctrl+Shift+C / Ctrl+Shift+V and Ctrl+Insert / Shift+Insert still work. Linux keeps the GNOME Terminal keys: plain
+  Ctrl+C and Ctrl+V stay the program's there. Three Mac terminal keys that had no Windows or Linux key now have one:
+  Ctrl+Shift+A selects the whole terminal (Cmd+A), Ctrl+Shift+K clears it (Cmd+K), and Ctrl+Up / Ctrl+Down go to the
+  previous or next prompt (Cmd+Up / Cmd+Down). Ctrl+Up and Ctrl+Down still go to the program while a command runs (an
+  inline program such as the OMH TUI or Claude Code), in a full-screen program, when the shell sent no prompt marks,
+  or when the view is already at the bottom with nowhere to go. A Ctrl+C whose copy the clipboard refused keeps the
+  selection. The terminal's right-click menu and Settings › Keyboard show these keys on Windows and Linux, with no ⌘.
+  None of these keys acts while AltGr is held. (#3131; `docs/OMHER-BOUNDARY.md` rule 11)
+- **The OMH TUI's Ctrl+V pastes the clipboard's text when there is no image.** Ctrl+V asked Hermes only for a
+  clipboard image, and with text on the clipboard said "No image found in clipboard" and inserted nothing. That is
+  what a terminal that sends Ctrl+V on as ^V (instead of pasting) got. Now, when Hermes finds no image, the TUI pastes
+  the clipboard's text into the composer as a paste. An image on the clipboard still attaches as an `[Image #N]`
+  token, and `/paste` stays image only. A prompt sent before Hermes answered goes exactly as typed: the clipboard's
+  text is never added to it, waits in the composer instead, and a notice says so. The text is read only when the
+  screen is this machine's (no SSH, and inside tmux not over SSH): through the Win32 clipboard on Windows, `pbpaste`
+  on a Mac, and `wl-paste`, `xclip` or `xsel` on Linux. (#3131; `docs/OMH-TUI-BOUNDARY.md`)
+- **omher: a click on a side-panel tab right after maximise or restore picks that tab.** While the panel slides,
+  a press on a tab that is still moving counts as the tab row's own press (for a double-click on the row), and its
+  click goes nowhere. The check for "still moving" looked at every frame of the last 60 ms. So a tab that had already
+  stopped, two or three frames before the click, still read as moving if an earlier frame in that window had moved
+  it. The click was dropped and the panel stayed on its old tab. Now a tab counts as moving in three cases: while
+  the slide runs, when it moved between the frame the person saw at the press and the moment omher reads the click,
+  or when it had only just arrived in that frame. A tab that held still from the frame before the press is the
+  person's to click.
+  (`apps/omher/src/elsewhere/PanelTabs.tsx`, `apps/omher/src/elsewhere/rowMotion.ts`; e2e `panel-max.spec.ts`, seen
+  on macOS CI)
+- **omher on Windows: "Reply there" no longer draws over the row's time, and the app names Windows' own fonts.** In
+  the side panel's "Where your bot is", hovering a Slack or Discord row showed "거기에 답장" on top of the row's time
+  ("거기에답장일"): the button floated over the time and its hover fill was see-through. Now the time gives way while
+  the button shows, the row keeps room for the button in its own layout (so the title stops before it in every language
+  and font), and the fill is opaque. The font list names Segoe UI, Malgun Gothic, Yu Gothic UI / Meiryo and Microsoft
+  YaHei UI and puts the UI language's own CJK fonts first, so Windows no longer falls back to older fonts or draws
+  Japanese kanji in a Chinese face; code text names Cascadia Mono and Consolas. Segmented controls and fixed-height
+  buttons keep their label on one line and grow with it instead of wrapping inside the box, and a split terminal's
+  corner buttons sit on an opaque fill.
+- **omher on Windows: a terminal running oh-my-hermes reads oh-my-hermes, not Hermes.** Windows has no terminal
+  foreground process group, so omher looks through the processes under the terminal for a known agent CLI. It took
+  the newest one, and `omh.exe` starts `hermes.exe` beneath itself, so the row read "Hermes" with the Hermes mark and
+  `hermes ·` before its last line. A CLI now owns everything it starts: the row names the CLI that no other CLI
+  started, as macOS and Linux do by reading the foreground process group's leader. A terminal running `hermes` on its
+  own still reads Hermes. A process older than the one that now holds its parent's pid (Windows reuses pids) is no
+  longer taken for part of the terminal, so a row cannot show another session's agent. Thanks @hajeu. (#3130)
+- **GLM 5.4 is mapped to Z.ai.** `glm-5.4` (opened to every GLM Coding Plan user on 2026-11-23) now resolves to the
+  `zai` provider family, so a chain or override that names it routes to Z.ai. It joins no shipped chain, and it has
+  no contract or price row until Z.ai publishes a model page and list price.
+- **A large workspace no longer logs a warning after every shell command.** When the shell round end re-indexes a
+  workspace past its entry or time budget, that designed skip is now logged at debug (`shell_changed skipped=`)
+  instead of warning on nearly every `terminal` / `execute_code` call (~700 lines a day in one workspace). A real
+  fault inside the walk still warns (`shell_changed failed=`). (#3140, carried; thanks @probepark)
+- **`omh_delegate_route` can hand a child the rest of its chain, each step at its own effort (opt-in).** With
+  `{"schema_version": "delegate_route_options/v1", "write_fallback_providers": true}` in
+  `~/.omh/routing/delegate-route.json`, `set` also writes the positions after the head into
+  `delegation.fallback_providers` (`{provider, model, reasoning_effort}` each, in chain order). A child whose head
+  fails, a quota 429 included, then moves on inside the same dispatch instead of waiting out the head's retries.
+  It is off by default. It applies only on a Hermes whose source has hermes-agent PR #144787's
+  `agent/fallback_reasoning.py`, because an older Hermes runs every fallback at `agent.reasoning_overrides` rather
+  than the entry's effort. On such a Hermes only the three scalars are written, and the result's `in_child_fallback`
+  and `omh doctor` (`plugin_delegate_route_fallback_chain`) say why. A Hermes updated on disk but still running the
+  old code reads as `restart_pending` and writes no chain until it restarts. Positions whose provider you have not
+  configured are skipped. Writing stops at the first position Hermes would not try: one with no provider route, or one
+  whose provider and model the head or an earlier entry already has. That keeps the re-dispatch's starting point
+  exact. OMH records the chain it wrote with the route and takes it back out at turn end and on
+  `clear` (an absent key stays absent), and the lost-update and per-conversation guards cover it. Your own
+  `delegation.fallback_providers` (`[]` included) is never overwritten, and an edit you make to OMH's chain mid-turn is
+  kept while the scalars still come back out (`chain_foreign_edit`). The list writer keeps the scalar writer's
+  rules: plain tokens only, an atomic replace, a symlinked config refused. `action=fallback` still re-dispatches,
+  continuing after the positions the child already walked (`walked_in_child`). Requested by @rafaelmoreiraai in
+  #3124. (`src/plugin_bundle/omh/delegation_fallback_chain.py`, `src/plugin_bundle/omh/delegation_routing.py`,
+  `src/plugin_bundle/omh/delegation_route_restore.py`, `src/plugin_bundle/omh/tools/delegate_route_tool.py`,
+  `src/maintenance/doctor.py`; `docs/INSTALLATION.md` "The rest of the chain inside the child")
+- **omher: an open thread reads again cleanly after the bridge comes back.** After a bridge restart, the page re-read an
+  open thread at the same time as it listed the bot's threads again. The new bridge knew no thread yet and refused
+  it, so the thread showed a false "not reachable" line and a turn Hermes lost there stayed unseen. Threads are now
+  listed first and the open ones read after that, on reconnect and when a bot comes back. (Follow-up to #3127)
+- **omher: two terminals of one folder merge by dragging the header.** Drag a TERMINALS session's header down onto
+  its terminal and it joins the next session of its folder in a split, in the sidebar's order (the one before it when
+  it is the last; a row hidden by a search or a collapsed folder counts too): a translucent half shows where the
+  dragged session goes and the other half names the session that fills it. Taken back onto the header, or Escape,
+  nothing changes, and a button let go outside the window or the window losing focus ends the drag the same way; a
+  folder with no other session offers nothing, and a grab cursor shows only when a drag can do something. In a split
+  the header drags the focused pane as its grip does (not while the split is zoomed). The header also has an x: in a
+  split it closes the focused pane (the session stays in TERMINALS), on its own it closes the session as its row's x
+  does, undoable while it runs, and with the undo window Off it asks the row's Stop? first. Nothing new is started,
+  read, written or sent.
+- **omher: a bot's chat that stopped answering after a crash says why and gets going again.** When Hermes' gateway
+  stops in the middle of a turn (a crash, a kill, Windows ending the process), Hermes brings that turn back as lost
+  and keeps every later message of the chat in its own queue until someone acknowledges it, because the lost turn may
+  have done part of its work. omher did not read that state: a new message showed "Read", nothing answered, and after
+  a restart the message was gone from the chat (it was in Hermes' queue, not its transcript), while a new thread worked.
+  Now the main chat, a thread and an oh-my-hermes folder chat show a note above the composer that the chat is paused,
+  with the lost turn's text and **Discard and continue**. Discard acknowledges only that turn through Hermes' own
+  `prompt.resolve_unknown`; Hermes does not run it again, and the messages waiting behind it then run in order. A
+  message sent meanwhile reads "Waiting" instead of "Read" and stays in the chat across a restart. A lost turn
+  discarded elsewhere (Hermes' own app, `/discard`) clears the note at once. A message waiting in Hermes' queue behind
+  a turn that is still running (nothing lost) also stays in the chat after a restart, as "Waiting · runs after the
+  current turn". (#3123; `docs/OMHER-BOUNDARY.md` rule 3)
+- **omher: hand a terminal's folder or a worktree to a bot.** Right-click a TERMINALS row, or a row of the right
+  panel's Worktrees tab, and pick Hand to <bot> (Hand to a bot… when there are several; the card has the bot
+  picker). A small card shows the first message before anything is sent: the folder, its branch, a short git status
+  and diff stat, and a goal line you can type. Open thread starts a thread under that bot, the same way Start in
+  thread does, with that message first. The git facts come only from the bot's own Worktrees list and one diff of a
+  worktree in it (`docs/OMHER-BOUNDARY.md` rule 10); a terminal folder outside the bot's worktrees goes with its path
+  and a line asking the bot to check `git status` itself. Nothing moves on disk, the session stays open and omher
+  types nothing into it: the bot works with its own tools and approvals. (`apps/omher/src/handover/`)
+- **omher's reasoning picker offers every level Hermes accepts, ultra included.** The chat model picker's Reasoning
+  control showed none, low, medium, high and xhigh only, so minimal, max and ultra could not be picked. The bridge now
+  reads the installed Hermes' own levels (`hermes_constants.VALID_REASONING_EFFORTS`, after "none") and offers them in
+  Hermes' order: none, minimal, low, medium, high, xhigh, max, ultra. An older Hermes offers only the levels it has,
+  and the bridge refuses any other before asking Hermes. When the levels are not importable the picker offers the
+  full list, and a level the gateway refuses shows the picker's note instead of looking applied. The eight levels sit
+  in two rows of four. A level the route does not send as picked says so, as Hermes' own pickers do: Hermes sends
+  `max` for `ultra` on most routes, so the pill reads "ultra · sends max" and the popover "ultra (sends max on this
+  route)", from Hermes' `reasoning_effort_wire`. (`apps/omher/bridge/omher_bridge.py` `reasoning_levels`,
+  `apps/omher/src/chat/model/levels.ts`)
 - **Fanout hands coding units to a harness CLI you declare, or to one of nine presets.** Put an executor in
   `<omh_home>/routing/executors.toml` (never read from a repository or the working directory) as an `argv` list
   with exactly one `{prompt}` or `{prompt_file}` element, or opt in to a preset with `omh coding executors add
@@ -62,6 +180,22 @@ All notable changes will be documented here.
   `_section_node_is_sequence`, `_block_header`, `_skills_document_parts`)
   `enabled:` or `provider:` key written above it, which Hermes could not load. Reported by @chhxbchhxb in #3075.
   (`src/install/config_adapter.py` `_root_is_plain_block_mapping`, `_section_node_is_sequence`)
+- **`omh doctor` says why a Hermes bot went quiet: gateways older than the build, stray gateways, and adapters that
+  failed to connect.** A Discord bot whose profile gained a role allowlist kept working until its next reconnect, when
+  Discord refused the Server Members privileged intent that Hermes then requests, and the bot stayed offline. On the
+  same machine several gateway processes were running, some started before the installed Hermes build, and nothing
+  in OMH said so. Doctor now prints a **Hermes gateways (read-only)** section, also carried as the `gateway_health`
+  row's `detail` in `--json` (`omh_gateway_health/v1`). It lists each running gateway with the profiles it serves and
+  its start time, and flags one started before the installed build stamp unless its own record stamps the installed
+  commit. It reports Hermes' own pending-fleet-restart record and its last update receipt's restart outcome, any
+  `hermes gateway run` process no record names, and a profile two gateways serve, by PID. For each profile and
+  platform it gives the state now: the serving gateway's own record entry first, else the newest gateway log line
+  of this gateway run (a served profile's reconnect that ends in the adapter's own failure line counts); a line
+  from an earlier run is said as such, never as connected. A privileged-intents refusal names the intents and the Developer Portal page that enables them;
+  a rejected token is named, and any other reason is shown, bounded, as unrecognized. Missing evidence is said as
+  missing, never as healthy. The fix is always Hermes' own command; OMH stops and restarts nothing.
+  (`src/maintenance/gateway_health.py`, `src/maintenance/hermes_gateway_formats.py`,
+  `src/system/process_listing.py`; `docs/INSTALLATION.md` "Bot Profiles")
 - **omher 1.1.3.** GitHub across your repositories and accounts, a Claude usage meter that shows numbers, and terminals
   and bridges that recover by themselves.
   - **GitHub:** Tasks gains a "나" scope: your review requests, your pull requests, issues assigned to you and mentions,
@@ -89,6 +223,23 @@ All notable changes will be documented here.
   come from chats only. Before the first reading the meter says it shows after your next
   Claude turn in omher. Local only: nothing is sent and no token is read.
   (`docs/OMHER-BOUNDARY.md` rules 11, 17 and 18)
+- **omher: a thread shows the pull requests its bot linked, and whether their checks pass.** A bot's thread often
+  ends with "opened https://github.com/<owner>/<repo>/pull/<n>", and omher showed only a link: the thread list could
+  not say whether that PR was open, merged or failing. Now a thread's row carries a small mark for the newest PR link
+  the bot wrote in its answers there (number, state, and the checks for an open PR or a draft: passing, failing or
+  running), and the transcript shows a card under the answer that named each one (the newest three), with the
+  repository; a click opens the PR on GitHub, Refresh asks again. Any full PR link in the bot's own answers counts,
+  whoever's PR it is; the person's words and a tool's output never do. They are read from the thread's saved rows in
+  the bot's `state.db` (across Hermes' compression of a long thread), with no gateway call, so a thread is never resumed for it. An open PR with failing checks
+  puts its thread in Needs you ("checks failing on #n") until the checks pass or it is merged or closed, and rings
+  at most once per failing head commit and never twice for the same PR within 6 hours. The state comes from the same
+  one `gh pr view` the Plans graph uses, now with `statusCheckRollup` and `headRefOid`, reduced to one word from the
+  checks' status fields (a check's name is never read); answers are kept 5 minutes, at most 4 calls run at once and
+  30 a minute, of which threads take at most 20. A row in view, or a thread in Needs you, is read again every
+  5 minutes at the soonest, only while its PR may still change, also while the window is hidden, with a doubling
+  wait after a failed read. Without `gh`, a login or the network the mark shows the number with no state; a bot on
+  another computer has no threads in omher. This is a display: it never changes a thread's state and starts, steers
+  or stops nothing. (`docs/OMHER-BOUNDARY.md` rules 21 and 40)
 - **omher Tasks shows my pull requests, reviews and issues across repositories and GitHub accounts.** The Tasks page
   has a scope toggle, "이 저장소 | 나". "나" lists, across every repository, the open pull requests asking for my
   review, my open pull requests, the open issues assigned to me and the last 7 days' mentions (folded until opened).
@@ -124,6 +275,20 @@ All notable changes will be documented here.
   from history recall, a paste or a loaded draft opens no mid-line menu until the next typed key. A line that does
   not start with `/` still goes as a prompt with the `/skill` text in it. (`src/tui/slash.py` `slash_token_at`,
   `skill_completions`, `src/tui/app.py`)
+- **Two scenario suites measure automation intent and coding hand-off, before their skill text changes.**
+  `benchmarks/automation-intent/v1` grades whether a plain-language request becomes the right prepared automation
+  (schedule, target, delivery, filters, silence) or correctly a clarifying question, no automation, or an edit of
+  the existing job. `benchmarks/orchestration/v1` grades whether the parent hands coding to the owner the person
+  named in that request (and only then), targets the right repository, cites only links the observed evidence
+  returned, and stays within a word budget. Grading is a deterministic structural function; reports use
+  `omh_reported_rate/v1` with a Wilson 95% interval, infrastructure failures (`arm_did_not_run`, `timeout`,
+  `transport_error`) and unobserved scenarios excluded by name, and `percent: null` over an empty denominator. Each
+  suite has a held-out split read only when named, reported as counts only, and kept out of skill and routing
+  sources by test. The live arm is opt-in and runs only through `omh coding hermes-child dispatch
+  --confirm-dispatch`; neither suite has been run live, so both are `prepared_not_observed`.
+  (`src/quality/scenario_suite.py`, `src/quality/automation_intent_grading.py`,
+  `src/quality/orchestration_grading.py`, `benchmarks/scenario_suite_bench.py`; `benchmarks/automation-intent/v1/README.md`,
+  `benchmarks/orchestration/v1/README.md`, `docs/CAPABILITY_IMPACT.md` "Growth Gate")
 - **omher: the bridge comes back after it dies.** If the Python bridge stopped after it was ready, nothing started it
   again: Hermes bots and folder chats stayed on "Connecting to Hermes…" until omher was restarted, because the shell
   kept handing the page the dead bridge's port. The shell now notices the exit (the bridge's output closes, or a check
@@ -148,11 +313,58 @@ All notable changes will be documented here.
     TUI use for pasted pictures), so a pasted screenshot shows as the picture itself instead of a coarse block
     mosaic. The layer stays above the GPU renderer, keeps one canvas per terminal, and shares the 32 MB per-terminal
     picture budget with the other image kinds; Settings › Terminal › Show images turns it off.
+- **github-event-ops: watch one PR without a polling loop, and bound a bot that works on PRs.** Asking Hermes to
+  wait on a pull request ("watch PR 42 until its checks finish", "PR 42 체크 끝날 때까지 지켜봐줘") now reaches
+  `github-event-ops`, whose PR watch recipe (`references/pr-watch.md`) sets up one Hermes cron monitor job for that
+  PR: `toolkit/scripts/pr_watch.py` prints only the PR's settled state from one read-only `gh pr view`, so the agent
+  wakes only when checks finish, a conflict or review appears, or the PR merges or closes, every 5 minutes for two
+  hours at most. A bot takes at most two fix rounds per PR, counted from the PR's own commits and heads and kept per
+  PR across watches; after that the fix is a person's. `toolkit/scripts/pr_event_guard.py`, as a webhook route's
+  `--script`, drops events the bot's own runs caused and more than 5 events per 15 minutes. Both scripts are inert
+  package data the person's Hermes runs (owner-approved scoped integration, 2026-11-23); OMH never runs them.
+  (`src/skills/pr_watch_toolkit/`, `src/skills/catalog_feature_surfaces.py`, `src/routing/policy.py`)
+- **automation-blueprint: be told when something happens on a platform that sends no webhook.** Asking Hermes to
+  be told when new mail matches a filter, a calendar event is about to start, a Notion page or database changes, a
+  Linear or Jira issue is assigned, an Obsidian vault folder changes, or a Sentry issue opens ("tell me when a mail
+  from my boss arrives", "노션 데이터베이스 바뀌면 알려줘") now reaches `automation-blueprint`, whose monitor recipes
+  (`references/monitor-recipes.md`) prepare one paused Hermes cron monitor job per trigger. Its script, from
+  `toolkit/monitors/`, prints only ids and the platform's own timestamps, so the agent wakes only when they change:
+  `api_watch.py` reads Notion, Linear, Jira and Sentry with a key from one environment name, sent only to that
+  platform's fixed host; `google_watch.py` runs Hermes' own google-workspace skill CLI; `vault_watch.py` lists an
+  Obsidian folder's file metadata. A missing or rejected credential is reported once; a network failure is a failed
+  monitor tick, never a change. The scripts write nothing and are inert package data the person's Hermes runs, the
+  same scoped-integration class as the PR watch scripts; OMH never runs them.
+  (`src/skills/monitor_recipes.py`, `src/skills/monitor_watch_toolkit/`, `src/routing/policy.py`)
+- **Work that starts in another app: a spec, a mail, an alert, a meeting, a vault, a Figma frame.** A new skill,
+  `app-work-intake`, reads the item through the bot's own Hermes tool and takes one of three paths: a Notion or
+  Confluence page or a Linear or Jira issue becomes a plan, a fanout run and a PR, with the PR link written back to
+  the source ("turn Linear issue ENG-42 into a PR and link the PR back"); a mail message becomes a work thread or a
+  Needs item instead of a reply; a Sentry or Datadog alert becomes a triage and a fix hand-off, bounded by the PR
+  watch guards in `github-event-ops`. Three existing skills gain the other three: `operating-rhythm` turns a meeting's
+  notes or transcript into tracker issues through Hermes' `meeting-action-items`, `wiki` uses an Obsidian vault for
+  recall, the bot's daily journal and copies of approved `.omh/memory` records (never Hermes' `MEMORY.md`), and
+  `frontend` reads a Figma frame into `DESIGN.md` tokens and a handoff. Each names the Hermes MCP server or bundled
+  skill it needs and stops with `hermes mcp install <name>` when it is missing; every write to an app stays the bot's
+  own approved action, reported only after reading it back. Replies, summaries, one-ticket actions, calendar
+  questions and Figma exports keep their routes. OMH itself calls no app.
+  (`src/skills/catalog_feature_surfaces.py`, `src/skills/render.py`, `src/routing/policy.py`)
 - **OMH TUI: kitty previews inside omher, and a quiet Ctrl+Enter.** Under `TERM_PROGRAM=omher` the OMH TUI asks for
   kitty previews (tmux and screen keep half-blocks). Ctrl+Enter on a prompt with images during a turn now stops the
   turn and sends the prompt without an `Interrupted.` notice, like Claude Code's send-now; Hermes' "Operation
   interrupted: waiting for model response (…)" line never shows as the reply, while it streams, at the end, or in a
   resumed conversation. Esc and `/stop` still say `Interrupted.`.
+- **omher: link chips for Jira, Confluence, Sentry, Asana, Todoist, ClickUp, GitLab and Obsidian.** Links to these
+  showed as plain web links. They now show the service's mark and what the link is, read from the address alone:
+  a Jira issue as `ACME-123`, a board or project; a Confluence page by its title, or a space; a Sentry issue, project
+  or release; an Asana or Todoist task or project (Todoist with the task's name); a ClickUp task, list, space or
+  folder; a GitLab merge request as `group/project!42`, an issue, pipeline or commit, nested groups shortened to
+  `group/…/project`. Only the cloud hosts count (`*.atlassian.net`, `gitlab.com`): a self-hosted Jira or GitLab, or
+  a lookalike host, stays a plain link; another page on an Atlassian site (Compass, the site's home) is a generic
+  Atlassian chip. Google Calendar booking pages and Figma Make and Sites files get chips too.
+  An `obsidian://` link (open, search, new, vault; bare, written as a link or as a reference) shows the note's name
+  as text that opens nothing, because omher opens only web links and messenger threads; a screen reader reads its
+  address. Every label is bounded and has no control or bidi characters, and a title's escaped `+` (`%2B`) stays a
+  plus in Confluence, Notion, Figma and Google Maps chips.
 
 - **omher: the Slack briefing opens with a greeting and what it is about.** A brief could open with what the bot did
   or could not do ("could not open the log...") with nothing saying which alert or thread it meant, so the person had
@@ -160,6 +372,14 @@ All notable changes will be documented here.
   channel or thread, what happened and whether they need to do anything. The automation-blueprint reference quotes
   the same prompt, and a bridge test keeps the two identical. Applies to briefings omher sets up from now on; an
   existing `omher-brief` job keeps its prompt until it is edited.
+- **A bot can push its own branch and open its own PR unattended, once you grant it.** Off by default for every
+  profile, and only you change it, at your own terminal: `omh capability-policy pr-delivery on` (`show`, `off`,
+  `--json`). With it on, a webhook, one-shot or scheduled run may push a branch under the grant's prefix (`bot/`
+  by default), open a PR from it, and push fixes to and comment on a PR it opened, nothing else. It never merges,
+  force-pushes, pushes to the default branch, or touches a PR it did not open. In a run nobody can answer (a
+  webhook or `api_server` run, a cron turn, `hermes chat -q`, a delegated child), OMH's tool hook refuses those
+  whatever the grant says, and refuses the allowed ones while the grant is off. It holds a bot that follows the
+  skill, not one that sets out to evade it. `omh doctor` lists the profiles whose grant is on. See [PR Delivery Grant](docs/PR-DELIVERY-GRANT.md).
 - **omher keeps every TERMINALS row over a restart, types European Option signs, and gives the keyboard back.**
   - **Restart:** every TERMINALS row comes back, however many there are. Before, only the newest 20 were saved and the
     next start deleted the older rows' history and files, even for a running Claude. Only the newest 20 keep their
@@ -274,6 +494,101 @@ All notable changes will be documented here.
   last, and loading the skill stays an optional last clause. The hint grows by 225 characters, only on review
   requests.
 - omher connects over SSH to a Windows computer whose Hermes has only the `hermes.cmd` shim and no venv: the remote discovery now reads the shim's interpreter too (a UTF-8 BOM included), in the same order the local app reads launchers (the agent's bin before the user bin, `.exe` before `.cmd` in each), so a stale launcher from an older install is never picked over the current one. Reported and first fixed by @jundev0001 in #3077.
+- **A diff review reads the files it was given before listing anything as not checked.** In live runs the
+  reviewer sometimes wrote "Not checked: the Policy constructor" while the file that defines it was in the review's
+  context, unread, and then flagged a bug that file rules out. The code-review rules OMH adds to a review request now
+  say: open every provided file that defines, constructs or calls what the diff touches before deciding; a file you
+  could read never goes under Not checked. The code-review skill's finding-validation method says the same. The hint
+  grows by 150 characters, only on review requests. (`src/plugin_bundle/omh/awareness.py`,
+  `src/skills/review_methods.py`)
+- **The review false-alarm benchmark no longer scores a correct bug report as a false alarm.** The
+  `trap-lock-held-by-caller` change added a running total that `reset()` never cleared, so after a reset `total()`
+  disagreed with `snapshot()`. Reviewers that reported this were right, but they were counted as false alarms (both
+  arms, every live run). The change now clears the total in `reset()`, so the case asks only whether the reviewer
+  sees the lock the caller holds. Results recorded before this fix overstate false alarms on this case.
+  (`benchmarks/review-false-alarms/corpus/trap-lock-held-by-caller`)
+- **omher's sidebar shows each TERMINALS split as one layout card, with live state per pane.** With the search box
+  empty, a split of 2 to 4 panes is a card at the top of TERMINALS drawn like the split (one cell per pane, real
+  proportions, the CLI's mark, name and last line), and its members leave the folder rows. Text follows the cell's
+  size; each cell's edge shows its state (a light segment circling a busy one, a dashed flowing edge for background
+  work, a blinking amber edge when a bot asks to type into it, red on error), with how long a busy cell has run after a minute.
+  A click focuses a pane, a right-click opens the row menu, and a grip under the card sets its height, kept with the
+  split (`SplitGroup.mapH` in `omher.splits`). Animation is CSS only and stops under reduced motion. Terminals that
+  report no background work never show the dashed edge. A terminal's bell, OSC 9 message or progress done is now quiet
+  news everywhere (an accent dot on the row and the folder summary, a slowly breathing accent edge on the cell, "rang"
+  in the notification), and the amber warning is kept for waits omher knows: a bot's request to type, a chat's approval
+  or question. (`apps/omher/src/sessions/SplitLayoutCard.tsx`) (#3138)
+- **omher: an Apps page connects a bot to Notion, Linear, Jira and the rest of Hermes' MCP catalog.** The plug in
+  the sidebar's foot opens one bot's apps: every entry of Hermes' MCP catalog and its integration skills (Google
+  Workspace, Obsidian, Apple Notes and Reminders, Microsoft Office and others), grouped as work apps, ops and data,
+  then the rest, each with its state for that bot (not connected, connected, turned off, needs sign-in, or state
+  unknown when the bot's config cannot be read). Connect, Sign in and Remove run the bot's own
+  `hermes -p <bot> mcp install|login|remove <name>`; the sign-in is Hermes' own browser page, a value an install asks
+  for is typed in a terminal, and Hermes' own words are shown when a run does not work. New chats get the app's tools
+  within about a minute (Hermes' gateway reconciles its MCP servers on its own); an open chat gets them after
+  `/reload-mcp`. The Tasks page's Linear screen now opens this page instead of printing the command. omher reads the
+  catalog files, the bot's `mcp_servers` names and switches and whether a sign-in token file exists, and never sees a
+  key or a token (`docs/OMHER-BOUNDARY.md` rule 41). (`apps/omher/src/apps/`)
+
+- **omher: a bot's page shows who the bot is: its persona, what it remembers, and its work.** A bot's page in Settings
+  (the row menu's Edit bot, or Edit in the Details panel) showed only its picture, name and a few counts. It now shows
+  the profile's `SOUL.md` as plain text with its size; Hermes' built-in memory (`memories/MEMORY.md`, what the bot
+  remembers, and `memories/USER.md`, what it knows about you) as entries split on Hermes' delimiter, each with its
+  characters against the limit `config.yaml` sets (Hermes' 2,200 and 1,375 when unset) and an Off mark when the profile
+  switches it off; the bot's automations, each opening the Automations page on that job, with Open in Automations
+  filtered to the bot; its Slack, Discord, Telegram and cron sessions, read-only; and its open threads with their
+  status, each opening the thread. Nothing on the page writes: Edit opens the bot's main chat with a request such as
+  "Update your SOUL.md: " in the composer after anything you had typed there, and nothing is sent until you send it. The
+  files are read when the page opens and on Read again, at most 1 MB each (a larger file is sized and not read), only
+  the fixed paths and never through a link, with CRLF and non-UTF-8 bytes tolerated. A bot on another computer is read
+  there by its own bridge, over the same SSH link. Picture and name editing stay where they were.
+  (`apps/omher/bridge/omher_bridge.py` `read_bot_page`, `apps/omher/src/settings/BotSections.tsx`;
+  `docs/OMHER-BOUNDARY.md` rule 42)
+- **A bot whose Discord or Slack stopped connecting now says so in omher and on the OMH TUI bot board.** A Discord
+  bot whose profile gained a role allowlist can be refused at its next reconnect (Discord's Server Members privileged
+  intent) and stay offline, with only Hermes' gateway log saying why; `omh doctor` now reads it, but nothing showed
+  it where the person looks. omher's sidebar row now names a platform known not to be connected ("Discord
+  disconnected", "Slack failed to connect"; in words and a mark, never colour alone), and a reconnect Hermes runs by
+  itself only once Hermes flags it or it has gone on for 10 minutes. The bot's page gains a Messaging section with
+  each platform's state, since when, why in plain words, Hermes' own reason and guidance, and the fix: for a
+  privileged-intents refusal which intents to turn on and where (the Discord Developer Portal's Bot page, Privileged
+  Gateway Intents, with a link), or removing the role allowlist; then Hermes' `hermes -p <gateway> gateway restart` to
+  copy, naming the gateway that serves the bot. omher runs none of it, and says it cannot tell when OMH could not
+  read a bot's logs. The OMH TUI bot board (`/bots`, Ctrl+S) shows the same: the card's bottom edge says
+  `discord ✗ disconnected` before any other chip (a routine reconnect after the same 10 minutes), and the profile's
+  box gives the state, since when, Hermes' reason, the fix and the restart command. All three read one producer,
+  `omh doctor`'s gateway health reader, through a new per-bot view (`omh hermes platforms`, JSON
+  `omh_bot_platforms/v1`, which omher's bridge runs): the serving gateway's own record entry first, else the newest
+  line of that gateway's run in the bounded log tails, so a refusal followed by a later connect reads connected, a
+  connect followed by a fatal error reads disconnected, and a line from an earlier run or for a bot no gateway serves
+  reads as not known, never as connected. A platform Hermes stopped judging when it served the bot again after a
+  config or `.env` change (Discord removed, say) shows nothing. A bot with no messaging platform shows nothing. The
+  reader now also takes escape and control characters, bearer and labelled secrets, a Discord or Slack webhook's
+  credential path and long opaque keys out of Hermes' text, names a log as `~/…` rather than with the home folder
+  spelled out, reads only lines that can be an adapter's (the board keeps unchanged logs from its last read), and
+  names the gateway's profile in every restart command (`hermes -p default gateway restart`; a bare `hermes gateway
+  restart` follows Hermes' sticky active profile). (`src/maintenance/gateway_health.py` `bot_platforms`,
+  `src/tui/bot_board.py`, `apps/omher/src/platforms/`; `docs/OMHER-BOUNDARY.md` rule 43)
+- The OMH TUI no longer asks for kitty image previews in an omher terminal that cannot paint them. omher 1.1.3
+  and earlier set `TERM_PROGRAM=omher` but draw no kitty Unicode placeholders, so pasting an image showed a block of
+  tofu boxes in the transcript and the picture itself over the composer. omher now also sets
+  `TERM_PROGRAM_VERSION`, and the TUI takes real pixels only from omher 1.1.4 on; older omher terminals get the
+  coloured half-block preview.
+
+- **Enter on a subagent in the OMH TUI shows its session on the main screen, as Claude Code shows a teammate's.**
+  Before, Enter in the agent list opened a read-only log in a pager, and the only way to talk to a subagent was `s`
+  then a line. Now Enter (or a click, or Enter on a dag node's child) shows a dim `› From main` row, the brief as the
+  first prompt, the tool rows, the reply, and the agent's own working row while it runs. The composer's top rule ends
+  with the agent's name and reads `Message @<name>…`. What you send goes to that agent: a steer while it runs; once it
+  ended, on Hermes' stdio gateway a turn that continues it, while the shared gateway says it cannot continue it and
+  keeps your text. Esc, or the list's `main` row, goes back to main, whose transcript kept everything meanwhile; the
+  list marks the agent shown `⏺` and the rest `◯`, and its hint reads `⏎ view · x stop · s steer · esc back`. Where
+  Hermes cannot show the session the log pager opens as before. Main and the view each keep their own draft, and a
+  late refusal returns text to the screen it was typed on, added after what is kept there; a paste belongs to the
+  composer it was typed in; `s` and the view both refuse slash commands, `!` lines and images for a subagent; main's
+  questions and stop keys stay on main's screen; on the shared gateway the view reads one page at a time until an
+  empty page, at most 50 reads after the agent ends, then says it could not read the rest. (`src/tui/subagent_session.py`,
+  `src/tui/agent_view.py`, `src/tui/app.py`, `src/tui/frame.py`)
 
 ## 5.0.0 - 2026-11-21
 

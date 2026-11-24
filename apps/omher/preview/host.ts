@@ -153,6 +153,30 @@ const plugins: Record<string, PluginRow[]> = {
   pip: [...BUILTIN],
 };
 
+// Apps (BOUNDARY rule 41): a slice of Hermes' MCP catalog and its integration skills, each bot's state as the bridge's
+// apps.list reads it. Connect, Sign in and Remove are held back (guard.ts) and refused below.
+const APP_CATALOG = [
+  { name: "notion", description: "Search, read and write Notion pages and databases.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "linear", description: "Find, create, and update Linear issues, projects, and comments.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "atlassian", description: "Jira issues and Confluence pages.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "figma", description: "Figma files, frames and comments.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "sentry", description: "Sentry issues, events and releases.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "asana", description: "Asana tasks, projects and goals.", auth: "oauth", asks: ["ASANA_CLIENT_ID", "ASANA_CLIENT_SECRET"], terminal: true, device: false },
+  { name: "datadog", description: "Datadog monitors, logs and incidents.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "vercel", description: "Vercel projects, deployments and logs.", auth: "oauth", asks: [], terminal: false, device: false },
+  { name: "deepwiki", description: "Ask questions about public GitHub repositories.", auth: "none", asks: [], terminal: false, device: false },
+  { name: "wolfram", description: "Wolfram Alpha answers and computations.", auth: "none", asks: [], terminal: false, device: false },
+];
+const APP_STATES: Record<string, Record<string, string>> = {
+  kami: { linear: "installed", notion: "needs_signin", deepwiki: "installed" },
+  friren: { deepwiki: "installed" },
+};
+const APP_SKILLS = [
+  { name: "google-workspace", description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.", state: "installed" },
+  { name: "obsidian", description: "Read, search, create, and edit notes in the Obsidian vault.", state: "available" },
+  { name: "himalaya", description: "Himalaya CLI: IMAP/SMTP email from terminal.", state: "available" },
+];
+
 const SKILLS = [
   { name: "dag-ulw", description: "Plan big work as parts that run in parallel, each checked before it counts." },
   { name: "plan", description: "Break the work into steps and agree on them before doing it." },
@@ -305,7 +329,7 @@ const OPS: Record<string, (p: Json) => unknown> = {
   "routines.list": (p) => ({
     routines: (ROUTINES[need(p).name] ?? []).map((r) => ({ id: r.id, name: r.name, schedule: r.schedule, next_run_at: nowS() + (r.next as number), last_run_at: nowS() + (r.last as number), last_status: "ok", enabled: true })),
   }),
-  "models.options": (p) => ({ providers: PROVIDERS, current: { ...(models[need(p).name] as object) }, reasoning_levels: ["none", "low", "medium", "high", "xhigh"] }),
+  "models.options": (p) => ({ providers: PROVIDERS, current: { ...(models[need(p).name] as object) }, reasoning_levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }),
   "chat.set_model": (p) => {
     const b = need(p);
     const cur = models[b.name];
@@ -315,6 +339,19 @@ const OPS: Record<string, (p: Json) => unknown> = {
   "bots.info": (p) => {
     const i = INFO[need(p).name] as { places: Json; first: number; skills: number };
     return { places: { ...i.places }, first_active: nowS() - i.first, last_active: nowS() - 20, skills: i.skills, routines: (ROUTINES[String(p.bot)] ?? []).length };
+  },
+  // the bot page's persona and memory: staged, no profile is read
+  "bots.page": (p) => {
+    const b = need(p);
+    const mem = (target: string, file: string, entries: string[], limit: number) => ({
+      target, file: `memories/${file}`, state: entries.length ? "ok" : "missing", size: entries.length ? entries.join("\n§\n").length : null,
+      lossy: false, entries, chars: entries.join("\n§\n").length, limit, enabled: true,
+    });
+    const soul = `# ${String(b.display_name)}\n\n${String(b.description)}: short answers first, details when asked.\n`;
+    return {
+      soul: { file: "SOUL.md", state: "ok", size: soul.length, text: soul, lossy: false },
+      memory: [mem("memory", "MEMORY.md", ["The web app deploys from main after CI passes."], 2200), mem("user", "USER.md", ["Prefers short answers."], 1375)],
+    };
   },
   "bots.avatar": () => ({ rev: null, data: null }),
   "skills.list": (p) => (need(p), { skills: SKILLS }),
@@ -383,6 +420,14 @@ const OPS: Record<string, (p: Json) => unknown> = {
   "chat.steer": (p) => (need(p), { status: "queued" }),
   "runs.node_session": (p) => (need(p), { session: null }),
   "tasks.linear": (p) => (need(p), { configured: false, server: "" }),
+  "apps.list": (p) => {
+    const b = need(p);
+    return {
+      catalog: true,
+      apps: APP_CATALOG.map((e) => ({ ...e, asks: [...e.asks], state: APP_STATES[b.name]?.[e.name] ?? "available" })),
+      skills: APP_SKILLS.map((x) => ({ ...x, state: b.name === "kami" ? x.state : "available" })),
+    };
+  },
   "thread.list": (p) => {
     const b = need(p);
     return {
@@ -433,6 +478,8 @@ for (const op of [
   "bots.rename", "bots.set_avatar", "chat.attach", "accounts.add", "accounts.set_active", "accounts.label", "accounts.remove", "accounts.discard",
   "automations.add", "automations.pause", "automations.resume", "automations.remove",
   "plugins.install", "plugins.toggle", "plugins.update", "plugins.remove", "plugins.reload", "bots.restart",
+  // Apps: each runs the bot's own `hermes mcp` on a real computer
+  "apps.install", "apps.login", "apps.remove",
   // archiving a thread would change a Hermes session (guard.ts holds the buttons back)
   "thread.remove",
 ])

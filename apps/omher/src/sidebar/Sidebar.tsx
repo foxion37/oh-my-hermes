@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getRestarts } from "./restart";
 import "./sidebar.css";
 import logo from "../assets/omher-mark.png";
-import { selectAsks, selectSidebarBots, useStore } from "../state/store";
+import { getStore, selectAsks, selectSidebarBots, useStore } from "../state/store";
 import { slots } from "../features";
-import { CalendarIcon, GearIcon, GridIcon, IconButton, PlusIcon, SearchIcon } from "../ui";
+import { CalendarIcon, GearIcon, GridIcon, IconButton, PlugIcon, PlusIcon, SearchIcon } from "../ui";
 import { BotRow, threadsLatest } from "./BotRow";
 import { threadKey } from "../threads/types";
 import { useRowDrag } from "./useRowDrag";
@@ -16,6 +16,7 @@ import { SessionList, SessionsHeader } from "../sessions/SessionsSection";
 import { SessionBackgroundMenu } from "../sessions/SessionBackgroundMenu";
 import { SESSIONS_ENTRY } from "../sessions/entry";
 import { NeedsStrip } from "./Needs";
+import { useThreadPrs } from "../threads/ThreadPrs";
 import { UpdateButton } from "./UpdateButton";
 import { FirstRunHint } from "../onboarding/FirstRun";
 import { OmhNotice } from "./OmhNotice";
@@ -29,6 +30,7 @@ import { SplitDivider, useSideSplit } from "./SideSplit";
 import { useAutoSplit } from "./autoSplit";
 import { TasksBar } from "../tasks/TasksBar";
 import { DiskChip } from "./DiskChip";
+import { PLATFORMS_POLL_MS } from "../platforms/platforms";
 
 const sessionBackground = (target: EventTarget) => target instanceof Element && !target.closest(".ss-row, .tg-h, button, input, textarea, select, a, [contenteditable], [role=menu], [role=menuitem]");
 
@@ -57,6 +59,10 @@ export function Sidebar() {
     ? listed.filter((b) => b.display_name.toLowerCase().includes(needle) || b.name.toLowerCase().includes(needle))
     : listed;
   const asks = selectAsks(s);
+  // threads whose pull request is open with failing checks, still listed (rule 40: shown, never acted on)
+  const failing = useThreadPrs()
+    .failing()
+    .filter((f) => (s.threads[f.bot] ?? []).some((r) => r.thread === f.thread));
   // hold a row to drag it; off while searching, where a row's place in the filtered list is not its sidebar place
   const drag = useRowDrag(
     listed.map((b) => b.name),
@@ -68,6 +74,11 @@ export function Sidebar() {
   const automations = s.automations?.length ?? 0;
   const inChat = s.ui.view === "chat";
   useRevealBot(s.selectedBot, s.ui.thread, inChat);
+  // each bot's messaging platforms (rule 43): read with the bots when the bridge connects, then once a minute
+  useEffect(() => {
+    const id = setInterval(() => void getStore().actions.loadPlatforms(), PLATFORMS_POLL_MS);
+    return () => clearInterval(id);
+  }, []);
   const botList = useRef<HTMLElement>(null);
   const botNav = useEdgeFade<HTMLElement>(botList);
   // the dock: the bots scrolled out of view at the top of BOTS (none at the top: no dock)
@@ -108,7 +119,7 @@ export function Sidebar() {
         />
       </label>
       <TasksBar />
-      <NeedsStrip asks={asks} />
+      <NeedsStrip asks={asks} prs={failing} />
       <section ref={botSec} className={`side-sec${needle && bots.length === 0 ? " side-sec-fit" : ""}`} data-testid="side-bots" style={needle ? undefined : split.bots}>
         <div className="side-sh">{t("nav.bots")}</div>
         <nav ref={botNav} className="bot-list" aria-label={t("nav.bots")} role="tree">
@@ -134,6 +145,7 @@ export function Sidebar() {
               drag={drag.row(b.name)}
               groupId={hasThreads ? groupId : undefined}
               latest={hasThreads ? threadsLatest(s.threads[b.name]!, (th) => s.chats[threadKey(b.name, th)]) : null}
+              platforms={s.platforms}
               menu={{
                 onNewThread: onNew,
                 pinned,
@@ -183,7 +195,7 @@ export function Sidebar() {
       <div className="side-foot">
         {/* little disk space left on the home folder's volume (src/lib/disk.ts); nothing while it is fine */}
         <DiskChip />
-        {/* one compact row: Automations, Plugins and Settings as icon buttons (their names in the tooltip and to a
+        {/* one compact row: Automations, Plugins, Apps and Settings as icon buttons (their names in the tooltip and to a
             screen reader), the usage marks after them */}
         <div className="foot-row" data-testid="foot-row">
           <button
@@ -208,6 +220,17 @@ export function Sidebar() {
           >
             <GridIcon />
             <span className="vh">{t("nav.plugins")}</span>
+          </button>
+          <button
+            type="button"
+            className={`nav nav-i${s.ui.view === "apps" ? " on" : ""}`}
+            aria-current={s.ui.view === "apps" ? "page" : undefined}
+            title={t("nav.apps")}
+            onClick={() => s.openApps()}
+            data-testid="nav-apps"
+          >
+            <PlugIcon />
+            <span className="vh">{t("nav.apps")}</span>
           </button>
           <button
             type="button"

@@ -70,6 +70,8 @@ def builtin_skill_support_templates():
     from .ai_job_search_skill import ai_job_search_support_templates
     from .frontend_support import frontend_toolkit_support_templates
     from .channel_watch_support import channel_watch_support_templates
+    from .pr_watch_support import pr_watch_support_templates
+    from .monitor_watch_support import monitor_watch_support_templates
 
     return validate_support_templates([
         *show_reel_support_templates(),
@@ -80,6 +82,8 @@ def builtin_skill_support_templates():
         *ai_job_search_support_templates(),
         *frontend_toolkit_support_templates(),
         *channel_watch_support_templates(),
+        *pr_watch_support_templates(),
+        *monitor_watch_support_templates(),
     ])
 
 

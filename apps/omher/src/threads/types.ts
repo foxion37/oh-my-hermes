@@ -1,5 +1,6 @@
 // Bridge ops and events of threads under a bot (bridge `thread.*`). Kept here, not in lib/protocol.ts, so this lane
 // merges cleanly beside the others; the shapes are the bridge's (omher_bridge.py op_thread_*).
+import type { LostTurn } from "../lib/protocol";
 
 /** One thread as `thread.list` / `thread.create` give it. `thread` is Hermes' stored session id (stable across
  *  restarts); its events arrive tagged `session: <thread>` and land in the store under `fold:<bot>:<thread>`. */
@@ -24,8 +25,10 @@ export interface ThreadOpenResult {
   session_id: string;
   title: string;
   cwd: string;
-  messages: { id: string; role: "user" | "assistant"; text: string; ts: number }[];
+  messages: { id: string; role: "user" | "assistant"; text: string; ts: number; queued?: boolean }[];
   running: boolean;
+  /** Turns of this thread Hermes lost in a restart (as `chat.open`'s). */
+  lost?: LostTurn[];
   model: string;
   provider: string;
   reasoning: string;
@@ -36,6 +39,9 @@ export interface ThreadOps {
   "thread.list": { params: { bot: string }; result: { threads: ThreadRow[] } };
   "thread.open": { params: { bot: string; thread: string }; result: ThreadOpenResult };
   "thread.remove": { params: { bot: string; thread: string }; result: { thread: string; archived: boolean } };
+  /** The PRs the bot named in its answers in this thread, newest first (at most three), with GitHub's word on each
+   *  through the person's own `gh` (BOUNDARY rules 21 and 40). `fresh`: the person pressed Refresh. */
+  "thread.prs": { params: { bot: string; thread: string; fresh?: boolean }; result: { prs: unknown[] } };
 }
 
 export type ThreadEvent =

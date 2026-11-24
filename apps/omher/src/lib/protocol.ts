@@ -62,6 +62,89 @@ export interface BotInfo {
   routines: number;
 }
 
+/** How the bridge found one file of the bot's profile for its page: read (`ok`), absent, larger than it reads
+ *  (`too_big`: sized only), not a regular file or a failed read (`unreadable`), or a link (the file or a folder on
+ *  its path), which it never follows wherever it leads (`link`). */
+export type PageFileState = "ok" | "missing" | "too_big" | "unreadable" | "link";
+
+/** The profile's `SOUL.md` (the bot's persona), read-only. `text` is "" unless `state` is `ok`; `lossy`: some bytes
+ *  were not UTF-8 and show as U+FFFD. */
+export interface BotSoul {
+  file: string;
+  state: PageFileState;
+  size: number | null;
+  text: string;
+  lossy: boolean;
+}
+
+/** One of Hermes' built-in memory targets (`memories/MEMORY.md`, `memories/USER.md`), read-only: its entries split
+ *  on Hermes' delimiter, the characters Hermes counts against `limit`, and whether config.yaml switches it on. */
+export interface MemoryTarget {
+  target: "memory" | "user";
+  file: string;
+  state: PageFileState;
+  size: number | null;
+  lossy: boolean;
+  entries: string[];
+  chars: number;
+  limit: number;
+  enabled: boolean;
+}
+
+/** `bots.page`: what the bot page shows of who the bot is. */
+export interface BotPage {
+  soul: BotSoul;
+  memory: MemoryTarget[];
+}
+
+/** A messaging platform's state as OMH reads it from Hermes' gateway records and logs (`bots.platforms`, BOUNDARY
+ *  rule 43). Only `failed`, `disconnected` and `reconnecting` say "known not to be connected now"; `unknown` is never
+ *  shown as connected or as not connected. */
+export type PlatformStatus =
+  | "connected"
+  | "degraded"
+  | "connecting"
+  | "disabled"
+  | "failed"
+  | "disconnected"
+  | "reconnecting"
+  | "unknown";
+
+/** One platform of one bot. Times are UTC ISO strings ("" when not known); `reason` and `guidance` are Hermes' own
+ *  words, bounded, with credentials, ids, emails, a URL's query and control characters taken out; `restart` is
+ *  Hermes' `hermes -p <profile> gateway restart` for the gateway that serves the bot, to copy (omher never runs it).
+ *  The fix is worded by the page from `reason_kind`. */
+export interface PlatformState {
+  platform: string;
+  status: PlatformStatus;
+  /** A person must act: Hermes will not retry it, or flags it as needing attention. */
+  attention: boolean;
+  since: string;
+  logged: string;
+  reason_kind: string;
+  /** For `unknown`: earlier_run, not_served, ambiguous or unknown_state. */
+  unknown_why: string;
+  reason: string;
+  guidance: string;
+  restart: string;
+  /** A privileged-intents refusal: the intents Hermes' own record says it requests ([] when it does not say). */
+  intents: string[];
+}
+
+export interface BotPlatforms {
+  /** The gateway logs its lines can be in (its own and the root's): an empty list is believable only when `read` or
+   *  `missing`. */
+  log: "read" | "missing" | "unreadable" | "unrecognized" | "unknown";
+  platforms: PlatformState[];
+}
+
+/** `bots.platforms`: every bot on this computer. `available` is false when oh-my-hermes is not here or its answer
+ *  could not be read: then nothing is known, and nothing is shown as connected. */
+export interface PlatformsRead {
+  available: boolean;
+  bots: Record<string, BotPlatforms>;
+}
+
 /** One of a bot's skills (a `SKILL.md` under `<profile>/skills`), for the composer's `./` picker. */
 /** `{slack: {C0BLC924P1P: "#docs-harness"}, discord: {1544…: "#cron"}}`: names for link chips. */
 export interface LinkPlaces {
@@ -103,6 +186,16 @@ export interface Msg {
   steer_read?: number;
   /** steered rows: the first line the bot wrote after it in that turn (its note or its answer). */
   steer_reply?: string;
+  /** user rows: still in Hermes' queue, not started and not in the transcript yet (behind a turn it lost). Its id is
+   *  `q-<admission id>`; once it runs, the transcript has it under its own row id. */
+  queued?: boolean;
+}
+
+/** A turn Hermes lost when its gateway stopped mid-turn (a crash or a kill): `id` is its admission, `text` what the
+ *  person had sent. Hermes holds every later message of that chat until the person discards it (`chat.discard`). */
+export interface LostTurn {
+  id: string;
+  text: string;
 }
 
 /** The automation whose delivered result a Bot Chat answer replies to: its name and when it came in (unix s). */
@@ -213,6 +306,38 @@ export interface PluginRow {
   needs_env: string[];
 }
 
+/** One entry of Hermes' MCP catalog for one bot (`apps.list`, BOUNDARY rule 41). `state` comes from the bot's
+ *  `mcp_servers` and whether Hermes keeps a sign-in for it; `unknown` when the bot's config could not be read. */
+export type AppState = "available" | "installed" | "disabled" | "needs_signin" | "unknown";
+export interface AppRow {
+  name: string;
+  description: string;
+  /** The catalog's auth type: an `oauth` entry signs in through Hermes' own browser flow. */
+  auth: "oauth" | "api_key" | "none";
+  /** Values Hermes asks for when it installs this entry (env names); it asks in a terminal, never through omher. */
+  asks: string[];
+  /** One of them can only be typed in a terminal (Hermes never takes a non-secret value from `.env`, and with no stdin
+   *  its prompt answers nothing): Connect from omher always fails, so the card shows the command instead. */
+  terminal: boolean;
+  /** The bot's own config sets this server's sign-in to a device code (`oauth.flow: device`): Hermes shows the code
+   *  only in a terminal, so the page offers no Sign in and shows the command instead. */
+  device: boolean;
+  state: AppState;
+}
+/** One of Hermes' integration skills for one bot: the bot has it (installed or turned off) or Hermes ships it. */
+export interface AppSkill {
+  name: string;
+  description: string;
+  state: "installed" | "disabled" | "available";
+}
+/** What one `hermes -p <bot> mcp install|login|remove <name>` came to, read back from the bot's files; a run that did
+ *  not work carries Hermes' own words (`line`). */
+export interface AppRun {
+  outcome: "ok" | "failed";
+  state: AppState;
+  line?: string;
+}
+
 export interface CatalogResult {
   total: number;
   matched: number;
@@ -251,6 +376,9 @@ export interface ModelCurrent {
   model: string;
   provider: string;
   reasoning: string;
+  /** The level the route actually sends (Hermes' `reasoning_effort_wire`; it clamps `ultra` to `max` on most routes):
+   *  the pick itself when sent verbatim, "" or absent when Hermes does not say. */
+  reasoning_wire?: string;
 }
 
 /** `bots.ready`: Hermes' own readiness probe for a bot (`setup.runtime_check`). `unknown`: the gateway could not say
@@ -281,9 +409,13 @@ export interface ChatOpenResult {
   session_id: string;
   messages: Msg[];
   running: boolean;
+  /** Turns of this chat Hermes lost in a restart: the chat is paused until they are discarded. */
+  lost?: LostTurn[];
   model: string;
   provider: string;
   reasoning: string;
+  /** As ModelCurrent's: what the route sends for `reasoning`. */
+  reasoning_wire?: string;
 }
 
 /** A Hermes chat the bridge created in a picked folder (SESSIONS > oh-my-hermes). */
@@ -305,6 +437,8 @@ export interface FolderResumeResult extends FolderOpenResult {
   stored: string;
   messages: Msg[];
   running: boolean;
+  /** Turns of this folder chat Hermes lost in a restart (as `chat.open`'s). */
+  lost?: LostTurn[];
 }
 
 /** op name -> { params, result }. `bot` is always the profile name. `session` (optional) names a folder chat
@@ -317,8 +451,11 @@ export interface OpMap {
   /** `reply_to` = an elsewhere session id: the bridge adds that thread as context for the bot.
    *  omher posts nothing. */
   /** `queued`: a held message (steer queue); a still-busy Hermes runs it after its current work, never steers it. */
-  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string; queued?: boolean }; result: { input_id: string } };
+  /** `paused`: Hermes keeps the message in its queue behind a turn it lost, and runs it once that turn is discarded. */
+  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string; queued?: boolean }; result: { input_id: string; paused?: boolean } };
   "chat.interrupt": { params: { bot: string; session?: string }; result: Record<string, never> };
+  /** Acknowledge the chat's lost turns (Hermes' `prompt.resolve_unknown`): never re-run, and what waits behind runs. */
+  "chat.discard": { params: { bot: string; session?: string }; result: { discarded: number } };
   /** Steer the main chat's running turn (Hermes' `session.steer`): `queued` = taken, `rejected` = not (no turn runs,
    *  or Hermes refused). The bridge never sends a refused steer another way. */
   /** queued = taken; rejected = no agent saw it (safe to send normally); uncertain = may already be with the agent */
@@ -385,6 +522,13 @@ export interface OpMap {
   "peers.attach": { params: { peer: string; label: string; host: string; url: string }; result: { peer: string; bots: Bot[] } };
   "peers.detach": { params: { peer: string }; result: Record<string, never> };
   "plugins.remove": { params: { bot: string; name: string }; result: { name: string } };
+  /** Hermes' MCP catalog with each entry's state for `bot`, and its integration skills (files only). */
+  "apps.list": { params: { bot: string }; result: { catalog: boolean; apps: AppRow[]; skills: AppSkill[] } };
+  /** `hermes -p <bot> mcp install <name>`, `mcp login <name>` (Hermes' own browser sign-in) and `mcp remove <name>`:
+   *  a name from the catalog just read, one run at a time per bot. */
+  "apps.install": { params: { bot: string; name: string }; result: AppRun };
+  "apps.login": { params: { bot: string; name: string }; result: AppRun };
+  "apps.remove": { params: { bot: string; name: string }; result: AppRun };
   "models.options": { params: { bot: string }; result: ModelOptions };
   /** Can the bot answer (read-only)? With `provider` (openai-codex, anthropic or nous) the strict check for it. */
   "bots.ready": { params: { bot: string; provider?: string }; result: BotReady };
@@ -400,6 +544,11 @@ export interface OpMap {
     result: { avatar_rev: number | null };
   };
   "bots.info": { params: { bot: string }; result: BotInfo };
+  /** The bot page's persona and memory files, read-only (BOUNDARY rule 42); a bot on another computer is read there. */
+  "bots.page": { params: { bot: string }; result: BotPage };
+  /** Every local bot's messaging platforms through OMH's read-only `omh hermes platforms` (BOUNDARY rule 43);
+   *  `fresh` asks again unless the last answer is under two seconds old. */
+  "bots.platforms": { params: { fresh?: boolean }; result: PlatformsRead };
   /** The bot's skills from its profile folder (read-only), sorted by name. */
   "skills.list": { params: { bot: string }; result: { skills: Skill[] } };
   /** The slash commands Hermes answers for this bot, from Hermes' own registry (read-only). */
@@ -609,6 +758,8 @@ export type AskSubagent = { id: string; name: string };
 
 export type BridgeEvent =
   | (EventBase & { event: "turn.start" })
+  /** What Hermes now says of the chat's lost turns (`session.info`'s `pending`): one discarded elsewhere, or a new one. */
+  | (EventBase & { event: "chat.lost"; lost: LostTurn[] })
   /** `retry`: the agent tries the turn again by itself (OmO's `auto_retry_start`); the line says which try. */
   | (EventBase & { event: "status"; text: string; retry?: { attempt: number; max: number } })
   /** The agent is thinking; `text` is what it thought, when the agent sends it (SESSIONS agents). */

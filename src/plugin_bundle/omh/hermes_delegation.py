@@ -546,6 +546,10 @@ HERMES_MIXTURE_ALIAS_PROVIDER_FAMILIES: dict[str, tuple[str, ...]] = {
     "gpt-5.6-terra": ("openai-codex", "openai"),
     "glm-5.3": ("zai", "openrouter", "opencode"),
     "glm-5.3-flash": ("zai", "openrouter", "opencode"),
+    # Recognition-only, in no shipped chain (2026-11-23): Z.ai opened GLM-5.4
+    # to every GLM Coding Plan user; no OpenRouter or OpenCode listing was
+    # observed, so no relay family. No page or price published yet.
+    "glm-5.4": ("zai",),
     # Recognition-only, in no shipped chain (catalog sync, 2026-10-28): Z.ai's
     # pricing page lists it and OpenRouter lists `z-ai/glm-5.3-flashx`; no
     # OpenCode serving was observed.
@@ -1384,6 +1388,17 @@ def _valid_provenance_record(record: object) -> dict[str, Any] | None:
         return None
     if owner:
         cleaned["session_id"] = owner
+    # The in-child fallback chain OMH wrote into `delegation.fallback_providers`
+    # (`delegation_routing.encode_fallback_chain` text; never a chain the
+    # person owns) and the alias of its last position, so `fallback` advances
+    # past what the child walked. Additive-optional like `session_id`: kept
+    # only when non-empty.
+    for field, limit in (("fallback_providers", 4096), ("fallback_through", 160), ("fallback_through_index", 8)):
+        value = record.get(field, "")
+        if not isinstance(value, str) or len(value) > limit:
+            return None
+        if value:
+            cleaned[field] = value
     return cleaned
 
 

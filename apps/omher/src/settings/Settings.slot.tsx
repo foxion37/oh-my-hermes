@@ -1,6 +1,7 @@
-// Settings view (main column while `ui.view === "settings"`). Left list: You (Accounts), Bots (one page per bot: Profile,
-// Model, Work) and App (General, Terminal, Agents, Providers, Computer). Pages are `bot:<name>` and the App page names; the
-// page lives in the store (`ui.settingsPage`) so the model popover can deep-link to a bot.
+// Settings view (main column while `ui.view === "settings"`). Left list: You (Accounts), Bots (one page per bot: its
+// picture and name, Persona, Memory, Automations, Elsewhere, Open threads, then Profile, Model, Work) and App (General,
+// Terminal, Agents, Providers, Computer). Pages are `bot:<name>` and the App page names; the page lives in the store
+// (`ui.settingsPage`) so the model popover, the Details panel and the row menu's Edit bot can deep-link to a bot.
 import { useEffect, useState } from "react";
 import "./settings.css";
 import type { SlotProps } from "../features";
@@ -11,7 +12,7 @@ import { appSounds, setSoundsEnabled, soundsEnabled } from "../lib/sounds";
 import { LANG_NAMES, LANGS, t, type Key, type Lang } from "../i18n";
 import { Avatar, GridIcon, ModelIcon, SourceIcon } from "../ui";
 import { Seg } from "../chat/model/Seg";
-import { reasoningLabel } from "../chat/model/levels";
+import { reasoningPill } from "../chat/model/levels";
 import { Appearance } from "./Appearance";
 import { AccountsPage } from "./accounts/AccountsPage";
 import { ProvidersPage } from "./providers/ProvidersPage";
@@ -24,6 +25,7 @@ import { Toggle } from "../pages/kit";
 import { awakeEnabled, closeHides, isMacPlatform, setAwakeEnabled, setCloseHides } from "../lib/power";
 import { AgentsPage } from "./agents/AgentsPage";
 import { AvatarEditor, BotFacts, NameEditor, PictureActions, placeName, useBotInfo, usePictureEditor } from "./BotIdentity";
+import { BotSections } from "./BotSections";
 
 export const slot = "settings";
 
@@ -165,6 +167,8 @@ function BotPage({ bot }: { bot: Bot }) {
   const model = chat?.model || opts?.current.model || bot.model;
   const provider = chat?.provider || opts?.current.provider || bot.provider;
   const reasoning = chat?.reasoning || opts?.current.reasoning || "";
+  // what the route sends for that level, from the same source as the level itself (as the model picker's pill)
+  const wire = chat?.reasoning ? chat.reasoningWire : opts?.current.reasoning_wire;
   const offline = bot.status === "offline";
   const info = useBotInfo(bot);
   const picture = usePictureEditor(bot);
@@ -199,6 +203,7 @@ function BotPage({ bot }: { bot: Bot }) {
         </div>
       </div>
       <BotFacts info={info} />
+      <BotSections key={bot.name} bot={bot} />
 
       <div className="st-gh">{t("set.profile")}</div>
       <div className="st-grp">
@@ -216,7 +221,7 @@ function BotPage({ bot }: { bot: Bot }) {
           </Value>
         </Row>
         <Row title={t("set.reasoning")} hint={t("set.reasoningHint")}>
-          <Value>{reasoning ? reasoningLabel(reasoning) : "—"}</Value>
+          <Value>{reasoning ? reasoningPill(reasoning, wire) : "—"}</Value>
         </Row>
         <Row title={t("set.change")} hint={t("set.changeHint")}>
           <button type="button" className="st-btn" onClick={() => void s.selectBot(bot.name)} disabled={offline}>
@@ -355,6 +360,7 @@ function BotCard({ bot }: { bot: Bot }) {
 }
 
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+const WIN = typeof navigator !== "undefined" && /^Win/.test(navigator.platform);
 const SHORTCUTS: [string, Key][] = [
   [`${MOD}1 … ${MOD}9`, "key.openBot"],
   [`${MOD}K`, "key.search"],
@@ -374,10 +380,14 @@ const SHORTCUTS: [string, Key][] = [
     ? ([
         ["⌘← · ⌘→ · ⌘⌫ · ⌘⌦", "key.termLine"],
         ["⌥← · ⌥→", "key.termWord"],
-        ["⌘K", "key.termClear"],
       ] as [string, Key][])
-    : ([["Ctrl+Shift+C · Ctrl+Shift+V · Ctrl+Insert · Shift+Insert", "key.termCopyPaste"]] as [string, Key][])),
+    : ([
+        [WIN ? "Ctrl+C · Ctrl+V · Ctrl+Shift+C · Ctrl+Shift+V · Ctrl+Insert · Shift+Insert" : "Ctrl+Shift+C · Ctrl+Shift+V · Ctrl+Insert · Shift+Insert", "key.termCopyPaste"],
+        ["Ctrl+Shift+A", "key.termSelectAll"],
+      ] as [string, Key][])),
+  [MOD === "⌘" ? "⌘K" : "Ctrl+Shift+K", "key.termClear"],
   [MOD === "⌘" ? "⌘Home · ⌘End" : "Ctrl+Home · Ctrl+End", "key.termScroll"],
+  [MOD === "⌘" ? "⌘↑ · ⌘↓" : "Ctrl+↑ · Ctrl+↓", "key.termPrompt"],
   [MOD === "⌘" ? "⌘⇧C" : "Alt+Shift+C", "key.copyLink"],
   ["1 · 2 · 3", "key.cardKeys"],
   ["Esc", "key.stop"],

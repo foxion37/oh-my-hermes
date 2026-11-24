@@ -109,7 +109,19 @@ class RoutingPrecisionTests(unittest.TestCase):
         # One-line code backlogs add ten: four made in the session, six one-line look-alikes that keep their route.
         # skill-eval adds four: a chess, tennis, interview and Korean sales skill are a person's ability.
         # Its review round adds one: a person's skill at using Codex.
-        self.assertEqual(payload["summary"]["case_count"], 1545)
+        # PR watch adds six: a PR queue, two videos, a how-to, a CI concept question and a watch-out warning.
+        # Its verification round adds three: a PR metric and two deploys watched beside a PR.
+        # Its final round adds three PR measures watched until a date.
+        # Its hold round adds five: four declined watches and CI on main.
+        # Monitor recipes add ten platform mentions that ask for no trigger.
+        # Their review round adds twelve: time questions, outages, APIs, `in linear`, 이전에, a plugin update.
+        # Cross-platform workflows add nine: replies, calendar questions, a reminder alert, a Sentry question,
+        # a bare vault and Figma exports.
+        # Its review round adds eight: words matched inside longer words, a common noun, an alert read, a reply,
+        # a secrets vault, a bolt, and two questions about meeting notes.
+        # Merged: 1584 (monitor recipes) + 17 cross-platform cases = 1601.
+        # Its anchor round adds one: viewing a Figma frame is a question.
+        self.assertEqual(payload["summary"]["case_count"], 1602)
         self.assertEqual(payload["summary"]["passing_count"], payload["summary"]["case_count"])
         self.assertEqual(payload["summary"]["negative_case_count"], payload["summary"]["case_count"])
         self.assertEqual(payload["summary"]["negative_passing_count"], payload["summary"]["case_count"])
@@ -186,7 +198,13 @@ class RoutingPrecisionTests(unittest.TestCase):
         # A concept question under a busy-path gateway origin is answered directly (+1).
         # 356 -> 359: the reach round's negatives that the router answers directly.
         # 364 -> 370: four one-line code backlogs, functions to explain and a one-line typo answer directly.
-        self.assertEqual(payload["summary"]["direct_answer_count"], 370)
+        # 370 -> 371: the PR watch lane's CI concept question is answered directly.
+        # 371 -> 372: its staging deploy beside a merged PR falls back to a direct answer.
+        # 372 -> 374: the monitor-trigger lane's calendar question and linear regression are answered directly.
+        # 374 -> 377: its review round's last-mail question, Gmail outage and `in linear regression`.
+        # 377 -> 379: the cross-platform calendar question and Sentry concept question are answered directly.
+        # 379 -> 380: viewing a Figma frame in presentation mode is answered directly.
+        self.assertEqual(payload["summary"]["direct_answer_count"], 380)
         # show-reel's README-link control is answered as a file lookup (+1).
         # "Use OMH to fix the failing test in billing.py" names a file: a file lookup (+1).
         # Copying the skills OMH selected and summarizing the files it picked
@@ -284,7 +302,19 @@ class RoutingPrecisionTests(unittest.TestCase):
         # skill-eval adds seven host-fit checks (four English, three Korean) and five asks that keep
         # skill-health, skill-scout and agent-evaluation.
         # Its review round adds three: two artifact checks that dispatch, one staff assessment that does not.
-        self.assertEqual(payload["summary"]["intervention_case_count"], 1352)
+        # PR watch adds seven: five waits on one PR that dispatch, a PR review and CI on main that keep their owner.
+        # Its verification round adds one: a deploy monitored after a merge keeps deploy-and-monitor.
+        # Its final round adds five PR waits that name logs, production, a server or a deploy elsewhere.
+        # Its hold round adds two: a declined review, then a PR watch, in English and Korean.
+        # Monitor recipes add seventeen: twelve platform triggers that dispatch and five neighbours that keep their owner.
+        # Their review round adds six neighbours that keep connector-operator or gateway-intent-card.
+        # Cross-platform workflows add twenty-seven: nineteen app items, meeting records, vault uses and Figma
+        # frames that dispatch, and eight sentences in another lane that keep their owner.
+        # Its review round adds eight more sentences in another lane that keep their owner.
+        # Cross-platform, merged with monitor recipes: two trigger sentences naming their work stay with
+        # automation-blueprint. Merged: 1390 (monitor recipes) + 37 cross-platform cases = 1427.
+        # Its verification round adds three: an existing PR link, an urgent spec to PR, a recall apart from the vault.
+        self.assertEqual(payload["summary"]["intervention_case_count"], 1430)
         self.assertEqual(
             payload["summary"]["intervention_passing_count"], payload["summary"]["intervention_case_count"]
         )

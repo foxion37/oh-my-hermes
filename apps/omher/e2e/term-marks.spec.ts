@@ -1,7 +1,8 @@
 // What a shell or CLI says of itself through its own escapes (src/sessions/term/engine-marks.ts), on the mock host
 // with bytes fed as the program's output (`__omherMockOut`):
 //   1. OSC 133 prompt marks: four commands (three end 0, one ends 1) and a fifth prompt; Cmd+Up moves the view to each
-//      earlier prompt in turn, Cmd+Down / Cmd+PageDown back; each prompt has a gutter mark, the failed one red;
+//      earlier prompt in turn, Cmd+Down / Cmd+PageDown back (Ctrl+Up / Ctrl+Down off macOS: run with
+//      OMHER_E2E_PLATFORM=Win32); each prompt has a gutter mark, the failed one red;
 //   2. a terminal that sent no marks: Cmd+Up moves nothing (as before);
 //   3. OSC 7: `file:///tmp/x%20y` renames the bottom panel's tab to "x y"; a TERMINALS row shows that folder on its
 //      second line; another computer's folder, a relative path or a non-file address changes neither; this computer's
@@ -10,7 +11,7 @@
 //      marks the row as the bell does (and raises no notification); done without working first marks nothing.
 // Chromium (Playwright's headless shell); nothing here ran in the Tauri window.
 import { expect, test, type Page } from "@playwright/test";
-import { mock, newTerminal, openApp } from "./term-find-helpers";
+import { mock, modKey, newTerminal, openApp } from "./term-find-helpers";
 
 test.beforeEach(async () => {
   await mock("mock.reset");
@@ -64,12 +65,13 @@ test("OSC 133: Cmd+Up and Cmd+Down move between prompts, and each prompt has a g
   expect(v.top).toBe(v.base); // at the bottom, the live prompt in view
   expect(at[3]).toBeLessThan(v.base); // every earlier prompt can come to the top of the view
   await focusTerm(page);
+  const mod = await modKey(page);
   const writesBefore = await page.evaluate(() => ((window as unknown as { __omherSessionCalls?: { op: string }[] }).__omherSessionCalls ?? []).filter((c) => c.op === "write").length);
   for (const want of [at[3], at[2], at[1], at[0], at[0]]) {
-    await page.keyboard.press("Meta+ArrowUp");
+    await page.keyboard.press(`${mod}+ArrowUp`);
     await expect.poll(async () => (await view(page)).top).toBe(want);
   }
-  await page.keyboard.press("Meta+ArrowDown");
+  await page.keyboard.press(`${mod}+ArrowDown`);
   await expect.poll(async () => (await view(page)).top).toBe(at[1]);
   // on p2 (its command ended 1): the mark at the top row is red, the next one in view is not
   // (a mark whose line is out of view stays in the page, hidden)
@@ -78,13 +80,14 @@ test("OSC 133: Cmd+Up and Cmd+Down move between prompts, and each prompt has a g
   const screenTop = await page.locator('[data-testid="terminal"] .xterm-screen').evaluate((e) => e.getBoundingClientRect().top);
   const errTop = await page.locator('[data-testid="terminal"] .term-mark.err:visible').evaluate((e) => e.getBoundingClientRect().top);
   expect(Math.abs(errTop - screenTop)).toBeLessThan(2);
-  await page.keyboard.press("Meta+PageDown");
+  // Cmd+PageDown on macOS; off macOS Ctrl+PageDown stays the program's, so Ctrl+Down
+  await page.keyboard.press(mod === "Meta" ? "Meta+PageDown" : "Control+ArrowDown");
   await expect.poll(async () => (await view(page)).top).toBe(at[2]);
   await expect(marks.first()).not.toHaveClass(/\berr\b/);
   await expect(page.locator('[data-testid="terminal"] .term-mark.err:visible')).toHaveCount(0);
   // past the last prompt: back to the bottom
-  await page.keyboard.press("Meta+ArrowDown");
-  await page.keyboard.press("Meta+ArrowDown");
+  await page.keyboard.press(`${mod}+ArrowDown`);
+  await page.keyboard.press(`${mod}+ArrowDown`);
   await expect.poll(async () => (await view(page)).top).toBe(v.base);
   // the keys reached the jump only, never the program
   const writesAfter = await page.evaluate(() => ((window as unknown as { __omherSessionCalls?: { op: string }[] }).__omherSessionCalls ?? []).filter((c) => c.op === "write").length);
@@ -99,7 +102,7 @@ test("OSC 133: a terminal that sent no marks keeps Cmd+Up as it was (the view do
   const v = await view(page);
   expect(v.base).toBeGreaterThan(0);
   await focusTerm(page);
-  await page.keyboard.press("Meta+ArrowUp");
+  await page.keyboard.press(`${await modKey(page)}+ArrowUp`);
   await page.waitForTimeout(150);
   expect((await view(page)).top).toBe(v.base);
   await expect(page.locator('[data-testid="terminal"] .term-mark')).toHaveCount(0);
@@ -186,7 +189,7 @@ test("OSC 7: a TERMINALS row takes this computer's own name before the bottom pa
   await expect(row.getByTestId("term-cwd")).toHaveText("api-server");
 });
 
-test("OSC 9;4: progress keeps the row working, and done while the person looks elsewhere marks it as the bell does", async ({ page }) => {
+test("OSC 9;4: progress keeps the row working, and done while the person looks elsewhere marks it as news, as the bell does", async ({ page }) => {
   await page.addInitScript(() => {
     const w = window as unknown as { __notes: string[]; Notification: unknown };
     w.__notes = [];
@@ -216,16 +219,16 @@ test("OSC 9;4: progress keeps the row working, and done while the person looks e
   expect(b).not.toBe(a);
   await out(page, ptyA, OSC("9;4;1;80"));
   await out(page, ptyA, OSC("9;4;0"));
-  await expect(row).toHaveAttribute("data-term-status", "bell");
+  await expect(row).toHaveAttribute("data-term-status", "news");
   expect(await page.evaluate(() => (window as unknown as { __notes: string[] }).__notes)).toEqual([]);
   // the escape's text is not on the row
   await expect(row).not.toContainText("9;4");
   // back to it: seen
   await row.locator(".ss-open").click();
-  await expect(row).not.toHaveAttribute("data-term-status", "bell");
+  await expect(row).not.toHaveAttribute("data-term-status", "news");
   // done while looked at, after working: no mark
   await out(page, ptyA, OSC("9;4;1;10"));
   await out(page, ptyA, OSC("9;4;0"));
   await page.waitForTimeout(100);
-  await expect(row).not.toHaveAttribute("data-term-status", "bell");
+  await expect(row).not.toHaveAttribute("data-term-status", "news");
 });
