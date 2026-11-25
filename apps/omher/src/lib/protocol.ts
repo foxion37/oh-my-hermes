@@ -146,7 +146,7 @@ export interface PlatformsRead {
 }
 
 /** One of a bot's skills (a `SKILL.md` under `<profile>/skills`), for the composer's `./` picker. */
-/** `{slack: {C0BLC924P1P: "#docs-harness"}, discord: {1544…: "#cron"}}`: names for link chips. */
+/** `{slack: {C0000000001: "#docs-harness"}, discord: {1100…: "#cron"}}`: names for link chips. */
 export interface LinkPlaces {
   slack: Record<string, string>;
   discord: Record<string, string>;
@@ -229,13 +229,6 @@ export interface Away {
   last_reply_at?: number | null;
   /** Hermes' send target for that thread (`slack:C…:1731…`); null when there is no thread to reply in. */
   reply_target?: string | null;
-}
-
-export interface PeekMsg {
-  role: string;
-  author?: string;
-  text: string;
-  ts: number;
 }
 
 export interface Routine {
@@ -474,10 +467,6 @@ export interface OpMap {
   /** Only a session the bridge made for that folder (its saved title `omher · <folder name>`); any other: not_found. */
   "folder.resume": { params: { bot: string; cwd: string; stored: string }; result: FolderResumeResult };
   "elsewhere.list": { params: { bot: string }; result: { sessions: Away[] } };
-  "elsewhere.peek": {
-    params: { bot: string; session_id: string; limit?: number };
-    result: { messages: PeekMsg[]; total: number };
-  };
   "routines.list": { params: { bot: string }; result: { routines: Routine[] } };
   /** Every bot's cron jobs, each tagged with its bot (read from files; no gateway). */
   "automations.list": { params: Record<string, never>; result: { automations: Automation[] } };

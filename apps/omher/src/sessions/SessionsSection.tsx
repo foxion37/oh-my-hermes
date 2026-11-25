@@ -35,7 +35,7 @@ import { CUE_PX, useEdgeFade } from "../sidebar/edgeFade";
 import { getHost, type PastChat } from "./host";
 import { getSessions, useSessions } from "./sessions";
 import { pickTitle } from "./titles";
-import { onOpenNewSessionMenu, useShells } from "./newMenu";
+import { onOpenNewSessionMenu, openNewSessionMenu, useShells } from "./newMenu";
 import { onTermSettings, readTermSettings } from "./term/settings";
 import { TermLinkGone } from "./termLinkOpen";
 import { getAddOmh } from "./addOmh";
@@ -85,8 +85,17 @@ export async function addTermFolder(): Promise<void> {
 
 export function SessionsHeader() {
   const [open, setOpen] = useState(false);
+  // a folder header's + opens this menu with its folder already picked
+  const [inFolder, setInFolder] = useState<string | undefined>(undefined);
   const plus = useRef<HTMLButtonElement>(null);
-  useEffect(() => onOpenNewSessionMenu(() => setOpen(true)), []);
+  useEffect(
+    () =>
+      onOpenNewSessionMenu((f) => {
+        setInFolder(f);
+        setOpen(true);
+      }),
+    [],
+  );
   return (
     <div className="side-sh side-sh-row">
       <span>{t("nav.terminals")}</span>
@@ -100,12 +109,15 @@ export function SessionsHeader() {
           title={t("term.new")}
           aria-haspopup="menu"
           aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => {
+            setInFolder(undefined);
+            setOpen((v) => !v);
+          }}
           data-testid="session-new"
         >
           <PlusIcon size={14} />
         </button>
-        {open && <NewSessionMenu onClose={() => setOpen(false)} trigger={plus} />}
+        {open && <NewSessionMenu key={inFolder ?? ""} initialFolder={inFolder} onClose={() => setOpen(false)} trigger={plus} />}
       </span>
       <TermLinkGone />
       <CloseToasts />
@@ -233,7 +245,7 @@ function useMoreBelow(el: RefObject<HTMLDivElement | null>, on: boolean, shape: 
  *  copies that line; omher installs nothing), then "Continue a conversation", there as the menu first opens. Picking
  *  an installed agent opens its New session chat at once (the folder is the chip under that chat's composer). Arrow
  *  keys move, Enter picks, Esc closes. */
-function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: RefObject<HTMLButtonElement | null> }) {
+function NewSessionMenu({ onClose, trigger, initialFolder }: { onClose: () => void; trigger: RefObject<HTMLButtonElement | null>; initialFolder?: string }) {
   const ss = useSessions();
   const accounts = useAccounts();
   const box = useRef<HTMLDivElement>(null);
@@ -250,7 +262,7 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
   // the second step: one agent's past conversations (its own list: this menu is not measured while it shows)
   const [past, setPast] = useState<PastAgent | null>(null);
   // the folder it starts in: the chip at the top (the last folder used, else home)
-  const [folder, setFolder] = useState<string | null>(null);
+  const [folder, setFolder] = useState<string | null>(initialFolder ?? null);
   const [folders, setFolders] = useState(false);
   // measured again whenever its rows change (the folded agents, the folder list)
   const fit = useMenuFit(box, ready && !past, `${unfold ? "open" : "folded"}:${folders ? "folders" : ""}`);
@@ -270,7 +282,11 @@ function NewSessionMenu({ onClose, trigger }: { onClose: () => void; trigger: Re
     onClose();
     if (why === "escape") trigger.current?.focus();
   };
-  const at = folder ?? draftFolder(ss.recent, ss.home);
+  // the default is the folder of the terminal open now (a new one goes under the folder the person works in), else
+  // the last folder used, else home
+  const openId = getStore().getSnapshot().ui.session;
+  const openCwd = openId ? ss.list.find((r) => r.id === openId && isTerminalRec(ss.agents, r))?.cwd : undefined;
+  const at = folder ?? openCwd ?? draftFolder(ss.recent, ss.home);
   const pick = (id: AgentId) => {
     close("pick");
     getSessions().startTerminal(id, at || undefined);
@@ -808,13 +824,20 @@ export function SessionList({ needle = "", query = "" }: { needle?: string; quer
   const ticking = terms.some((r) => r.status === "running" || r.status === "starting");
   const added = addedFolders(folders);
   if (terms.length === 0 && added.length === 0) return <SessionStart />;
-  // with no search typed every split is one card on top, and its sessions are not rows in their folders again
+  // with no search typed every split is one card at the top of its folder (the folder of its first pane's session),
+  // above that folder's lone terminals, and its sessions are not rows in their folders again
   const cards = needle ? [] : sp.groups.filter((g) => groupSessions(g).some((id) => terms.some((r) => r.id === id)));
   const inCard = new Set(cards.flatMap(groupSessions));
+  const cardRecs = (g: (typeof cards)[number]) => groupSessions(g).flatMap((id) => terms.filter((r) => r.id === id));
+  const cardFolder = (g: (typeof cards)[number]) => pathKey(cardRecs(g)[0]!.cwd);
   // a row asking "Stop?" (the header's x on a lone terminal) shows whatever the search
   const shown = terms.filter((r) => !inCard.has(r.id) && (r.id === confirm || sessionMatches(r, needle)));
-  // an added folder with no session is a group too; a search keeps it only when its path matches
-  const groups = orderFolders(withAdded(folderGroups(shown), needle ? added.filter((c) => c.toLowerCase().includes(needle)) : added), folders.order);
+  // folders keep the order their sessions give (newest first), a split counted by its first pane's session, so a
+  // folder holding only a split stays where it was rather than dropping to the end; an added folder with no session
+  // is a group too, and a search keeps an added one only when its path matches
+  const firsts = new Set(cards.map((g) => cardRecs(g)[0]!.id));
+  const ordered = folderGroups(terms.filter((r) => firsts.has(r.id) || shown.includes(r))).map((g) => ({ cwd: g.cwd, rows: g.rows.filter((r) => !inCard.has(r.id)) }));
+  const groups = orderFolders(withAdded(ordered, needle ? added.filter((c) => c.toLowerCase().includes(needle)) : added), folders.order);
   // asking before a running session closes, in its row's place (a split member's under its card)
   const confirmRow = (rec: SessionRec) => (
     <div
@@ -856,19 +879,11 @@ export function SessionList({ needle = "", query = "" }: { needle?: string; quer
           {t("side.noSession", { q: query })}
         </div>
       )}
-      {cards.map((g) => {
-        const ids = groupSessions(g);
-        const asking = terms.find((r) => r.id === confirm && ids.includes(r.id));
-        return (
-          <Fragment key={ids.join("+")}>
-            <SplitCard group={g} current={current} list={terms} agents={ss.agents} unseen={ss.unseen} ticking={ticking} lang={s.ui.lang} onClose={ask} kit={ROW_MENU} />
-            {asking && confirmRow(asking)}
-          </Fragment>
-        );
-      })}
       {groups.map((g, gi, all) => {
         // a search shows every match, collapsed or not
         const shut = !needle && isCollapsed(folders, g.cwd);
+        const mine = cards.filter((c) => cardFolder(c) === pathKey(g.cwd));
+        const members = [...mine.flatMap(cardRecs), ...g.rows];
         return (
         <div key={g.cwd} className={`tg${shut ? " shut" : ""}`} role="group" aria-label={folderName(g.cwd)} data-testid="term-group" data-cwd={g.cwd} data-collapsed={shut ? "true" : undefined}>
           <FolderHead
@@ -878,9 +893,20 @@ export function SessionList({ needle = "", query = "" }: { needle?: string; quer
             index={gi}
             all={all.map((x) => x.cwd)}
             added={added.includes(g.cwd)}
-            summary={{ ...folderSummary(g.rows.map((r) => (asks.has(r.id) ? "bell" : termStatus(r, ss.unseen[r.id], 0)))), running: g.rows.filter((r) => (r.status === "running" || r.status === "starting") && termMarkAgent(r) !== null).length }}
-            flowIds={shut ? g.rows.filter((r) => (r.status === "running" || r.status === "starting") && !isNews(ss.unseen[r.id])).map((r) => r.id) : NO_IDS}
+            summary={{ ...folderSummary(members.map((r) => (asks.has(r.id) ? "bell" : termStatus(r, ss.unseen[r.id], 0)))), running: members.filter((r) => (r.status === "running" || r.status === "starting") && termMarkAgent(r) !== null).length }}
+            flowIds={shut ? members.filter((r) => (r.status === "running" || r.status === "starting") && !isNews(ss.unseen[r.id])).map((r) => r.id) : NO_IDS}
           />
+          {!shut &&
+            mine.map((c) => {
+              const ids = groupSessions(c);
+              const asking = terms.find((r) => r.id === confirm && ids.includes(r.id));
+              return (
+                <Fragment key={ids.join("+")}>
+                  <SplitCard group={c} current={current} list={terms} agents={ss.agents} unseen={ss.unseen} ticking={ticking} lang={s.ui.lang} onClose={ask} kit={ROW_MENU} />
+                  {asking && confirmRow(asking)}
+                </Fragment>
+              );
+            })}
           {!shut && g.rows.map((rec) =>
             confirm === rec.id ? (
               confirmRow(rec)
@@ -1035,11 +1061,27 @@ function FolderHead({ cwd, home, shut, index, all, added, summary: base, flowIds
             {summary.failed && <span className="tg-dot err" title={t("ss.mark.error")} />}
           </span>
         )}
-        {branch && (
-          <span className="tg-b" data-testid="term-group-branch">
-            {branch}
-          </span>
-        )}
+        {/* where the folder is: its path from home (the name alone does not say which "khope"), then its branch */}
+        <span className="tg-b" data-testid="term-group-path">
+          {tildePath(cwd, home)}
+          {branch && (
+            <>
+              {" · "}
+              <span data-testid="term-group-branch">{branch}</span>
+            </>
+          )}
+        </span>
+      </button>
+      <button
+        type="button"
+        className="tg-plus"
+        aria-label={t("term.newIn", { name })}
+        title={t("term.newIn", { name })}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={() => openNewSessionMenu(cwd)}
+        data-testid="term-group-new"
+      >
+        <PlusIcon size={12} />
       </button>
       {/* an added folder no session runs in: one quiet line, inside the header so a right-click on it is the folder's.
           A folder found gone says that instead, with or without sessions listed under it. */}
@@ -1196,8 +1238,8 @@ const ROW_ACTION_ID: Record<RowAction, string> = {
 };
 
 /** Right-click menu of a session row (rowMenuItems). Placed at the pointer, inside the window. Arrow keys move,
- *  Home / End jump, Enter picks, Esc closes. */
-export function SessionMenu({ at, name, actions, onPick, onDismiss }: { at: { x: number; y: number }; name: string; actions: RowAction[]; onPick: (a: RowAction) => void; onDismiss: () => void }) {
+ *  Home / End jump, Enter picks, Esc closes and gives the keyboard back to `back` (the row or cell that opened it). */
+export function SessionMenu({ at, name, actions, onPick, onDismiss, back }: { at: { x: number; y: number }; name: string; actions: RowAction[]; onPick: (a: RowAction) => void; onDismiss: () => void; back?: () => HTMLElement | null }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -1220,6 +1262,7 @@ export function SessionMenu({ at, name, actions, onPick, onDismiss }: { at: { x:
           e.preventDefault();
           e.stopPropagation();
           onDismiss();
+          back?.()?.focus();
           return;
         }
         const btns = [...(ref.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
@@ -1313,8 +1356,29 @@ function NameInput({ initial, auto, onDone }: { initial: string; auto: boolean; 
   );
 }
 
-/** The row menu as a split card's cells use it: the same items, actions, placement, menu and name field as a row. */
-const ROW_MENU: RowMenuKit = { items: termMenuItems, act: termRowAct, spot: menuSpot, Menu: SessionMenu, Name: NameInput };
+/** A TERMINALS session's menu items, a row's and a split card cell's alike: Hand to <bot> while a bot of this computer
+ *  is online. Read, not subscribed: the row or cell re-renders when its menu opens, which is when the bots are looked
+ *  at. */
+export const termItems = (rec: SessionRec) => termMenuItems(rec, handBots(getStore().getSnapshot().bots).length > 0);
+
+/** Hand to <bot> of TERMINALS session `rec`, from a row or a split card cell: the folder the session started in
+ *  (never one its shell reported later through OSC 7, which stays in the page). */
+function TermHand({ at, rec, back, onClose }: { at: { x: number; y: number }; rec: SessionRec; back: () => HTMLElement | null; onClose: () => void }) {
+  return <HandoverCard at={at} from={{ kind: "terminal", folder: rec.cwd }} back={() => termBack(back(), rec.id)} onClose={onClose} />;
+}
+
+/** Where the keyboard goes back to when a TERMINALS session's menu or Hand card closes: `invoker` (the row's or cell's
+ *  face that opened it) while it is on the page; else the session's face as the list draws it now (its split made or
+ *  ended since); else, the session gone, the list's New terminal button. Never the page's body. */
+export function termBack(invoker: HTMLElement | null, id: string, doc: Pick<Document, "querySelector"> = document): HTMLElement | null {
+  if (invoker?.isConnected) return invoker;
+  const sel = CSS.escape(id);
+  return doc.querySelector<HTMLElement>(`[data-testid="session-${sel}"] .ss-open, [data-testid="split-cell"][data-session="${sel}"] .sc-open`) ?? doc.querySelector<HTMLElement>('[data-testid="session-new"]');
+}
+
+/** The row menu as a split card's cells use it: the same items, actions, placement, menu, name field and Hand card as
+ *  a row. */
+export const ROW_MENU: RowMenuKit = { items: termItems, act: termRowAct, spot: menuSpot, Menu: SessionMenu, Name: NameInput, Hand: TermHand };
 
 /** The sign before a row's state word: a warning triangle (it waits for you), an exclamation mark (it stopped on an
  *  error), a small dot (it rang unseen: news, not a warning), a check (it finished). Four shapes, so the state reads
@@ -1392,11 +1456,12 @@ const TermRow = memo(function TermRow({ rec, agents, unseen, active, ticking, on
   // a CLI runs in it: the card's thin amber lane on its left edge (the folder summary's "running" counts the same)
   const running = live && markAgent !== null;
   const [hand, setHand] = useState<{ x: number; y: number } | null>(null);
-  // read, not subscribed: the row re-renders when its menu opens, which is when the bots are looked at
-  const actions = termMenuItems(rec, handBots(getStore().getSnapshot().bots).length > 0);
-  // Hand to <bot> opens its card at the menu's place; every other item is the shared row action (a split card's
-  // cells list no Hand item: termMenuItems without canHand)
+  const actions = termItems(rec);
+  // Hand to <bot> opens its card at the menu's place (a split card's cells do the same); every other item is the
+  // shared row action
   const pick = (a: RowAction) => (a === "hand" ? setHand(menu) : termRowAct(rec, a, () => setEditing(true), onClose));
+  // the row's face: the keyboard goes back to it when its menu or Hand card closes
+  const opener = () => wrap.current?.querySelector<HTMLElement>(".ss-open") ?? null;
   const endEdit = (name: string | null | undefined) => {
     setEditing(false);
     if (name !== undefined) getSessions().rename(rec.id, name);
@@ -1481,7 +1546,8 @@ const TermRow = memo(function TermRow({ rec, agents, unseen, active, ticking, on
       onContextMenu={(e) => {
         if (editing) return;
         e.preventDefault();
-        setMenu(menuSpot(e, wrap.current, actions.length));
+        // counted now, not at the last render: a bot that came online since adds the Hand row
+        setMenu(menuSpot(e, wrap.current, termItems(rec).length));
       }}
     >
       {editing ? (
@@ -1498,9 +1564,8 @@ const TermRow = memo(function TermRow({ rec, agents, unseen, active, ticking, on
           <CloseIcon />
         </button>
       )}
-      {menu && <SessionMenu at={menu} name={title.title} actions={actions} onPick={pick} onDismiss={() => setMenu(null)} />}
-      {/* the folder the session started in (never one its shell reported later through OSC 7, which stays in the page) */}
-      {hand && <HandoverCard at={hand} from={{ kind: "terminal", folder: rec.cwd }} onClose={() => setHand(null)} />}
+      {menu && <SessionMenu at={menu} name={title.title} actions={actions} onPick={pick} onDismiss={() => setMenu(null)} back={opener} />}
+      {hand && <TermHand at={hand} rec={rec} back={opener} onClose={() => setHand(null)} />}
     </div>
   );
 });
