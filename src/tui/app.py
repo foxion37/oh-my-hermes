@@ -272,7 +272,7 @@ from .screen import (
     cursor_up,
 )
 from .session_picker import DELETE as SESSION_DELETE
-from .session_picker import PICK, RENAME, PickerAction, SessionPicker, SessionRow, pointer, session_rows
+from .session_picker import LOAD_OLDER, PICK, RENAME, PickerAction, SessionPicker, SessionRow, pointer, session_rows
 from .rewind_picker import KEYS as REWIND_PICKER_KEYS
 from .rewind_picker import PICK as REWIND_PICK
 from .rewind_picker import RewindPicker, rewind_rows
@@ -775,6 +775,12 @@ WALLPAPER_UNAVAILABLE_NOTICE = ("Living wallpaper kept {state}; it shows only at
 WALLPAPER_USAGE_NOTICE = "Use /wallpaper on or /wallpaper off; /wallpaper alone switches it."
 WALLPAPER_SIDE_NOTICE = ("Living wallpaper held off: /theme {mode} names a {mode} background on a {side} "
                          "terminal, whose text colour would not read on a {mode} ground; /theme auto shows it again.")
+TIMESTAMPS_NOTICE = ("Turn clock times {state} for this TUI run; `display.timestamps: true` in Hermes' config.yaml "
+                     "keeps them on at every launch.")
+TIMESTAMPS_STATUS_NOTICE = ("Turn clock times are {state}; /timestamps on or off sets them for this TUI run, "
+                            "`display.timestamps: true` in Hermes' config.yaml at every launch.")
+TIMESTAMPS_USAGE_NOTICE = ("Use /timestamps on or /timestamps off; /timestamps alone switches them, /timestamps status "
+                           "says which.")
 LAUNCH_SESSION_NOTICE = "Launch look {name} for this session; there is no OMH home to keep it in."
 LAUNCH_SAVE_FAILED_NOTICE = "Launch look {name} for this session; it could not be saved to {path}: {error}"
 LAUNCH_SWATCH_STEPS = 6  # the colours a look's swatch shows in the /theme picker
@@ -1217,7 +1223,7 @@ COPY_DROPPED_NOTE = "not copied ({why})"  # a copy herdr drops (`clipboard.HERDR
 # The completion menu's name column: at least this wide, wider for the longest name it lists (OMH skills are
 # `omh-*` and `ulw-*` slugs) up to half the terminal; a name longer than that pushes only its own summary.
 MENU_NAME_CELLS = 16
-SESSION_LIST_LIMIT = 50
+SESSION_LIST_LIMIT = 100  # visible rows per picker page; Ctrl+G extends the search to older pages
 # Bare `/sessions` (`/resume`, Ctrl+X) has no echo, so until Hermes answers the list this row stands where the
 # picker will open, under the queued prompts; keys still go to the composer, and the picker opens with an empty filter.
 SESSIONS_LOADING_LINE = "Loading sessions…"
@@ -1799,6 +1805,43 @@ def vim_mode(config_result: Mapping[str, Any]) -> bool:
     if isinstance(raw, str):
         return raw.strip().lower() in VIM_MODE_WORDS
     return isinstance(raw, int) and raw != 0  # True, or a number other than 0, as Hermes' `bool()` reads one
+
+
+def display_on(config_result: Mapping[str, Any], key: str) -> bool:
+    """Whether `display.<key>` is YAML true in a `config.get {key: "full"}` answer, as Hermes' own TUI reads
+    `display.timestamps` (`=== true`); anything else, absent included, is off."""
+    config = config_result.get("config")
+    display = config.get("display") if isinstance(config, dict) else None
+    return isinstance(display, dict) and display.get(key) is True
+
+
+# The cost Hermes says below which a figure is said to four places, as its own labels do (`format_cost_label`).
+COST_SUBCENT = 0.01
+
+
+# The `cost_status` Hermes gives a total it could not price: it leaves `cost_usd` at 0.0, and its own label says n/a.
+COST_UNKNOWN = "unknown"
+# The `cost_status` of usage a subscription covers: no invoice follows it, so the line says that instead of a figure.
+COST_INCLUDED = "included"
+
+
+def cost_label(usage: object) -> str | None:
+    """The session's cost as a usage block's `cost_usd` says it (`$0.42`, `$0.0046` under a cent, `$<0.0001` for a
+    figure above 0 that rounds to none), with `~` before it when its `cost_status` is `estimated`, and `included`
+    when it is `included`; None when the block carries no finite number of 0 or more there, or its `cost_status` is
+    `unknown`, whose 0.0 is no price. OMH prices nothing: the figure is Hermes' own or none."""
+    cost = usage.get("cost_usd") if isinstance(usage, dict) else None
+    if not isinstance(cost, int | float) or isinstance(cost, bool) or not math.isfinite(cost) or cost < 0:
+        return None
+    status = usage.get("cost_status")
+    if status == COST_UNKNOWN:
+        return None
+    if status == COST_INCLUDED:
+        return COST_INCLUDED
+    text = f"${cost:.4f}" if 0 < cost < COST_SUBCENT else f"${cost:.2f}"
+    if text == "$0.0000":
+        text = "$<0.0001"
+    return f"~{text}" if status == "estimated" else text
 
 
 def context_percent(usage: object) -> float | None:
@@ -2452,7 +2495,15 @@ class App(ModesMixin, AgentViewMixin):
         # The effort Hermes' config sets (`configured_effort`), from the last `config.get`: what a session that has
         # not said its own starts with, the launch session and each one opened later (`_adopt_session`).
         self.effort_configured = ""
+        # Hermes' `display.timestamps` and `display.show_cost`, as the last `config.get` said them; `/timestamps`
+        # sets the clock times for this run (`timestamps_said`), over what any later read says.
+        self.timestamps_configured = False
+        self.timestamps_said: bool | None = None
+        self.show_cost = False
+        self.session_cost = ""  # the session's cost as Hermes' usage last said it (`cost_label`); "" while it says none
         self.effort_said = False  # the shown effort is the session's own (its info, or a level set and confirmed)
+        # The level the route sends for `effort_sent_for` when Hermes said it clamps it (`effort_shown`); "" when not.
+        self.effort_sent = self.effort_sent_for = ""
         self.mode_request_open = False  # a yolo call is out: Shift+Tab presses wait for its answer
         self.mode_asked = ""  # the mode the yolo call out leads to (`ModesMixin.mode_pending`)
         self.mode_target: str | None = None  # where Shift+Tab presses made while it is out lead (`_settle_mode_target`)
@@ -2985,8 +3036,12 @@ class App(ModesMixin, AgentViewMixin):
         later. A level the session said stays (`effort_said`), even one equal to the config's; one the config set
         before is replaced. Vim mode (`display.vim_mode`) goes to the main composer only, the one that holds the draft
         even while a question's or a tell row's own composer has the keys; an answer that leaves it as it was leaves
-        its editing mode as it was too. `display.busy_input_mode` is not read: whatever it says, what is sent during a
-        turn waits in the TUI's queue (`_send_prompt`, `_run_slash`)."""
+        its editing mode as it was too. `display.timestamps` puts the clock times on each turn's done line and
+        `display.show_cost` the session's cost on the info line, when Hermes' usage says one (`cost_label`).
+        `display.busy_input_mode` is not read: whatever it says, what is sent during a turn waits in the TUI's queue
+        (`_send_prompt`, `_run_slash`)."""
+        self.timestamps_configured = display_on(result, "timestamps")
+        self.show_cost = display_on(result, "show_cost")
         self.effort_configured = configured_effort(result)
         if not self.effort_said:
             self.effort = self.effort_configured
@@ -3069,6 +3124,7 @@ class App(ModesMixin, AgentViewMixin):
         # The token counter is the session's own. An answer with none opened a session in which no API call has ended
         # on this gateway yet (Hermes sends its first usage block after one), so the counter stands at 0.
         usage = info.get("usage") if isinstance(info, dict) else None
+        self.session_cost = cost_label(usage) or ""  # the cost is the session's own too
         self.usage_output = usage_count(usage, "output")
         self.usage_calls = usage_count(usage, "calls")
         if self.usage_output is None:
@@ -3104,6 +3160,7 @@ class App(ModesMixin, AgentViewMixin):
         self.effort_asked = ""
         self.effort = self.effort_configured  # until this session says its own (Hermes' lazy info names none)
         self.effort_said = False
+        self.effort_sent = self.effort_sent_for = ""
         self._take_session_state(info if isinstance(info, dict) else {})
         self._take_skills(info if isinstance(info, dict) else {})
         self._take_title(info if isinstance(info, dict) else {})
@@ -4573,7 +4630,8 @@ class App(ModesMixin, AgentViewMixin):
                 self._dag_ends_due()
                 self._retire_finished_plan()  # above the done line: the turn that finished the plan ends here
                 seconds = self.clock() - self.busy_since
-                self.transcript.add_turn_summary(seconds, self._turn_tokens(), self._turn_wait())
+                ended_at = self.wall_clock() if self._timestamps_shown() else None
+                self.transcript.add_turn_summary(seconds, self._turn_tokens(), self._turn_wait(), ended_at)
                 self._alert_turn_end(seconds)
                 self._turn_ended(failed=isinstance(payload, Mapping) and as_text(payload.get("status")) == "error",
                                  steer_next=steer_next)
@@ -4764,6 +4822,8 @@ class App(ModesMixin, AgentViewMixin):
     def _take_usage(self, usage: object) -> None:
         """A usage block with context figures replaces the shown ones; one without leaves them. Its `output` counts tokens.
 
+        A block with a `cost_usd` number replaces the session's cost (`cost_label`); one without leaves it.
+
         A turn's tokens are the `output` counter's rise from where it stood as
         the turn began. The counter has started over when a block reads less
         than that, or reads more with no more `calls` than then: the turn
@@ -4775,6 +4835,7 @@ class App(ModesMixin, AgentViewMixin):
         block it brings. A block that moves the counter replaces the estimate
         of what streamed before it.
         """
+        self.session_cost = cost_label(usage) or self.session_cost
         percent = context_percent(usage)
         if percent is not None and isinstance(usage, dict):
             self.context_percent = percent
@@ -8225,6 +8286,7 @@ class App(ModesMixin, AgentViewMixin):
             "copy": self._copy,
             "theme": self._theme,
             "wallpaper": self._wallpaper_command,
+            "timestamps": self._timestamps_command,
             "omh-model": self._omh_model,
             "reload-skills": self._reload_skills,
             "topup": self._topup,
@@ -8414,20 +8476,20 @@ class App(ModesMixin, AgentViewMixin):
         no echo, so during a turn it is drawn under what runs."""
         if self.picker is not None:  # one already open keeps its highlight and filter
             return
-        rows = session_rows(result)
-        if not rows:
+        rows, next_page = session_rows(result), as_text(result.get("next_page"))
+        if not rows and not next_page:
             self.transcript.add_aside(NoticeBlock(SESSIONS_EMPTY_NOTICE))
         elif not self._picker_taken("/resume"):
-            self._open_picker(rows)
+            self._open_picker(rows, next_page=next_page)
 
-    def _open_picker(self, rows: list[SessionRow], query: str = "") -> None:
+    def _open_picker(self, rows: list[SessionRow], query: str = "", *, next_page: str = "") -> None:
         """Open the session picker over `rows`. When the person typed into the composer while its list was out, it
         waits (`SessionPicker.waiting`): typing stays in the composer, and only a key of the picker's own, or an
         empty composer, hands it the keys (`_picker_arms`)."""
         draft = self.composer.text
         typed = bool(draft) and self.list_asked_draft is not None and draft != self.list_asked_draft
         self.list_asked_draft = None
-        self.picker = SessionPicker(rows, current=self.stored_id, query=query, waiting=typed)
+        self.picker = SessionPicker(rows, current=self.stored_id, query=query, waiting=typed, next_page=next_page)
         self._settle_list()
 
     def _picker_arms(self, event: Key | Paste) -> bool:
@@ -8520,6 +8582,9 @@ class App(ModesMixin, AgentViewMixin):
         action = self.picker.handle_key(event)
         if action is None:
             return
+        if action.kind == LOAD_OLDER:
+            self._older_sessions(self.picker)
+            return
         if action.kind in (RENAME, SESSION_DELETE):  # the picker stays open, its row saying how the call went
             row = next((row for row in self.picker.rows if row.id == action.session_id), None)
             if row is not None and row.read_only:
@@ -8534,6 +8599,30 @@ class App(ModesMixin, AgentViewMixin):
                 self._read_session(row)
                 return
             self._switch_session(action.session_id, label=row.label if row is not None else "")
+
+    def _older_sessions(self, picker: SessionPicker) -> None:
+        """Only the open picker that requested a page may receive it."""
+        def done(result: dict[str, Any]) -> None:
+            if self.picker is picker:
+                picker.add_older(session_rows(result), as_text(result.get("next_page")))
+
+        def problem(message: str) -> None:
+            if self.picker is picker:
+                picker.loading_older = False
+                picker.older_problem = message
+
+        def refused(error: dict[str, Any]) -> bool:
+            reason = plain_sentence(as_text(error.get("message"))) or "Hermes refused the page"
+            problem(f"Could not load older sessions: {reason.rstrip('.')}. Ctrl+G retries")
+            return True
+
+        picker.older_problem = ""
+        picker.loading_older = self._request(
+            "session.list", {"page": picker.next_page}, done, refused,
+            lambda seconds: problem(f"No answer after {seconds:g} s. Ctrl+G retries"),
+        ) is not None
+        if not picker.loading_older:
+            problem("Could not request older sessions. Ctrl+G retries")
 
     def _read_session(self, row: SessionRow) -> None:
         """`row`'s history in a pager, read from its owner without resuming it: `session.transcript` mounts the
@@ -8780,7 +8869,7 @@ class App(ModesMixin, AgentViewMixin):
             return
         said = TITLE_SHARED_NOTICE if matched else TITLE_UNKNOWN_NOTICE
         self.transcript.add_notice(said.format(count=len(matched), title=title), NOTICE_WARN)
-        self._open_picker(rows, query=title)
+        self._open_picker(rows, query=title, next_page=as_text(result.get("next_page")))
 
     # ── attachments ──
 
@@ -10133,6 +10222,25 @@ class App(ModesMixin, AgentViewMixin):
         self._full_redraw()
         self.dirty = True
 
+    def _timestamps_shown(self) -> bool:
+        """Whether a turn's done line carries its clock times: as `/timestamps` set them, else Hermes' config."""
+        return self.timestamps_configured if self.timestamps_said is None else self.timestamps_said
+
+    def _timestamps_command(self, arg: str) -> None:
+        """`/timestamps on|off` puts the clock times on each turn's done line as the turn ends, the running one's
+        included, for this run only (the config is the person's: OMH writes no display key); alone, switches them;
+        `status` says which they are."""
+        choice = arg.strip().lower()
+        if choice == "status":
+            state = "on" if self._timestamps_shown() else "off"
+            self.transcript.add_notice(TIMESTAMPS_STATUS_NOTICE.format(state=state))
+            return
+        if choice not in ("", "on", "off"):
+            self.transcript.add_notice(TIMESTAMPS_USAGE_NOTICE, NOTICE_WARN)
+            return
+        self.timestamps_said = not self._timestamps_shown() if not choice else choice == "on"
+        self.transcript.add_notice(TIMESTAMPS_NOTICE.format(state="on" if self.timestamps_said else "off"))
+
     def _new_region(self, **place: Any) -> LiveRegion:
         """A live region for the screen as it is now."""
         return LiveRegion(self.terminal.write, highlight=reversed_cells, **place)
@@ -10651,7 +10759,7 @@ class App(ModesMixin, AgentViewMixin):
             written = f"↓{compact_count(self.turn_shown)} tokens" if self.turn_shown else ""
             effort = ""
             if self.effort in contract.REASONING_LEVELS and self.effort != "none":  # `none` is thinking off
-                effort = THINKING_EFFORT.format(self.effort)
+                effort = THINKING_EFFORT.format(self.effort_shown)
             interrupt = self._interrupt_hint() if self._esc_interrupts() else ""  # else Esc means something else now
             lead = (Span(WORKING_GLYPHS[frame % len(WORKING_GLYPHS)], self.theme.accent), Span(" "),
                     *working_spans(text, frame, self.theme))
@@ -11073,8 +11181,8 @@ class App(ModesMixin, AgentViewMixin):
 
         Its forms are the same at every width; `info_line` picks the one that fits.
         """
-        shown = (self.model, self.context_percent, self.context_used, self.context_max, self.effort, self.effort_asked,
-                 self._busy(), self.slot is not None, self.session_title)
+        shown = (self.model, self.context_percent, self.context_used, self.context_max, self.effort_shown, self.effort_asked,
+                 self._busy(), self.slot is not None, self.session_title, self.show_cost and self.session_cost)
         held = self.info_held
         if held is not None and held[0] == shown and held[1] is self.theme and held[2] is self.hud:
             return held[3]
@@ -11092,7 +11200,9 @@ class App(ModesMixin, AgentViewMixin):
         the model, so a line wide enough for its shortest name always names
         it; the HUD's chips (`hud_chips`: a repeating call, the tool calls in
         flight) go last. An effort Hermes has not confirmed yet shows dimmed,
-        with `PENDING_MARK`.
+        with `PENDING_MARK`. Under Hermes' `display.show_cost`, the session's
+        cost Hermes' usage says goes after the effort in the longest form
+        only, so it goes before anything else does (the title aside).
         """
         payload = self.hud.payload if self.hud is not None else None
         chips = list(hud_chips(payload, self.theme, turn_runs=self._busy(), question_waits=self.slot is not None))
@@ -11100,13 +11210,16 @@ class App(ModesMixin, AgentViewMixin):
         asked = self.effort_asked
         effort: Line = (
             (Span(effort_words(asked) + PENDING_MARK, self.theme.dim),) if asked
-            else (Span(effort_words(self.effort), self.theme.muted),)
+            else (Span(effort_words(self.effort_shown), self.theme.muted),)
         )
         models: list[Line] = [(Span(name, self.theme.muted),) for name in model_forms(self.model)]
         short = models[-1] if models else ()
         fields = [[*chips, model, contexts[0], effort] for model in models]
         fields += [*([*chips, short, context, effort] for context in contexts[1:]), [*chips, short, effort], [*chips, short]]
         fields += [[*chips, contexts[0], effort], *([*chips, context] for context in contexts), chips]
+        if self.show_cost and self.session_cost:
+            cost: Line = (Span(self.session_cost, self.theme.muted),)
+            fields = [[*fields[0], cost], *fields]
         forms: list[Line] = []
         for parts in fields:
             joined: Line = ()

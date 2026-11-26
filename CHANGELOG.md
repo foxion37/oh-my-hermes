@@ -4,6 +4,108 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **TUI: session picker shows conversations rather than background runs.** On a shared Hermes gateway, `/sessions` and
+  `/resume` skip cron, subagent and other internal sources and empty stored runs, while keeping genuine `local-*` chats.
+  The picker starts with up to 100 conversations; **Ctrl+G** loads older authorized history into the same filter on
+  cursor-capable gateways. Older gateways still return a single page. No sessions are deleted or moved.
+
+- **Solar Pro 4 Contributor is priced.** Upstage released `solar-pro-4-contributor` on 2026-11-23: the same model as
+  Solar Pro 4 at 70% off its list (0.09/0.36 per MTok, cached input 0.018), in exchange for Upstage storing and
+  training on every request and response. A run that names the id now gets an approximate cost; it joins no chain
+  and carries no provider row. (`src/plugin_bundle/omh/hermes_delegation.py`)
+- **omher: the reasoning picker offers only the levels the bot's route sends.** On a Claude route the picker listed
+  `max` and `ultra` side by side, and picking `ultra` read `ultra · sends max`, because the bridge offered Hermes'
+  whole ladder for every model. `models.options` and `chat.set_model` now answer `reasoning_levels` from Hermes' own
+  `agent.reasoning_effort.route_supported_efforts` for the chat's live provider and model (the codex app-server
+  runtime from the profile's `model.openai_runtime`, and its `base_url`), so a Claude or OpenAI-compatible route offers
+  `none` to `max`, a codex model on the app-server runtime keeps `ultra`, and a legacy codex model stops at `xhigh`; a
+  model switch in the picker updates the levels at once. A saved level the route clamps (an `ultra` set elsewhere)
+  reads and is selected as the level sent, in the pill, the picker and the bot's Settings page; the "sends max" texts
+  are gone. A Hermes without the per-route function keeps the old ladder. The OMH TUI's info line and `/effort` reply
+  name the level the route sends when Hermes reports it clamps one. (`apps/omher/bridge/omher_bridge.py`,
+  `apps/omher/src/chat/model/`, `src/tui/modes.py`)
+- **omher: short labels no longer break inside a word, in every UI language.** In Settings › Bots a card's status
+  read "연결" on one line and "됨" on the next, beside the `default` chip. The Korean rule (`overflow-wrap: anywhere`)
+  let any label in a tight row shrink to one syllable wide, and Japanese and Chinese break between any two
+  characters, so "接続中" and "已连接" split the same way. The Korean rule now uses `break-word`: Korean still breaks
+  only between words and long paths or URLs still wrap, but a label is never narrower than its longest word. A card's
+  status word sits on one line and its profile chip ends in "…" first when the row is tight. The "In list" / "Add to
+  list" corner label clears the name, and the status line under it gets the card's full width. The bot page's stat
+  captions ("ほかの場所のセッション") stay on one line. Status, tier and state chips, badges and counts on the agents,
+  plugins, apps, platforms, accounts and bot pages, and the sidebar's row times, keep one line too. Only Korean keeps
+  words whole now (`word-break: keep-all`). Chat bubbles, card titles, the Automations and Plugins pages, the plugin
+  sheet, a bot-made card and a new thread's empty line used to set it in every language. In Japanese and Chinese a
+  sentence there broke only at its punctuation, leaving ragged short lines; now it fills each line as those
+  languages do. A Korean reply or card question keeps its words whole in any UI language: its element is marked
+  `lang="ko"`. Long URLs and paths still wrap. A new e2e spec (`e2e/text-wrap.spec.ts`) checks all four languages
+  from the 900px minimum width up. `e2e/site-preview-header.spec.ts` now checks the film-only hero (d17fb8dfb): the
+  hero's film keeps playing and no live preview is mounted. It also checks the preview page on its own, which had
+  failed every omher PR's e2e since that change.
+- **omher: a UI review pass across the sidebar, chat, Plans, Settings, Tasks, Automations, Plugins and TERMINALS.**
+  A review of every screen at 1280x820 and the 900x600 minimum, dark and light, English and Korean, found cards left
+  alone on a row, mixed alignments, cut text, empty bands, states that looked stuck and Korean particle fallbacks.
+  - Grids never leave a card alone beside empty slots (All bots, Plugins › Browse, Apps): an odd count's last card
+    spans the row. Card actions sit on one line per row; the bot page's places sit on the stats' columns.
+  - TERMINALS split cards lay every cell out one way, on the rows' icon column, with "Claude Code" whole at the default
+    height. A working cell shows a faint ring with one bright head going round it, never a half-filled bar. A shell's
+    own prompt is never a cell's last line. Folder headers show the parent folder, then the branch.
+  - A terminal idle at its prompt reads Ready with a still dot, as its sidebar row shows it. While an approval or a
+    question waits, the chat stops its spinner and the bot's ring and shows the amber needs dot.
+  - No empty band above the sidebar's "more" chevron, and the chevron never sits on text. An empty chat greets in the
+    middle of the column.
+  - The Claude Code block mascot draws without seams on the GPU terminal renderer.
+  - Plans rows and subagent cards name a plan by its title; times follow the UI language ("15분 09초"); the needs strip
+    names who waits.
+  - Contrast: dark secondary text 5.1:1, light waiting amber 5.3:1, the light waiting triangle on TERMINALS rows.
+  - Korean: polite endings throughout (a test fails on 습니다), no 이(가)/을(를)/(으)로 after a name, "셸" for shell,
+    the approval card's title translated.
+  - Every inline confirm puts its action first and Cancel second.
+  Each fix is pinned by an e2e or vitest check that fails on the old layout (`apps/omher/e2e/settings-pages-fit.spec.ts`,
+  `apps/omher/e2e/tasks-fit.spec.ts`, `apps/omher/e2e/term-blocks.spec.ts` and the screens' own specs).
+
+- **Fanout command fields are bounded in UTF-8 bytes, so a legal non-ASCII command can no longer push a unit prompt
+  over its 8,000-byte ceiling.** `verification_commands`, `verification_checks[].command` and `reproduction_command`
+  are capped at 240 UTF-8 bytes and `task_linked_test_runner` at 200, matching `review_focus`. Before, a 240-character
+  command in 4-byte characters (945 B) froze legally and rendered up to 8,505 B on 10 of 20 worst-case routes; the
+  largest command the contract now accepts renders at most 7,980 B. ASCII commands keep the same limits. A unit file
+  that spells a lone surrogate (`"\ud800"`) in any of these fields, or in `review_focus`, now gets a contract error
+  instead of a `UnicodeEncodeError` traceback from `omh coding fanout prepare`. (#3036, #3210)
+
+- **The OMH TUI follows Hermes' `display.timestamps` and `display.show_cost`.** OMH TUI 5.0.0 dropped `/timestamps`
+  and `/statusbar`, so people who had set either key in Hermes lost what it showed. Now `display.timestamps: true`
+  adds a turn's local start and end minutes to its done line (`✻ 1m 20s · 10:42→10:44 · 3 tools`, a single
+  `10:42` when both are in the same minute). `/timestamps on|off` (or `/ts`) sets this for the current run without
+  writing Hermes' config. `display.show_cost: true` adds the session's cost to the info line, but only the
+  `usage.cost_usd` figure Hermes sends. OMH prices nothing, so when Hermes sends no cost, or marks it `unknown`,
+  nothing is shown, not `$0.00`; a subscription-`included` cost reads `included`. Hermes' gateway does not fill `cost_usd` yet, so the cost appears once Hermes does. `/statusbar` stays
+  dropped, and its notice now names `display.show_cost`. Both keys are off unless they are YAML `true`. Requested
+  by @wesleion. (#3187; `docs/OMH-TUI-BOUNDARY.md`, Turn clock times and session cost)
+- **Claude lanes can run on a Claude Pro/Max subscription through Hermes' DirectSDK plugin.** OMH did not see
+  Hermes' official `claude-subscription-directsdk` model-provider plugin, so on a machine where it was the only
+  Claude path, Claude aliases counted as unserved: Claude-headed chains (`deep`, `architect`, `writing`,
+  `ultrabrain`, ...) fell to the next model and a delegated Claude lane was refused. Now an installed plugin that is
+  not in `plugins.disabled` (in `config.yaml` or Hermes' managed config) counts as an `anthropic` provider under the id
+  `claude-subscription-directsdk-experimental`, with the source `plugin`. Claude aliases count as served, the chains
+  reorder, and a Claude lane on a session that cannot serve it is pinned to the plugin. OMH reads only the manifest's
+  `name` and `kind`; it never imports or runs the plugin. When another Claude provider is also there (a Hermes
+  Anthropic login, `ANTHROPIC_API_KEY`, a recorded `ccapi`), the pin stays on that provider, as before the plugin was
+  installed, even after `omh setup` records both. To pin the plugin instead, record only it
+  (`omh model-chains provider set claude-subscription-directsdk-experimental anthropic`), route the alias to it, or
+  clear the other provider. `omh setup` labels the plugin's row.
+  (#3186, carried; thanks @jaehyeokl; `docs/INSTALLATION.md`)
+- **omher: a TERMINALS Shell row where you ran Claude Code, Codex or `omh` puts it back after omher restarts.** Such a
+  row used to come back as a plain shell (paused), with the CLI and its conversation gone; only rows started directly
+  as Claude Code, Codex or oh-my-hermes came back. A Shell row now keeps which of those three CLIs is in its
+  foreground and, for Claude Code and Codex, that CLI's conversation id once the shell can name it (Codex from the
+  rollout it holds open, as a Codex row already did; Claude Code from its own `~/.claude/sessions/<pid>.json` record of
+  that running process, the foreground one's own record first), asked again every 15 s so a `/resume` or `/new` inside
+  the same CLI is followed. After a restart the row starts a fresh shell by itself and, once the shell is ready (its
+  output quiet for 3 s, or for 1 s after an OSC 133 prompt mark) and a fresh look finds the shell itself in front,
+  types one line, once: `claude --resume <id>`, `codex resume <id>` or `omh`. A key you press first, or a program your
+  rc started at the first prompt (OMH's own auto-resume, say), cancels it. A CLI that went back to the shell before the
+  restart is forgotten, and a Claude Code or Codex whose id was not known yet comes back paused, as before. Shell rows also get
+  their row's `OMHER_TERMINAL_LINK` now, so an `omh` typed in one reopens the session it dropped there. Windows keeps
+  `omh` but learns no Claude Code or Codex id. (`docs/OMHER-BOUNDARY.md` rule 11)
 - **TUI: `/dag` shows the highlighted node's handoff with `e`.** In the delegation graph pager, `e` opens the
   selected DAG node's evidence (title, status, role and up to 8 KiB of its local handoff), `r` rereads it and `e`
   returns to the same graph position. It reads only that node's handoff from the current stored session's DAG
@@ -11,26 +113,11 @@ All notable changes will be documented here.
   targets, and sends nothing to the gateway. The DAG record reader loads on the first evidence read, so a TUI
   session that never opens it imports no plugin runtime reader. (`src/tui/dag_evidence.py`,
   `src/tui/dag_pager.py`, `src/system/secure_regular_file.py`) (#3194)
-- **omher: TERMINALS folders say where they are, and a split stays in its folder.** A folder header showed only the
-  folder's last name, so `~`, `~/Desktop/khope` and `~/work/khope` read alike; it now shows the path from home under
-  the name, with the git branch after it. A split's card sat above every folder; it now sits at the top of its first
-  pane's folder, and that folder's count and live state include the split's sessions. The `+` menu starts in the open
-  terminal's folder, and each folder header has its own `+` that opens the menu in that folder.
 - **omher: a slash command reaches the bot as typed.** omher appended its own notes (the open-threads note, the
   terminal-link blocks, the peer note) to every main-chat message, slash commands included. Hermes reads all of a
   slash command's text as its arguments, so `/usage` answered `Unknown /usage subcommand: [omher] Open threads:
   none. ...`. A message that starts with `/` now goes with no note, and a slash command with a reply target is
   refused instead of sent with the target block. (`apps/omher/bridge/omher_bridge.py`)
-- **omher: a bot on another computer has threads, like a local one** (#3172). A bot connected over SSH
-  (`<peer>:<name>`) had only its main chat: no New thread on its row, no `./thread`, and its page said threads ran on
-  this computer only, because the peer link refused `thread.*` and every `session=` op. Its threads are sessions of
-  that bot on its own gateway, so the link now forwards `thread.create`, `thread.list`, `thread.open` and
-  `thread.remove` to that computer's bridge, and forwards `session=<id>` on send, interrupt, steer, approval, question
-  and model, and that session's events back, only for an id the peer's bridge itself answered as one of the bot's
-  threads; a folder chat there or any other id is still refused. A new thread there takes no folder from this computer
-  and its folder never starts this computer's terminal panel; a dropped link ends a running thread turn as stopped,
-  as it does the main chat's. Folder chats, Restart and a thread's pull requests stay on this computer (BOUNDARY rule
-  31).
 - **omher: Settings › Accounts › GitHub keeps Add and Remove on one line.** A GitHub account row reused the
   accounts grid, whose last column is the 26px ⋯ menu. 추가 just fit there in macOS's font; on Windows, whose Korean
   font is wider, it broke into 추 / 가 and was clipped. That row's button column now takes the label's width in any
@@ -196,6 +283,20 @@ All notable changes will be documented here.
   the home used to report `path_escape`); nothing is written through either. A read that races a write can still
   report `not_regular_file` for that one read, on every platform; that predates this change and is a follow-up.
   (`src/coding/user_executors.py`)
+- **A Hermes child dispatch that completed is no longer reported as failed because its scratch home was still in
+  use.** Hermes' `chat` starts a detached idle-exit gateway for the dispatch's scratch `HERMES_HOME`. The gateway
+  can still write into that home, or hold its log open (Windows then refuses the unlink), after the child exits, and
+  the failed removal turned a `completed` child into `failed`. The status is now the child's own. The removal is
+  retried briefly. A home that cannot be removed is left with a `cleanup_note` ("scratch home left at <path>: …") on
+  the result, on the fanout recovery record and on the CLI's stderr. Its OMH marker lets a later dispatch remove it
+  once it is older than a day and past that dispatch's own recorded deadline (start, timeout and an hour; an infinite
+  or oversized timeout records the largest deadline, so that home is never swept). A NaN timeout is now refused. The
+  marker goes last and is restored if a removal took it, and it is written as bytes, so Windows no longer writes a
+  `\r\n` marker that no sweep accepts. On Windows a child with an infinite or very long timeout is now waited for in
+  hour-long slices; `Popen.wait` there could not take that timeout, and the dispatch raised `OverflowError` or
+  reported `timed_out`. OMH still never signals that gateway. A child whose own process group or pipes did not finish still fails.
+  (`src/coding/hermes_child_dispatch.py` `_remove_scratch`, `_sweep_scratch_homes`, `_wait_until`; `AGENTS.md`
+  Hermes-native child boundary)
 - **`omh setup` connects to a Hermes config whose root keys hold column-0 lists, or whose section keys carry a
   comment.** Step 2 stopped with "non-mapping or unsupported root YAML is user-owned" on a `config.yaml` that writes a
   root key's list items at the left edge (`toolsets:` then `- hermes-cli`), the spelling older Hermes releases, hand
@@ -263,6 +364,14 @@ All notable changes will be documented here.
   reported as a stray that has not exited. The
   `--json` report gains `idle_exit` and `overdue` per gateway. (`src/maintenance/gateway_health.py` `_unrecorded_line`,
   `IDLE_EXIT_STALE_SECONDS`, `src/system/process_listing.py` `IDLE_EXIT_FLAG`)
+- **omher 1.2.1.** TERMINALS folders say where they are, bots on another computer get threads, and Antigravity's
+  signed-in turns read cleanly.
+  - **Folders:** a folder header shows its path from home and its branch; a split's card sits at the top of its own
+    folder, which keeps its place in the list; the `+` menu starts in the open terminal's folder, and each folder
+    header has its own `+` (#3183).
+  - **Splits:** a split pane no longer takes the keyboard from a menu or card opened right after the drop (#3183).
+  - **Peers:** a bot connected over SSH lists and opens threads like a local one (#3177).
+  - **Antigravity:** a signed-in Antigravity chat shows its shell commands and file reads by name (#3192).
 - **omher 1.2.0.** Hand a terminal to a bot, a page per bot with its apps, Google's Antigravity CLI in TERMINALS, and
   a Windows pass.
   - **Agents:** Google's Antigravity CLI (`agy`) starts from the TERMINALS `+` menu with its official mark, shows its

@@ -105,6 +105,7 @@ from ..installer import (
 )
 from ..local_store import atomic_write_text
 from ..install.installer import DEFAULT_SKILL_PROFILE, LEDGER_COPY_PARTIAL_KEY, PRUNE_SKIP_REASONS, SKILL_PROFILES
+from ..skill_pack import SKILL_PACK_NAMES
 from ..manifest import read_manifest
 from .update_change_note import record_update_change_note, update_change_note_lines
 from .update_file_changes import update_file_changes, update_file_changes_lines
@@ -121,6 +122,7 @@ from ..plugin_bundle.omh.provider_detection import (
     LINKED_SOURCE_CONFIG,
     LINKED_SOURCE_ENV,
     LINKED_SOURCE_LOGIN,
+    LINKED_SOURCE_PLUGIN,
     detect_linked_providers,
     env_key_names,
     env_row_is_covered,
@@ -497,6 +499,7 @@ def _install_result(args: argparse.Namespace) -> dict[str, object]:
     previous_manifest_sha256 = _previous_manifest_sha256(paths)
     previous_manifest = read_manifest(paths.manifest_path)
     skill_profile = _resolved_skill_profile(args, paths)
+    skill_packs = _resolved_skill_packs(args, paths, skill_profile=skill_profile)
     result = install_skill_pack(
         paths,
         source=source,
@@ -504,6 +507,7 @@ def _install_result(args: argparse.Namespace) -> dict[str, object]:
         force=args.force,
         dry_run=args.dry_run,
         profile=skill_profile,
+        packs=skill_packs,
     )
     result.update(
         {
@@ -2196,6 +2200,19 @@ def _resolved_skill_profile(args: argparse.Namespace, paths) -> str:
     return installed if installed in SKILL_PROFILES else DEFAULT_SKILL_PROFILE
 
 
+def _resolved_skill_packs(args: argparse.Namespace, paths, *, skill_profile: str) -> tuple[str, ...]:
+    """Resolve requested layered packs for `--core`, carrying forward recorded packs on update."""
+    if skill_profile == "full":
+        return ()
+    requested = getattr(args, "pack", None) or []
+    if requested:
+        return tuple(str(item) for item in requested if str(item).strip())
+    recorded = (read_manifest(paths.manifest_path) or {}).get("skill_packs", [])
+    if isinstance(recorded, list):
+        return tuple(str(item) for item in recorded if isinstance(item, str) and item in SKILL_PACK_NAMES)
+    return ()
+
+
 def _previous_manifest_sha256(paths) -> str:
     state, _ = read_state_result(paths)
     return _string_value((state or {}).get("manifest_sha256"))
@@ -3136,6 +3153,7 @@ def cmd_skill_profile_reconcile(args: argparse.Namespace) -> int:
     payload = reconcile_skill_profile(
         paths,
         target_profile=str(getattr(args, "to", "core")),
+        packs=tuple(getattr(args, "pack", None) or ()),
         dry_run=bool(getattr(args, "dry_run", False)),
     )
     if not payload.get("dry_run"):
@@ -4093,11 +4111,12 @@ def _finish_model_onboarding(args: argparse.Namespace, paths: OmhPaths, language
     return _launch_model_onboarding(paths, language)
 
 
-# The candidate sources that are not an env-var name. Both come from the
+# The candidate sources that are not an env-var name. All come from the
 # bundle's detector so the interview offers exactly the rows routing already
 # counts on its own (see `provider_detection`).
 _PROVIDER_SOURCE_CONFIG = LINKED_SOURCE_CONFIG
 _PROVIDER_SOURCE_LOGIN = LINKED_SOURCE_LOGIN
+_PROVIDER_SOURCE_PLUGIN = LINKED_SOURCE_PLUGIN
 
 
 def _env_key_names(paths: OmhPaths) -> set[str]:
@@ -4113,12 +4132,13 @@ def _provider_candidates(paths: OmhPaths) -> list[tuple[str, str, str]]:
     """Provider ids worth asking about: `(id, default kind, where it was found)`.
 
     The rows are the bundle's `detect_linked_providers` rows -- a `hermes
-    auth` login, a `providers.<id>` key or `model.provider`, an env-key NAME
-    -- so the interview offers exactly what routing already counts without
-    it, and exists to let the operator correct a kind, clear a row, or add
-    an id OMH could not place. The third element is the evidence line and
-    nothing else: `login`, `config`, or the variable NAME. It is a reason to
-    pre-tick a row, never a claim that the account works.
+    auth` login, a `providers.<id>` key or `model.provider`, an installed
+    provider plugin, an env-key NAME -- so the interview offers exactly what
+    routing already counts without it, and exists to let the operator
+    correct a kind, clear a row, or add an id OMH could not place. The third
+    element is the evidence line and nothing else: `login`, `config`,
+    `plugin`, or the variable NAME. It is a reason to pre-tick a row, never
+    a claim that the account works.
     """
     candidates: list[tuple[str, str, str]] = []
     for row in detect_linked_providers(paths.hermes_home, env_names=_env_key_names(paths)):
@@ -4215,7 +4235,7 @@ def _provider_entitlement_options(
     for provider_id, hinted_kind, source in candidates:
         # A key name the operator once recorded under the family's own id
         # (`openai` for OPENAI_API_KEY) is one account, not a second row.
-        is_env_row = source not in (_PROVIDER_SOURCE_CONFIG, _PROVIDER_SOURCE_LOGIN)
+        is_env_row = source not in (_PROVIDER_SOURCE_CONFIG, _PROVIDER_SOURCE_LOGIN, _PROVIDER_SOURCE_PLUGIN)
         if (
             provider_id not in previous_providers
             and is_env_row
@@ -4228,6 +4248,8 @@ def _provider_entitlement_options(
             descriptions[provider_id] = tr(language, "provider_detected_config")
         elif source == _PROVIDER_SOURCE_LOGIN:
             descriptions[provider_id] = tr(language, "provider_detected_login")
+        elif source == _PROVIDER_SOURCE_PLUGIN:
+            descriptions[provider_id] = tr(language, "provider_detected_plugin")
         else:
             descriptions[provider_id] = tr(language, "provider_detected_env", name=source)
     for provider_id in sorted(previous_providers):
@@ -4338,10 +4360,13 @@ def _ask_provider_entitlements(args: argparse.Namespace, paths: OmhPaths, langua
     kind, clear a row, add an id OMH could not place, and name a
     subscription CLI.
 
-    A confirmed Claude Code subscription is a Maestro-lane entitlement: the
-    Hermes lane cannot spend it (Hermes needs an API provider), so the only
-    routing consequence is the Claude Code `--model` preference, seeded to the
-    Claude chain head when the operator has not set one.
+    A confirmed Claude Code subscription is a Maestro-lane entitlement here:
+    its only routing consequence is the Claude Code `--model` preference,
+    seeded to the Claude chain head when the operator has not set one. The
+    Hermes lane spends a Claude subscription's plan allowance only when the
+    DirectSDK provider plugin (`claude-subscription-directsdk-experimental`)
+    is installed, and detection already counts that plugin as an `anthropic`
+    provider.
     """
     if not _will_ask_provider_entitlements(args, paths):
         # A repeat call keeps the answer it already has; a first call with
@@ -7208,12 +7233,21 @@ def _add_common_install_options(p: argparse.ArgumentParser) -> None:
         "--core",
         action="store_true",
         help=(
-            "Install only the lightweight core profile (chat/plan/status/"
-            "handoff essentials plus the doctor health floor) instead of the "
-            "full default. Every installed skill adds an index line to every "
-            "request and about 8k chars per body load, which stays in history "
-            "until compaction; core keeps that footprint minimal at the cost "
-            "of the ULW engines and most workflow skills."
+            "Install only the lightweight core profile (12 high-lift daily "
+            "skills plus the doctor health floor) instead of the full default. "
+            "Combine with repeatable `--pack <name>` to add layered role packs. "
+            "Every installed skill adds an index line to every request and about "
+            "5-8k chars per body load, which stays in history until compaction."
+        ),
+    )
+    p.add_argument(
+        "--pack",
+        action="append",
+        default=[],
+        choices=SKILL_PACK_NAMES,
+        help=(
+            "Optional layered skill pack to install on top of `--core` "
+            f"({', '.join(SKILL_PACK_NAMES)}). Repeat for multiple packs."
         ),
     )
 
@@ -7464,6 +7498,16 @@ def _add_top_level_commands(sub) -> None:
         choices=("core",),
         default="core",
         help="Target profile to reconcile down to. Only core shrinks an install.",
+    )
+    skill_profile_reconcile.add_argument(
+        "--pack",
+        action="append",
+        default=[],
+        choices=SKILL_PACK_NAMES,
+        help=(
+            "Keep one or more layered skill packs alongside `core` during reconcile "
+            f"({', '.join(SKILL_PACK_NAMES)}). Repeat for multiple packs."
+        ),
     )
     skill_profile_reconcile.add_argument(
         "--dry-run",
