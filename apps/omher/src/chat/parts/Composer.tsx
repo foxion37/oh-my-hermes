@@ -3,7 +3,7 @@ import type { Bot, Skill } from "../../lib/protocol";
 import { useStore, type OutFile, type ReplyChip } from "../../state/store";
 import type { PluginRow } from "../../lib/protocol";
 import { ArrowUp, CloseIcon, SourceIcon, StopIcon } from "../../ui";
-import { AttachButton, Chips, chipsFor, pluginName, useDropZone, type Chip } from "./Attach";
+import { AttachButton, Chips, chipsFor, filesFromTransfer, pluginName, useDropZone, type Chip } from "./Attach";
 import "./attach.css";
 import { CommandPicker, SkillPicker, mirrorText } from "./Skills";
 import { SIGIL, findTokens, fragmentAt, leadRow, matchSkills } from "./skillTokens";
@@ -83,7 +83,8 @@ export function Composer({
    *  opens as a terminal). */
   heldNote?: string;
   /** `./thread [text]`: a new thread of this bot, `text` its first message (absent: `./thread` goes out as typed). */
-  onNewThread?: (first: string) => void;
+  /** Resolves null when the thread was not made: the typed text comes back. */
+  onNewThread?: (first: string) => void | Promise<unknown>;
   /** The person's earlier prompts of this chat, oldest first (promptHistory.ts): ArrowUp/ArrowDown recall them. */
   history?: string[];
 }) {
@@ -304,7 +305,11 @@ export function Composer({
 
   const add = useCallback((files: File[]) => {
     setErr(null);
-    setChips((cur) => [...cur, ...chipsFor(files, cur.filter((c) => !c.reason).length)]);
+    setChips((cur) => {
+      const valid = cur.filter((c) => !c.reason);
+      const imgs = valid.filter((c) => c.attach === "image").length;
+      return [...cur, ...chipsFor(files, valid.length, imgs)];
+    });
     ref.current?.focus();
   }, []);
 
@@ -326,8 +331,11 @@ export function Composer({
     if (!has || offline || sending) return;
     if (threadCmd && onNewThread) {
       if (good.length) return setErr(t("thread.cmdFiles"));
+      const typed = text;
       edit("");
-      onNewThread(threadCmd.first);
+      void Promise.resolve(onNewThread(threadCmd.first)).then((made) => {
+        if (made === null) setText((cur) => (cur ? cur : typed)); // refused: the task is not lost (unless new text is already typed)
+      });
       return;
     }
     if (!good.length || !onSendFiles) {
@@ -446,7 +454,7 @@ export function Composer({
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
               onPaste={(e) => {
-                const files = [...e.clipboardData.files];
+                const files = filesFromTransfer(e.clipboardData);
                 if (!files.length || !onSendFiles) return;
                 e.preventDefault();
                 add(files);

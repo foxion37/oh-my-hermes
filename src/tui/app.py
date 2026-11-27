@@ -123,6 +123,7 @@ import time
 from types import FrameType
 import unicodedata
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, TextIO
+from concurrent.futures import Future
 
 from ..plugin_bundle.omh.hud_text import elapsed_text
 from ..commands.theme_picker import (
@@ -272,7 +273,8 @@ from .screen import (
     cursor_up,
 )
 from .session_picker import DELETE as SESSION_DELETE
-from .session_picker import LOAD_OLDER, PICK, RENAME, PickerAction, SessionPicker, SessionRow, pointer, session_rows
+from .session_picker import (CURRENT_NOT_DELETED, LOAD_OLDER, LOCAL_HISTORY, PICK, RENAME, PickerAction, SessionPicker,
+                             SessionRow, pointer, session_rows)
 from .rewind_picker import KEYS as REWIND_PICKER_KEYS
 from .rewind_picker import PICK as REWIND_PICK
 from .rewind_picker import RewindPicker, rewind_rows
@@ -402,8 +404,9 @@ from .whats_new import is_due as whats_new_due, read_shown, record_shown, whats_
 from .width import cell_width, clusters, line_width, truncate, truncate_left, truncate_line
 from ..version import __version__
 
-if TYPE_CHECKING:  # the bot board loads when it is opened (`_bots`), not with the TUI
+if TYPE_CHECKING:
     from .bot_board import BoardReader, Gateway
+    from . import profile_sessions
 
 # While the key decoder holds bytes (a lone ESC, half a sequence, an open paste), the loop reads with this
 # timeout, and an empty read settles what is held only once input has been quiet for `FLUSH_SILENCE_SECONDS`:
@@ -506,7 +509,6 @@ REWIND_KEPT_NOTICE = "Hermes did not rewind: {reason}. The screen is back to how
 REWIND_CUT_NOTICE = "Hermes cut the session there but did not take the prompt: {reason}. The prompt is back in the composer."
 REWIND_UNREAD_NOTICE ="Hermes did not send the session's history ({reason}), so the screen stays as it was before you sent."
 REWIND_TURN_BACK_NOTICE = "/{name} went back in the session itself, so the rewind is cancelled."
-MODEL_BUSY_NOTICE = "Hermes switches the model between turns: let this one end, or interrupt it with Esc."
 # `/model --refresh` as Hermes' own TUI reads it: the picker, over a list Hermes asks the providers for again.
 MODEL_REFRESH_ARG = "--refresh"
 # What a `config.set model` answer says, for `/model` and its picker.
@@ -1224,8 +1226,7 @@ COPY_DROPPED_NOTE = "not copied ({why})"  # a copy herdr drops (`clipboard.HERDR
 # `omh-*` and `ulw-*` slugs) up to half the terminal; a name longer than that pushes only its own summary.
 MENU_NAME_CELLS = 16
 SESSION_LIST_LIMIT = 100  # visible rows per picker page; Ctrl+G extends the search to older pages
-# Bare `/sessions` (`/resume`, Ctrl+X) has no echo, so until Hermes answers the list this row stands where the
-# picker will open, under the queued prompts; keys still go to the composer, and the picker opens with an empty filter.
+# The launcher resume picker has no echo; until Hermes answers, its loading row stands where the picker opens.
 SESSIONS_LOADING_LINE = "Loading sessions…"
 # Hermes lists the gateway profile's own store, newest first, and leaves archived, hidden (Bot Mode) and internal
 # (kanban, one-shot, tool) sessions out (`tui_gateway/methods_session.py` `_listing_rows`).
@@ -2543,8 +2544,12 @@ class App(ModesMixin, AgentViewMixin):
         self.switch_drain_due = False  # the queue held still while a switch was out (`_drain_queue`)
         # The composer's text as `/sessions` asked for its list: what differs when the picker opens was typed meanwhile.
         self.list_asked_draft: str | None = None
+        self.profile_inventory: profile_sessions.Inventory | None = None
+        self.profile_read: tuple[SessionPicker, Future[profile_sessions.Inventory]] | None = None
+        self.profile_history: tuple[SessionPicker, SessionRow, Future[dict[str, Any]]] | None = None
         self.sent_now: list[SentNow] = []  # sent-now steers Hermes took and the turn has not read yet
         self.cut_in: CutIn | None = None  # a prompt with images sent now: it goes once the turn it stopped ends
+        self.command_cut_in = False  # the send-now key stopped the turn for the queued command at the queue's head
         self.unread_steers: list[SteerBlock] = []  # every steer into the main turn Hermes took and it has not read
         # Redirects Hermes answered `queued`: its own next prompt, read only after the turn and cleared by a stop, so
         # no tool finishing settles them (`_track_sent_now`); the line, for a sent-now one.
@@ -2587,7 +2592,9 @@ class App(ModesMixin, AgentViewMixin):
         # next `_take_input` in the order they were typed.
         self.held_input: list[Key | Paste | Mouse] = []
         self.menu_index = 0
-        self.menu_closed: str | None = None  # the composer text Esc closed the `/` menu on; it stays closed over that text
+        # The composer text Esc or a history recall (Up/Down, vim `j`/`k`, Ctrl+R) closed the `/` menu on; it stays
+        # closed over that text, so a recalled `/model` walks on with Up/Down and sends as it is on Enter.
+        self.menu_closed: str | None = None
         # The composer text the person's own typing left (a printable key or Backspace), else None: a mid-line `/name`
         # opens the menu only over it, so a recalled, pasted or loaded text opens none until the next typed key.
         self.menu_typed: str | None = None
@@ -3111,6 +3118,7 @@ class App(ModesMixin, AgentViewMixin):
         return params
 
     def _adopt_session(self, result: Mapping[str, Any], fallback_stored: str = "") -> None:
+        self._close_profile_picker()
         if self.starting is not None and self.starting[2] != as_text(result.get("session_id")):
             # A prompt held for the default check was typed in the session being left: back to the draft.
             self._give_back_prompt(self.starting[0], self.starting_images)
@@ -3136,7 +3144,7 @@ class App(ModesMixin, AgentViewMixin):
         self.transcript.cwd = cwd or str(self._create_params().get("cwd", ""))
         self.turn_pending = resumed_running(result)
         self.authority_epoch = result.get("authority_epoch")
-        self.interrupting = self.queue_held = self.stop_asked = False  # all were about the session being left
+        self.interrupting = self.queue_held = self.stop_asked = self.command_cut_in = False  # about the session left
         self.sent_now = []  # steers into the session being left: theirs to settle
         self._settle_unread_steers(STEER_TAKEN)
         self._settle_hermes_queued()
@@ -3356,6 +3364,7 @@ class App(ModesMixin, AgentViewMixin):
         self._poll_view_when_due()
         self._take_hud()
         self._take_board()
+        self._take_profile_sessions()
         self._take_update_check()
         self._take_proofread()
         self._watch_generation()
@@ -4054,6 +4063,7 @@ class App(ModesMixin, AgentViewMixin):
         other call is forgotten without one, and the echo of a command it was
         made for closes.
         """
+        self._close_profile_picker()
         calls = list(self.pending.values())
         self.pending.clear()
         if self.queue_command_calls is not None:  # settled with the rest: the next gateway's ids start over
@@ -4598,7 +4608,7 @@ class App(ModesMixin, AgentViewMixin):
                 steer_next = self._settle_steers_at_turn_end() and not self.stop_asked and status != "interrupted"
                 # A stop the person asked for in no way (Esc, `/stop`) is Hermes' own.
                 self.transcript.hermes_interrupted = not (self.interrupting or self.stop_asked)  # `_turn_ended` spends it
-                self.transcript.cut_in_stop = self.cut_in is not None  # a cut-in's stop ends the turn quietly
+                self.transcript.cut_in_stop = self.cut_in is not None or self.command_cut_in  # a cut-in's stop is quiet
                 self._note_turn(self._turn_end(payload))
                 self.transcript.hermes_resuming = self._arm_auto_continue(payload)
             self.transcript.apply(event)
@@ -5451,12 +5461,29 @@ class App(ModesMixin, AgentViewMixin):
         self._close_proofread()
 
     def _edit(self, composer: Composer, event: Key | Paste) -> ComposerAction:
-        """`event` to `composer`, the person's own key: one that changes its text reopens the `/` menu at its top."""
+        """`event` to `composer`, the person's own key: an edit reopens the `/` menu at its top; a history recall keeps
+        it closed over the recalled text (`menu_closed`) until the next edit."""
         before, editing, visual = composer.text, composer.normal, composer.visual
+        before_history = composer.history_index
         action = composer.handle(event)
         if composer.take_bell() and self.environ.get(BELL_ENV) != BELL_OFF:
             self.terminal.write(BELL)
-        if composer.text != before:
+        recalled = (
+            composer is self.composer
+            and composer.history_index != before_history
+            and isinstance(event, Key)
+            and (
+                event.name in (UP, DOWN)
+                or (editing and event.name == CHAR and not event.ctrl and not event.alt and event.char in ("j", "k"))
+            )
+        )
+        if recalled:
+            self.menu_index = 0
+            self.menu_closed = composer.text or None
+            self.menu_typed = None
+            if composer.text != before:
+                self.escape_armed = None
+        elif composer.text != before:
             self.menu_index = 0
             self.menu_closed = None
             if composer is self.composer:
@@ -5603,11 +5630,14 @@ class App(ModesMixin, AgentViewMixin):
         return True
 
     def _sessions_key(self, event: Key | Paste) -> bool:
-        """Ctrl+X opens the session picker, the key Hermes' own TUI gives it; `/sessions` does the same."""
-        if not self._leader_matches(event, "s") and (not isinstance(event, Key) or event != Key(CHAR, "x", ctrl=True)):
-            return False
-        self._sessions("")
-        return True
+        """Ctrl+X opens the all-profile table; leader+s retains the Gateway picker."""
+        if isinstance(event, Key) and event == Key(CHAR, "x", ctrl=True):
+            self._profile_sessions()
+            return True
+        if self._leader_matches(event, "s"):
+            self._sessions("")
+            return True
+        return False
 
     def _plan_fold_key(self, event: Key | Paste) -> bool:
         """Ctrl+P folds the plan to its header or expands it, for the rest of the session (a new plan keeps the
@@ -5642,6 +5672,9 @@ class App(ModesMixin, AgentViewMixin):
         action = search.handle_key(event)
         if action == SEARCH_ACCEPT:
             self._set_composer(search.current() or search.original)
+            self.menu_index = 0
+            self.menu_closed = self.composer.text or None
+            self.menu_typed = None
         if action in (SEARCH_ACCEPT, SEARCH_CANCEL):
             self.search = None
 
@@ -5999,9 +6032,11 @@ class App(ModesMixin, AgentViewMixin):
         """`/model <name> [--provider <slug>]` switches this session as Hermes' own TUI does (`config.set model`).
 
         Bare, or with `--refresh` alone, it opens a picker of what Hermes
-        offers this session (typed during a turn it waits for the turn's end, `_run_slash`), asked again of the providers for
+        offers this session, at once even during a turn (Claude Code's `/model` does; a pick then is Hermes' deferred
+        switch, `MODEL_DEFERRED_NOTICE`), asked again of the providers for
         `--refresh`. Any other flag (`--global`, `--once`) is Hermes' own
-        `/model` as typed, which a shared gateway refuses (`_on_slash_refused`).
+        `/model` as typed, which a shared gateway refuses (`_on_slash_refused`); typed during a turn it waits for the
+        turn's end (`slash.model_runs_during_turn`).
         """
         refresh = arg.strip() == MODEL_REFRESH_ARG
         value = typed_switch_value(arg) if arg and not refresh else ""
@@ -6381,12 +6416,10 @@ class App(ModesMixin, AgentViewMixin):
                                               NOTICE_WARN))
 
     def _open_model_picker(self, sid: str, result: dict[str, Any], query: str = "") -> None:
-        """The list came: it opens unless the session was left, a turn started meanwhile, or a picker is open.
+        """The list came: it opens unless the session was left or a picker is open, during a turn too, as Claude
+        Code's `/model` does: a pick then is Hermes' deferred switch, from the next turn (`MODEL_DEFERRED_NOTICE`).
         `query` is what was typed into the picker while it loaded."""
         if sid != self.sid or self.model_picker is not None:
-            return
-        if self._busy():
-            self.transcript.add_aside(NoticeBlock(MODEL_BUSY_NOTICE, NOTICE_WARN))
             return
         if self._picker_taken("/model"):
             return
@@ -6559,6 +6592,7 @@ class App(ModesMixin, AgentViewMixin):
             if self.queued and not self.queue_held:
                 self._hold_queue(INTERRUPTED_WHY)
             return
+        self.command_cut_in = False  # a stop asked again: the queue waits for the person, the cut-in command with it
         if self.sid:
             self.interrupting = True
             self._note_turn(TURN_STOPPED)
@@ -6594,9 +6628,10 @@ class App(ModesMixin, AgentViewMixin):
         self.dirty = True
 
     def _menu_entries(self) -> list[Completion]:
-        """Completions for what the `/` menu completes (`_menu_token`), unless Esc closed them over this text; none in
-        vim mode's NORMAL. A leading `/` offers every command and skill; a mid-line `/name` only the skills, by prefix
-        and substring (`skill_completions`), since a built-in command means something only at the line's start."""
+        """Completions for what the `/` menu completes (`_menu_token`), unless Esc or history recall closed them over
+        this text; none in vim mode's NORMAL. A leading `/` offers every command and skill; a mid-line `/name` only the
+        skills, by prefix and substring (`skill_completions`), since a built-in command means something only at the
+        line's start."""
         text = self.composer.text
         token = None if self.slot is not None or self.composer.normal or text == self.menu_closed else self._menu_token()
         if token is None:
@@ -7224,6 +7259,17 @@ class App(ModesMixin, AgentViewMixin):
             self._send_cut_in()
             self._check_default()
             return
+        if self.interrupting and self.command_cut_in and self.queued and self.queued[0].command is not None:
+            # The person sent a queued command now: it runs first, then the queue goes on behind it, as behind a
+            # cut-in prompt. Steers the turn had not read go back right behind the command.
+            self.interrupting = self.command_cut_in = False
+            command = self.queued.popleft()
+            self._requeue_unread_steers()
+            self.queued.appendleft(command)
+            self._drain_queue()
+            self._check_default()
+            return
+        self.command_cut_in = False
         if self.interrupting:
             self.interrupting = False
             self._hold_queue(INTERRUPTED_WHY)
@@ -7624,28 +7670,47 @@ class App(ModesMixin, AgentViewMixin):
 
     def _queue_head_sends_now(self) -> bool:
         """Whether the send-now key can send the oldest queued line now: a prompt it steers with
-        (`_queue_head_steers`), or a typed prompt with images, which cuts in (`_cut_in`) as the same key does on a
-        prompt with images in the composer. Enter queued it (a steer is text alone); the queue row says the key sends
-        it now, as Claude Code's does."""
+        (`_queue_head_steers`), or a typed prompt with images or a slash command, which cut in (`_cut_in`) as the same
+        key does on a prompt with images in the composer: the turn stops and the line runs the moment it ends, as
+        Claude Code's `ctrl+x ctrl+s` runs a queued `/context`. Enter queued it; the queue row says the key sends it
+        now, as Claude Code's does. A queued `!` line and a prompt a command built (a skill's) still wait."""
         if self._queue_head_steers():
             return True
         head = self.queued[0] if self.queued else None
-        return head is not None and bool(head.images) and not head.shell and head.command is None and not head.typed \
-            and bool(self.sid) and self.cut_in is None
+        typed_command = head is not None and head.command is not None and not head.command.for_plan_mode
+        cuts_in = head is not None and not head.shell and not head.typed and (bool(head.images) or typed_command)
+        return cuts_in and bool(self.sid) and self.cut_in is None
 
     def _send_queued_now(self) -> None:
         """The send-now key: the oldest queued prompt leaves the queue and goes into the running turn as a steer, or,
-        with images, cuts in (`_cut_in`): the turn stops and the prompt goes with its images when it ends.
+        with images or as a slash command, cuts in (`_cut_in`): the turn stops and the line goes when it ends.
 
         A steer Hermes does not take goes back to the head of the queue as
         it was (`_steer_refused`); one it took but had not read when the turn
         stopped goes back there too (`_requeue_unread_steers`).
         """
         line = self.queued.popleft()
+        if line.command is not None:  # with its images too: the queue runs it as it would have (`_cut_in_command`)
+            self._cut_in_command(line)
+            return
         if line.images:
             self._cut_in(line.text, line.shown, line.chips, line.images)
             return
         self._steer(line.text, line)
+
+    def _cut_in_command(self, line: QueuedLine) -> None:
+        """The send-now key on a queued slash command: stop the turn and run the command first when it ends, ahead of
+        the rest of the queue, as Claude Code's `ctrl+x ctrl+s` does with a queued `/context`. It runs then as the
+        queue runs it (`_run_queued_command`); its row stays where it was meanwhile, at the queue's head, so Up, a
+        stop or a switch treat it as any queued line. With nothing to stop after all it runs now."""
+        self.queued.appendleft(line)
+        if not self._busy():
+            self._drain_queue()
+            return
+        self._interrupt()
+        # Still running: the turn's end runs it (`_turn_ended`). Not (only a prompt not sent yet was stopped): the
+        # queue went where any stop sends it (`_hold_queue`), the command with it.
+        self.command_cut_in = self._busy()
 
     def _steer_or_submit(
         self, text: str, shown: str = "", chips: tuple[tuple[str, str], ...] = (), images: Sequence[Attachment] = (),
@@ -8032,7 +8097,10 @@ class App(ModesMixin, AgentViewMixin):
             return
         if command is not None and command.route in (LOCAL, HERMES, DROPPED) or not self.sid:
             if command is not None and command.route == LOCAL:
-                self._local_handlers()[command.name](invocation.arg)
+                if command.name == "sessions" and not invocation.arg:
+                    self._profile_sessions()
+                else:
+                    self._local_handlers()[command.name](invocation.arg)
             elif command is not None and command.route == HERMES:
                 self.transcript.add_notice(hermes_notice(command))
             elif command is not None and command.route == DROPPED:
@@ -8049,6 +8117,7 @@ class App(ModesMixin, AgentViewMixin):
             echo = self.transcript.command
             if invocation.name.lower() == "stop" and self._busy():
                 self.stop_asked = True  # the turn it interrupts ends `interrupted`: the person's stop
+                self.command_cut_in = False  # the queue waits for the person, a cut-in command with it
                 self._note_turn(TURN_STOPPED)
             sid = self.sid
             self._request(
@@ -8456,6 +8525,88 @@ class App(ModesMixin, AgentViewMixin):
 
     # ── switching sessions ──
 
+    def _close_profile_picker(self) -> None:
+        if self.picker is not None and self.picker.profiles is not None:
+            self.picker = None
+            self.profile_inventory = None
+            self.dirty = True
+
+    def _profile_sessions(self) -> None:
+        """Bare /sessions combines one authenticated list with a foreground-only local observer."""
+        from . import profile_sessions
+
+        if not self.sid:
+            self.transcript.add_notice(NO_SESSION_NOTICE, NOTICE_WARN)
+            return
+        if self._picker_taken("/sessions"):
+            return
+        if self.profile_read is not None and not self.profile_read[1].done():
+            self.transcript.add_aside(NoticeBlock("Local sessions are still loading. Try /sessions again shortly."))
+            return
+        profile = self.launch_profile  # only the gateway's session info names its effective profile
+        picker = SessionPicker([], current=self.stored_id, profiles=(),
+                               inventory_status="Reading local profiles…", gateway_status="Waiting for Hermes…")
+        self.picker = picker
+        self.profile_inventory = None
+        self._settle_list()
+        self.profile_read = picker, profile_sessions.background(
+            lambda: profile_sessions.Inventory.read(self.environ), self._wake_loop)
+
+        def done(result: dict[str, Any]) -> None:
+            if self.picker is picker:
+                picker.gateway_status = ""
+                picker.add_older(session_rows(result, profile=profile), as_text(result.get("next_page")))
+
+        def problem(message: str) -> None:
+            if self.picker is picker:
+                picker.gateway_status = message
+                self.dirty = True
+
+        def refused(error: dict[str, Any]) -> bool:
+            problem("Gateway list unavailable: " + (plain_sentence(as_text(error.get("message"))) or "refused"))
+            return True
+
+        if self._request("session.list", {"limit": SESSION_LIST_LIMIT}, done, refused,
+                         lambda _seconds: problem("Gateway list did not answer")) is None:
+            problem("Gateway list unavailable")
+
+    def _take_profile_sessions(self) -> None:
+        reading = self.profile_read
+        if reading is not None and reading[1].done():
+            self.profile_read = None
+            picker, future = reading
+            if picker is self.picker:
+                if future.cancelled() or future.exception() is not None:
+                    picker.inventory_status = "Partial local history · profile read failed"
+                else:
+                    inventory = future.result()
+                    self.profile_inventory = inventory
+                    picker.add_local(inventory.profiles, inventory.rows)
+                    problems = ", ".join(inventory.problems)
+                    picker.inventory_status = f"Partial local history · {problems}" if problems else ""
+                self.dirty = True
+        history = self.profile_history
+        if history is not None and history[2].done():
+            self.profile_history = None
+            picker, row, future = history
+            if picker is self.picker:
+                selected = picker.selected()
+                if (self.slot is not None or self.pager is not None or self.proofread_review is not None
+                        or self._front_picker() is not picker or selected is None or selected.local is not row.local):
+                    picker.history_status = ""
+                    self.dirty = True
+                    return
+                if future.cancelled() or future.exception() is not None:
+                    result = {"problem": "Local session history unavailable"}
+                else:
+                    result = future.result()
+                picker.history_status = as_text(result.get("problem"))
+                if not picker.history_status:
+                    self.picker = None
+                    self.profile_inventory = None
+                    self._show_session_history(row, result, local=True)
+                self.dirty = True
+
     def _sessions(self, arg: str) -> None:
         self.list_asked_draft = self.composer.text
         if not self.sid:
@@ -8585,26 +8736,44 @@ class App(ModesMixin, AgentViewMixin):
         if action.kind == LOAD_OLDER:
             self._older_sessions(self.picker)
             return
+        if action.kind == LOCAL_HISTORY:
+            from . import profile_sessions
+
+            picker, inventory = self.picker, self.profile_inventory
+            row = picker.selected()
+            if (inventory is not None and row is not None and action.local is row.local
+                    and self.profile_history is None):
+                picker.history_status = "Reading local history…"
+                self.profile_history = picker, row, profile_sessions.background(
+                    lambda: inventory.transcript(self.environ, action.local), self._wake_loop)
+            return
         if action.kind in (RENAME, SESSION_DELETE):  # the picker stays open, its row saying how the call went
             row = next((row for row in self.picker.rows if row.id == action.session_id), None)
-            if row is not None and row.read_only:
+            if row is None or row.local is not None:
+                return
+            if row.read_only:
                 self._edit_refused(self.picker, row.id, SESSION_EDIT_READ_ONLY)
                 return
             self._edit_session(self.picker, action)
             return
         rows, self.picker = self.picker.rows, None
+        self.profile_inventory = None
         if action.kind == PICK:
-            row = next((row for row in rows if row.id == action.session_id), None)
-            if row is not None and row.read_only:  # its owner is another runtime: its history is read, not resumed
+            row = next((row for row in rows if row.local is None and row.id == action.session_id), None)
+            if row is None:
+                return
+            if row.read_only:  # its owner is another runtime: its history is read, not resumed
                 self._read_session(row)
                 return
-            self._switch_session(action.session_id, label=row.label if row is not None else "")
+            self._switch_session(row.id, label=row.label)
 
     def _older_sessions(self, picker: SessionPicker) -> None:
         """Only the open picker that requested a page may receive it."""
+        profile = self.launch_profile if picker.profiles is not None else ""
+
         def done(result: dict[str, Any]) -> None:
             if self.picker is picker:
-                picker.add_older(session_rows(result), as_text(result.get("next_page")))
+                picker.add_older(session_rows(result, profile=profile), as_text(result.get("next_page")))
 
         def problem(message: str) -> None:
             if self.picker is picker:
@@ -8628,33 +8797,6 @@ class App(ModesMixin, AgentViewMixin):
         """`row`'s history in a pager, read from its owner without resuming it: `session.transcript` mounts the
         stored transcript read-only, so no agent is built and no session is taken over. It is how a session another
         runtime persisted open stays listable here; resuming it is that runtime's to allow."""
-        def done(result: dict[str, Any]) -> None:
-            messages = result.get(contract.TRANSCRIPT_ROWS)
-            lines: list[Line] = []
-            for message in messages if isinstance(messages, list) else []:
-                if not isinstance(message, dict):
-                    continue
-                role = as_text(message.get("role")) or "?"
-                content = [clean_text(line).rstrip() for line in as_text(
-                    message.get("text", message.get("content"))).splitlines()]
-                while content and not content[0]:
-                    content.pop(0)
-                while content and not content[-1]:
-                    content.pop()
-                if content:
-                    if lines:
-                        lines.append(())
-                    lines.append((Span(f"{role}: ", style="bold"), Span(content[0])))
-                    lines.extend((Span(line),) for line in content[1:])
-                    if message.get(contract.TRANSCRIPT_ROW_TRUNCATED) is True:
-                        lines.append((Span(TRANSCRIPT_ROW_CUT),))
-            if result.get(contract.TRANSCRIPT_NEXT_CURSOR):
-                lines.append((Span("Newest transcript page shown; older history remains on the server."),))
-            if not lines:
-                self.transcript.add_aside(NoticeBlock(f"No messages stored for {row.label}."))
-                return
-            self._open_pager(f"Read-only · {row.label}", lines)
-
         def refused(error: dict[str, Any]) -> bool:
             self.transcript.add_notice(
                 f"Hermes did not show {row.label}: {error.get('message') or error.get('code') or 'refused'}.",
@@ -8665,10 +8807,40 @@ class App(ModesMixin, AgentViewMixin):
         self._request(
             "session.transcript",
             {"session_id": row.id, "order": "latest", "limit": 500},
-            done,
+            lambda result: self._show_session_history(row, result),
             refused,
             seconds=CALL_ANSWER_SECONDS,
         )
+
+    def _show_session_history(self, row: SessionRow, result: dict[str, Any], *, local: bool = False) -> None:
+        messages = result.get(contract.TRANSCRIPT_ROWS)
+        lines: list[Line] = []
+        for message in messages if isinstance(messages, list) else []:
+            if not isinstance(message, dict):
+                continue
+            role = as_text(message.get("role")) or "?"
+            content = [clean_text(line).rstrip() for line in as_text(
+                message.get("text", message.get("content"))).splitlines()]
+            while content and not content[0]:
+                content.pop(0)
+            while content and not content[-1]:
+                content.pop()
+            if content:
+                if lines:
+                    lines.append(())
+                lines.append((Span(f"{role}: ", Style(bold=True)), Span(content[0])))
+                lines.extend((Span(line),) for line in content[1:])
+                if message.get(contract.TRANSCRIPT_ROW_TRUNCATED) is True:
+                    lines.append((Span(TRANSCRIPT_ROW_CUT),))
+        if local and result.get("older"):
+            lines.append((Span("Newest transcript page shown; older history remains in the local profile."),))
+        elif result.get(contract.TRANSCRIPT_NEXT_CURSOR):
+            lines.append((Span("Newest transcript page shown; older history remains on the server."),))
+        if not lines:
+            self.transcript.add_aside(NoticeBlock(f"No messages stored for {row.label}."))
+            return
+        profile = f"{row.profile} · " if local else ""
+        self._open_pager(f"Read-only · {profile}{row.label}", lines)
 
     def _edit_session(self, picker: SessionPicker, action: PickerAction) -> None:
         """A rename (`session.title`) or a delete (`session.delete`) the person asked for in the session picker, on
@@ -8679,6 +8851,13 @@ class App(ModesMixin, AgentViewMixin):
         Hermes' refusal on it; with the picker closed meanwhile, a notice says it instead."""
         target = action.session_id
         renaming = action.kind == RENAME
+        row = next((row for row in picker.rows if row.local is None and row.id == target), None)
+        if row is None or row.read_only:
+            return
+        if not renaming and (target in (self.sid, self.stored_id)
+                             or picker.profiles is not None and self.stored_id in row.lineage):
+            self._edit_refused(picker, target, CURRENT_NOT_DELETED)
+            return
         sent = self.sid if target == self.stored_id and self.sid else target
         method, params = (("session.title", {"session_id": sent, "title": action.title}) if renaming
                           else ("session.delete", {"session_id": sent}))

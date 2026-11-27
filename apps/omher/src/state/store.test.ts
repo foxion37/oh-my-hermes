@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerSlot, answerSoFar, activityText, chatRoute, createStore, folderKey, setChatRoute, initialState, reduce, replyChipFor, selectTimeline, type Action, type AppState, type BridgeLike, type MessageItem } from "./store";
+import { answerSlot, answerSoFar, activityText, chatRoute, chatTarget, createStore, folderKey, setChatRoute, initialState, reduce, replyChipFor, selectTimeline, type Action, type AppState, type BridgeLike, type MessageItem } from "./store";
 import type { Away, BridgeEvent, ChatOpenResult } from "../lib/protocol";
 import { setDraft } from "../app/drafts";
 import type { BridgeStatus } from "../lib/bridge";
@@ -585,6 +585,7 @@ function fakeBridge() {
   // bots.list status per bot (default online); the real bridge reads "offline" for any profile not yet attached
   const listed = new Map<string, string>();
   let running = false;
+  let names = ["kami", "friren"];
   const bridge: BridgeLike = {
     connect: async () => {
       statusH?.("open");
@@ -598,7 +599,7 @@ function fakeBridge() {
           return { bridge: "mock", version: "0.1.0", hermes: { home: "/h" } };
         case "bots.list":
           return {
-            bots: ["kami", "friren"].map((name) => ({
+            bots: names.map((name) => ({
               name, display_name: name, is_default: false, model: "m", provider: "p", description: "", status: listed.get(name) ?? "online", running: false,
             })),
           };
@@ -633,6 +634,7 @@ function fakeBridge() {
     setOffline: (bot: string) => offline.add(bot),
     setListedStatus: (bot: string, status: string) => listed.set(bot, status),
     setRunning: (r: boolean) => (running = r),
+    setBotNames: (n: string[]) => (names = n),
   };
 }
 
@@ -687,6 +689,29 @@ describe("store", () => {
     expect(s.ui.roster).toEqual(["friren"]);
     expect(s.ui.pinned).toEqual([]);
     expect(s.selectedBot).toBe("friren");
+  });
+
+  it("reloadBots: the open bot is gone (its computer removed): the first listed bot opens; a chat moves, Settings stays", async () => {
+    const f = fakeBridge();
+    const store = createStore(f.bridge, { now: () => T0 });
+    await store.actions.init();
+    await store.actions.selectBot("friren");
+    f.setBotNames(["kami"]);
+    await store.actions.reloadBots();
+    expect(store.getState().selectedBot).toBe("kami");
+    expect(store.getState().ui.view).toBe("chat");
+    expect(store.getState().chats.kami.loaded).toBe(true);
+
+    f.setBotNames(["kami", "friren"]);
+    await store.actions.reloadBots();
+    await store.actions.selectBot("friren");
+    store.actions.openSettings("general");
+    const view = store.getState().ui.view;
+    expect(view).not.toBe("chat");
+    f.setBotNames(["kami"]);
+    await store.actions.reloadBots();
+    expect(store.getState().selectedBot).toBe("kami");
+    expect(store.getState().ui.view).toBe(view);
   });
 
   it("roster: bots hidden before the roster never enter it", async () => {
@@ -822,6 +847,63 @@ describe("store", () => {
     await expect(store.actions.sendWithFiles("x", [file("ok.png", "image"), bad])).rejects.toThrow("Couldn't attach b.png");
     expect(f.calls.slice(before).map((c) => c.op)).toEqual(["chat.attach"]); // no chat.send
     expect(store.getState().chats.kami.items.at(-1)).toBe(row); // no new bubble
+  });
+
+  it("sendWithFiles forwards canonical attachment_ids on chat.send (immediate and held queue)", async () => {
+    const f = fakeBridge();
+    const orig = f.bridge.request;
+    let seq = 0;
+    f.bridge.request = (async (op: string, params: Record<string, unknown>) => {
+      if (op === "chat.attach") {
+        f.calls.push({ op, params });
+        if (params.kind === "image") {
+          return { kind: "image", name: params.name, text: `[User attached image: ${params.name}]`, ref_text: "", attachment_id: `att-${++seq}` };
+        }
+        return { kind: params.kind, name: params.name, text: "", ref_text: `@file:attachments/${params.name}` };
+      }
+      return orig(op as never, params as never);
+    }) as typeof f.bridge.request;
+    const store = createStore(f.bridge, { now: () => T0 });
+    await store.actions.init();
+    const file = (name: string, attach: "image" | "pdf" | "file") =>
+      ({ name, size: 3, kind: attach === "image" ? ("image" as const) : ("file" as const), url: null, attach, read: async () => "QUJD" });
+
+    // immediate send: image attachment_ids go on chat.send
+    await store.actions.sendWithFiles("", [file("table.png", "image"), file("notes.txt", "file")]);
+    const send1 = f.calls.filter((c) => c.op === "chat.send").at(-1)!;
+    expect(send1.params).toEqual({
+      bot: "kami",
+      text: "@file:attachments/notes.txt\n\n[User attached image: table.png]",
+      attachment_ids: ["att-1"],
+    });
+
+    // immediate send with replyTo chip preserves reply_to and clears the chip
+    store.actions.setReplyTo({ session_id: "away-2", source: "slack", place: "#ops", kind: "thread" });
+    await store.actions.sendWithFiles("see table", [file("third.png", "image")]);
+    expect(store.getState().replyTo.kami).toBeNull();
+    const send2 = f.calls.filter((c) => c.op === "chat.send").at(-1)!;
+    expect(send2.params).toEqual({
+      bot: "kami",
+      text: "see table",
+      reply_to: "away-2",
+      attachment_ids: ["att-2"],
+    });
+
+    // held while a turn is running: flushed sendHeld attaches and forwards attachment_ids + reply_to too
+    store.actions.setReplyTo({ session_id: "away-1", source: "discord", place: "#eng", kind: "channel" });
+    f.emit({ event: "turn.start", bot: "kami" });
+    await store.actions.sendWithFiles("follow up", [file("second.png", "image")]);
+    expect(store.getState().replyTo.kami).toBeNull();
+    f.emit({ event: "turn.end", bot: "kami", outcome: "done" });
+    await new Promise((r) => setTimeout(r, 0));
+    const send3 = f.calls.filter((c) => c.op === "chat.send").at(-1)!;
+    expect(send3.params).toEqual({
+      bot: "kami",
+      text: "follow up",
+      reply_to: "away-1",
+      attachment_ids: ["att-3"],
+      queued: true,
+    });
   });
 
   it("reconnect keeps state and re-reads the chat without duplicating it", async () => {
@@ -1164,5 +1246,34 @@ describe("a reopened chat keeps the words before a question once", () => {
     const msgs = [...opened().messages, { id: "a1", role: "assistant" as const, text: note, ts: T0 / 1000 + 0.5 }];
     const again = reduce(s, { type: "chat.opened", bot: "kami", res: opened({ running: true, messages: msgs }), now: T0 + 5000 });
     expect(said(again)).toEqual([note]);
+  });
+});
+
+describe("the answered-interview line", () => {
+  it("is built from an i18n key in every language, never English-only", async () => {
+    const { t } = await import("../i18n");
+    for (const l of ["en", "ko", "zh", "ja"] as const) {
+      const line = t("card.givenOfTotal", { given: "2", n: "3" }, l);
+      expect(line).toContain("2");
+      expect(line).toContain("3");
+      if (l !== "en") expect(line).not.toContain(" of ");
+    }
+  });
+});
+
+describe("chatTarget: where a chat key's words go", () => {
+  it("a main chat, a local bot's thread, and an SSH bot's thread (`<peer>:<name>`) by the known bot names", () => {
+    const known = ["kami", "p1:kami", "p1"];
+    expect(chatTarget("kami", known)).toEqual({ bot: "kami" });
+    expect(chatTarget("p1:kami", known)).toEqual({ bot: "p1:kami" });
+    expect(chatTarget("fold:kami:t1", known)).toEqual({ bot: "kami", session: "t1" });
+    expect(chatTarget("fold:p1:kami:t1", known)).toEqual({ bot: "p1:kami", session: "t1" });
+  });
+
+  it("a session id may hold colons; an unknown bot falls back to a local name (no colon)", () => {
+    expect(chatTarget("fold:p1:kami:a:b", ["p1:kami"])).toEqual({ bot: "p1:kami", session: "a:b" });
+    expect(chatTarget("fold:kami:a:b", ["kami"])).toEqual({ bot: "kami", session: "a:b" });
+    expect(chatTarget("fold:kami:t1")).toEqual({ bot: "kami", session: "t1" });
+    expect(chatTarget(folderKey("p1:kami", "t1"), ["p1:kami"])).toEqual({ bot: "p1:kami", session: "t1" });
   });
 });

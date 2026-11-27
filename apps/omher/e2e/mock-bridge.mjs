@@ -12,6 +12,8 @@
 // at start and on every reset), mock.botMade {bot, kind: routine|plugin} (the bot made an automation or installed a
 // plugin from its chat: the bridge's poll would emit routines.update + routine.added, or plugin.added + plugins.update),
 // mock.offline {bot, on} (a bot's gateway down for the Automations / Plugins writes),
+// mock.threadCreate {delay_ms?, line?} (thread.create takes delay_ms to answer and/or is refused with `line`, as the
+// gateway's error or the 48-open-thread cap; no params = back to normal),
 // mock.restart {bot, outcome: "ok"|"refused"|"failed"|"slow", work?, line?} (what Hermes' restart answers next),
 // mock.pluginLoad {load: "live"|"reload"|"restart"|"failed"} (what the next plugin install / reload says),
 // mock.apps {bot, name, state} (one Apps entry's state for a bot), mock.appsNext {verb, line} (the next apps.<verb> run
@@ -46,7 +48,7 @@
 // mock.steerMode {bot, mode: "accept"|"reject"} (what chat.steer answers while a turn runs, in the main chat or with
 // `session` a folder chat / thread; with no turn it is
 // always rejected, as Hermes' session.steer), mock.endTurn {bot, outcome?} (a manual turn ends, as Hermes ends it),
-// mock.steers (every steer the mock took),
+// mock.steers (every steer the mock took), mock.commands (every mid-turn /usage or /status),
 // mock.ready {bot, ok, signIn?} (what `bots.ready` answers for a bot: ok false = Hermes says it cannot answer; with
 // signIn: the strict check for that provider passes, as after `hermes auth add <id>`, and its models show in
 // models.options),
@@ -633,11 +635,13 @@ const providersOf = (bot) => (codexRuntime.has(bot) ? [...PROVIDERS, SIGN_IN_MOD
 let calls = [];
 // What the bridge would hand Hermes' prompt.submit (the text after the reply-target block is added).
 let submits = [];
+let stagedAttachments = new Map(); // attachment_id -> bot name (single-use, main chat only)
 let bots, history, models, turns, pending, idSeq, queues, avatars, folders, runs, cliRuns, cliTitles, peers, peerBots;
 // Automations and plugins: what the pages read and change (reset with everything else).
 let automations, plugins, inspected, offlineWrites;
 /** bots.restart: what the next restart answers per bot, which bot refused last (for "Restart anyway"). */
 let restartNext, restartRefused, pluginLoadNext;
+let threadCreateRule = null; // mock.threadCreate: {delay_ms, line}
 const STANDALONE = new Set(["omh-tui"]);
 const gatewayOf = (name) => (STANDALONE.has(name) ? name : "default");
 const gatewayBots = (gw) => Object.values(bots).filter((x) => gatewayOf(x.name) === gw);
@@ -657,6 +661,8 @@ let manual;
 // chat.steer: per bot "accept" (default) or "reject" (mock.steerMode), and every steer taken (mock.steers)
 let steerMode = new Map();
 let steers = [];
+// chat.command: every mid-turn /usage or /status the mock ran (mock.commands)
+let commands = [];
 // #3123: a turn Hermes lost when its gateway was killed (`mock.lostTurn`), chat key (the bot, or its thread's
 // folderTurnKey) -> [{ id, text }], and the messages Hermes keeps queued behind it, chat key -> [{ id, text, ts }].
 // Nothing runs until `chat.discard`.
@@ -944,6 +950,7 @@ function reset() {
   inspected = new Map(); // `<bot>:<catalog name>` -> the sha plugins.inspect handed out
   offlineWrites = new Set();
   restartNext = new Map();
+  threadCreateRule = null;
   for (const h of restartTimers) clearTimeout(h);
   restartTimers.clear();
   restartRefused = new Set();
@@ -954,6 +961,7 @@ function reset() {
   manual = new Set();
   steerMode = new Map();
   steers = [];
+  commands = [];
   lostTurns = new Map();
   lostQueue = new Map();
   noSkills = new Set();
@@ -971,6 +979,7 @@ function reset() {
   idSeq = 0;
   calls = [];
   submits = [];
+  stagedAttachments = new Map();
   peers = new Map(); // SSH peer id -> { label, host }
   peerBots = null; // the mock other computer's bots (null: PEER_BOTS_SEED)
 }
@@ -1416,6 +1425,19 @@ const OPS = {
     return { session: was[0], stored, cwd, model: m.model, provider: m.provider, reasoning: m.reasoning, messages: [], running: false };
   },
   "thread.create": (p) => {
+    const rule = threadCreateRule;
+    if (rule && (rule.delay_ms || rule.line)) {
+      // mock.threadCreate: the create takes a while and/or is refused, as a gateway error or the 48-open-thread cap
+      return new Promise((resolve, reject) =>
+        setTimeout(() => {
+          if (rule.line) return reject(new OpError("thread_limit", rule.line));
+          resolve(OPS["thread.create.now"](p));
+        }, rule.delay_ms || 0),
+      );
+    }
+    return OPS["thread.create.now"](p);
+  },
+  "thread.create.now": (p) => {
     const b = needBot(p);
     // a peer's bot: its thread is a session on that computer's gateway; a folder here is refused, as the bridge does
     if (b.host && p.cwd !== undefined) throw remoteRefusal(b, "folder.open");
@@ -1501,6 +1523,18 @@ const OPS = {
   "chat.send": (p) => {
     const b = needBot(p);
     const text = needStr(p, "text");
+    if (p.attachment_ids !== undefined) {
+      if (text.trimStart().startsWith("/")) throw new OpError("bad_request", "a slash command takes no attachments");
+      if (!Array.isArray(p.attachment_ids) || p.attachment_ids.some((x) => typeof x !== "string" || !x))
+        throw new OpError("bad_request", "attachment_ids must be a list of non-empty strings");
+      if (p.attachment_ids.length > 10) throw new OpError("bad_request", "at most 10 image attachments per message");
+      if (new Set(p.attachment_ids).size !== p.attachment_ids.length) throw new OpError("bad_request", "duplicate attachment_id");
+      if (p.session !== undefined && p.attachment_ids.length) throw new OpError("bad_request", "unknown or expired attachment_id");
+      for (const aid of p.attachment_ids) {
+        if (stagedAttachments.get(aid) !== b.name) throw new OpError("bad_request", "unknown or expired attachment_id");
+      }
+      for (const aid of p.attachment_ids) stagedAttachments.delete(aid);
+    }
     // Same as the real bridge: a reply_to session adds one context block for the bot. Nothing is posted.
     let submitted = text;
     let reply_to = null;
@@ -1562,6 +1596,17 @@ const OPS = {
     if (!turns[key] || steerMode.get(b.name) === "reject") return { status: "rejected" };
     steers.push({ bot: b.name, text, ...(p.session !== undefined ? { session: p.session } : {}) });
     return { status: "queued" };
+  },
+  // a /usage or /status typed mid-turn: its answer at once, as a note beside the running turn (rule 48)
+  "chat.command": (p) => {
+    const b = needBot(p);
+    const text = needStr(p, "text");
+    const name = /^\/([\w-]+)(?:\s|$)/.exec(text.trim())?.[1]?.toLowerCase();
+    if (name !== "usage" && name !== "status") throw new OpError("bad_request", "only /usage and /status run during a turn");
+    const key = p.session !== undefined ? (needFolder(p, b), folderTurnKey(b.name, p.session)) : b.name;
+    commands.push({ bot: b.name, text, ...(p.session !== undefined ? { session: p.session } : {}) });
+    setTimeout(() => ev(key, "command.output", { id: `cmd-${commands.length}`, command: text.trim(), text: name === "usage" ? "Session tokens: 1,234 in · 567 out" : "Model: sonnet · gateway: running" }), 30);
+    return {};
   },
   "chat.interrupt": (p) => {
     const b = needBot(p);
@@ -1672,8 +1717,8 @@ const OPS = {
     if (bots[name]) throw new OpError("exists", `A folder named ${name} is already under Hermes' profiles.`);
     const next = createNext;
     createNext = null;
-    if (next?.unconfirmed) return { outcome: "unconfirmed", line: next.line };
-    if (next && !next.incomplete) return { outcome: "failed", line: next.line };
+    if (next?.unconfirmed) return { outcome: "unconfirmed", reason: "left", leftovers: [`profiles/${name}`], said: "", line: next.line };
+    if (next && !next.incomplete) return { outcome: "failed", reason: "hermes", line: next.line };
     bots[name] = { name, display_name: name.charAt(0).toUpperCase() + name.slice(1), is_default: false, model: "Haiku 5",
       provider: "claude-proxy", description: "", status: "online", running: false, reasoning: "low" };
     models[name] = { model: "Haiku 5", provider: "claude-proxy", reasoning: "low" };
@@ -1744,14 +1789,18 @@ const OPS = {
   // Stages a file for the next chat.send, like Hermes' image.attach_bytes / pdf.attach / file.attach.
   // A name starting with "fail" is refused, so the e2e can check that nothing is sent after a failed attach.
   "chat.attach": (p) => {
-    needBot(p);
+    const b = needBot(p);
     const kind = needStr(p, "kind");
     const name = needStr(p, "name");
     const data = needStr(p, "data_base64");
     if (!["image", "pdf", "file"].includes(kind)) throw new OpError("bad_request", "need kind image|pdf|file");
     if (name.startsWith("fail")) throw new OpError("attach_failed", `unsupported ${kind}`);
     const bytes = Buffer.from(data, "base64").length;
-    if (kind === "image") return { kind, name, text: `[User attached image: ${name}]`, ref_text: "", bytes };
+    if (kind === "image") {
+      const attachment_id = `att-${++idSeq}`;
+      stagedAttachments.set(attachment_id, b.name);
+      return { kind, name, text: `[User attached image: ${name}]`, ref_text: "", bytes, attachment_id };
+    }
     if (kind === "pdf") return { kind, name, text: `[User attached PDF: ${name} (1 page(s))]`, ref_text: "", bytes };
     return { kind, name, text: "", ref_text: `@file:.hermes/attachments/${name}`, bytes };
   },
@@ -2123,6 +2172,10 @@ const OPS = {
     restartNext.set(p.bot, { outcome: p.outcome, work: p.work, line: p.line });
     return {};
   },
+  "mock.threadCreate": (p) => {
+    threadCreateRule = p.delay_ms || p.line ? { delay_ms: p.delay_ms, line: p.line } : null;
+    return {};
+  },
   "mock.restartDone": (p) => {
     const held = restartNext.get(needStr(p, "bot"));
     if (held?.back) {
@@ -2204,6 +2257,7 @@ const OPS = {
     return {};
   },
   "mock.steers": () => ({ steers: steers.map((x) => ({ ...x })) }),
+  "mock.commands": () => ({ commands: commands.map((x) => ({ ...x })) }),
   "mock.ready": (p) => {
     const b = needBotAny(p);
     if (p.ok) notReady.delete(b.name);

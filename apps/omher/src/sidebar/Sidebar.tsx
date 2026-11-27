@@ -27,6 +27,7 @@ import { useBotsAbove } from "./dockState";
 import { revealBotTop, revealPending, wholeTopOf } from "./revealBot";
 import { useEdgeFade } from "./edgeFade";
 import { SplitDivider, useSideSplit } from "./SideSplit";
+import { SidebarResizer } from "./SidebarResizer";
 import { useAutoSplit } from "./autoSplit";
 import { TasksBar } from "../tasks/TasksBar";
 import { DiskChip } from "./DiskChip";
@@ -164,7 +165,7 @@ export function Sidebar() {
                 pinned,
                 onPin: () => s.pinBot(b.name, !pinned),
                 onEdit: () => s.openSettings(`bot:${b.name}`),
-                onRestart: () => void getRestarts().press(b.name),
+                onRestart: b.host ? undefined : () => void getRestarts().press(b.name),
                 offline: b.status === "offline",
                 onRemove: listed.length > 1 ? () => s.listBot(b.name, false) : undefined,
               }}
@@ -268,6 +269,7 @@ export function Sidebar() {
           <UpdateButton />
         </div>
       </div>
+      <SidebarResizer />
     </aside>
   );
 }

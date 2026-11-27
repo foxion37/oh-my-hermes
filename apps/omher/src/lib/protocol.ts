@@ -362,7 +362,15 @@ export interface BotTemplates {
 export interface BotCreate {
   outcome: "ok" | "unconfirmed" | "failed";
   bot?: string;
+  /** Logs and old callers only: the page words each outcome itself from `reason` and the parts below. */
   line?: string;
+  /** `failed`: `no_hermes` (not installed), `hermes` (Hermes' own words in `line`), `exit` (stopped with `code`).
+   *  `unconfirmed`: `left` (the folders in `leftovers`) or `running` (the gateway may still be making it). */
+  reason?: "no_hermes" | "hermes" | "exit" | "left" | "running";
+  code?: number | null;
+  leftovers?: string[];
+  /** `unconfirmed`: Hermes' own words, if it said any. */
+  said?: string;
   /** `ok` only: Hermes' own `⚠` lines of the create, and whether one says skills, keys or model were not set up
    *  (the page then holds the template back). */
   notes?: string[];
@@ -490,7 +498,7 @@ export interface OpMap {
    *  omher posts nothing. */
   /** `queued`: a held message (steer queue); a still-busy Hermes runs it after its current work, never steers it. */
   /** `paused`: Hermes keeps the message in its queue behind a turn it lost, and runs it once that turn is discarded. */
-  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string; queued?: boolean }; result: { input_id: string; paused?: boolean } };
+  "chat.send": { params: { bot: string; text: string; session?: string; reply_to?: string; queued?: boolean; attachment_ids?: string[] }; result: { input_id: string; paused?: boolean } };
   "chat.interrupt": { params: { bot: string; session?: string }; result: Record<string, never> };
   /** Acknowledge the chat's lost turns (Hermes' `prompt.resolve_unknown`): never re-run, and what waits behind runs. */
   "chat.discard": { params: { bot: string; session?: string }; result: { discarded: number } };
@@ -498,6 +506,9 @@ export interface OpMap {
    *  or Hermes refused). The bridge never sends a refused steer another way. */
   /** queued = taken; rejected = no agent saw it (safe to send normally); uncertain = may already be with the agent */
   "chat.steer": { params: { bot: string; text: string; session?: string }; result: { status: "queued" | "rejected" | "uncertain" } };
+  /** `/usage` or `/status` typed while the chat's turn runs: Hermes' `slash.exec` runs it at once, beside the turn; its
+   *  answer comes as `command.output` (rule 48). */
+  "chat.command": { params: { bot: string; text: string; session?: string }; result: Record<string, never> };
   "approval.respond": {
     params: { bot: string; request_id: string; choice: ApprovalChoice; session?: string };
     result: Record<string, never>;
@@ -513,6 +524,8 @@ export interface OpMap {
   "folder.resume": { params: { bot: string; cwd: string; stored: string }; result: FolderResumeResult };
   "elsewhere.list": { params: { bot: string }; result: { sessions: Away[] } };
   "routines.list": { params: { bot: string }; result: { routines: Routine[] } };
+  /** Tasks › Linear: whether the bot's config has a Linear MCP server (read from its config.yaml; rule 33). */
+  "tasks.linear": { params: { bot: string }; result: { configured: boolean; server: string } };
   /** Every bot's cron jobs, each tagged with its bot (read from files; no gateway). */
   "automations.list": { params: Record<string, never>; result: { automations: Automation[] } };
   /** These four go through the bot's own `cron.manage` (add, pause, resume, remove) and nothing else. `deliver` is
@@ -643,6 +656,8 @@ export interface AttachResult {
   text: string;
   /** `@file:…` for a staged file; the prompt must carry it. Empty for images and PDFs. */
   ref_text: string;
+  /** Opaque id for a staged canonical-gateway image, passed back on the next `chat.send`. */
+  attachment_id?: string;
 }
 
 export interface MediaFile {
@@ -844,6 +859,8 @@ export type BridgeEvent =
   | (EventBase & { event: "skill"; name: string })
   | (EventBase & { event: "delta"; text: string })
   | (EventBase & { event: "message"; id: string; text: string; watch?: WatchTag })
+  /** A command's answer that came while a turn runs (`chat.command`): a note in the chat, not the turn's answer. */
+  | (EventBase & { event: "command.output"; id: string; text: string; /** the command as typed, e.g. `/usage` */ command?: string })
   /** A folder chat's name from Hermes (its titler or /title); `session` names the folder chat. */
   | (EventBase & { event: "session.title"; title: string })
   | (EventBase & {

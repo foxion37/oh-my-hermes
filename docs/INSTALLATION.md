@@ -1451,10 +1451,17 @@ wake pipe on real Windows pipes.
   rewind goes once that is settled.
   Esc twice with text clears it, keeping it in this session's input history
   (not in Hermes' history file, since it was never sent).
-- `/sessions` (also `/resume`, `/switch`, `/session`) lists your stored
-  sessions, most recently active first, as Claude Code's resume picker
-  does: it takes most of the screen, headed `Resume session (2 of 12)`
-  with a rounded search box under it, and shows each session as a card,
+- `/sessions` (also `/resume`, `/switch`, `/session`, or Ctrl+X) opens a compact table of
+  sessions across **All local profiles**, one block per bot (its name in the
+  colour of its face on the bot board, a blank row between bots), each
+  session with its title or preview, source and last activity as room allows. Type to filter; Tab and Shift+Tab
+  cycle profiles without clearing the filter. Ctrl+G loads older gateway
+  sessions when available. The footer tells you whether Enter switches to the
+  selected session or opens its read-only history. Only sessions authorized
+  by the connected gateway can be switched to, renamed or deleted.
+- Bare `/resume` uses the all-profile table too. The launcher's `omh --resume`
+  session picker retains the connected gateway's card-style picker, with a
+  rounded search box above its cards. Each session has a card,
   its name on one row and `2 days ago · 14 messages · tui` under it. The
   one you are in heads the list under `Current` (`this session` until it
   has a title, and `● this session` on its card), and the rest sit under a
@@ -1479,8 +1486,7 @@ wake pipe on real Windows pipes.
   cancels) and Ctrl+D deletes it once a second Ctrl+D confirms; the session
   you are in is not deleted from there. Hermes' own terminal entry renames
   only a session it has open, so there a stored session's rename may be
-  refused, and the row says Hermes' reason. Each alias runs
-  exactly as `/sessions` does, and the `/` menu offers `/resume` under its
+  refused, and the row says Hermes' reason. The `/` menu offers `/resume` under its
   own name once what you type starts it: `/res` and `/resu` complete to
   `/resume`.
   `/sessions <id or exact title>` (or `/resume <id or exact title>`)
@@ -1512,7 +1518,7 @@ Esc closes it):
 | ↑ / ↓ | Move between the composer's rows, walk the input history at its first and last row (earlier sessions' too, shared with `hermes --tui`), or move through an open completion menu (Ctrl+J / Ctrl+K and Ctrl+N / Ctrl+P move through the menu too) |
 | Ctrl+N / Ctrl+P | Move down / up in lists, menus, pickers and prompts; scroll one line in pagers, including /dag. Also work in CLI theme, model-chain and setup pickers |
 | Ctrl+R | Searches the input history; Ctrl+R again finds an older match, Enter puts it in the composer, Esc leaves the composer as it was |
-| Ctrl+X | Opens the `/sessions` picker |
+| Ctrl+X | Opens the all-profile sessions table |
 | Alt+P | Opens correction or dictionary actions at cursor; Cancel/Esc closes; never sends |
 | Ctrl+S | Opens the bot board, as `/bots` does: this machine's Hermes profiles, their gateways and sessions, read-only |
 | Ctrl+P | Folds the plan above the composer to its header and the item it is on, or expands it again, while a turn runs or between turns; the header says which on its right; on an open menu, Ctrl+P and Ctrl+N move the menu instead |
@@ -1884,16 +1890,22 @@ before Hermes answered stays, with the prompt's row under it.
 Typed during a turn, a command waits in the queue (`⧗`, as a prompt Enter cannot steer does, whatever Hermes'
 `display.busy_input_mode` says) and runs when the turn ends, in the order you sent it: a prompt queued after a
 `/compress` goes once Hermes has answered the `/compress`, and the lines queued after a `/new` or a
-`/sessions <id>` go into the session it opens. A command that opens a picker or a question (bare `/model`, a
-guarded model's confirm) holds the queue until you answer it. Up takes a queued command back on its own, its paste
-chips as you typed them, and the send-now key
-never sends one into the turn. Only these run at once during a turn: `/stop` and `/steer`, which are for the
-running turn, `/queue`, `/btw` and `/bg`, which Hermes runs beside it, the commands about this terminal (`/help`,
-`/keys`, `/whats-new`, `/redraw`, `/history`, `/todos`, `/details`, `/logs`, `/dag`, `/bots`, `/copy`, `/theme`,
-`/wallpaper`, `/image`, `/paste`), `/gateway restart`, which asks first and lets running turns finish, `/quit`,
-`/yolo`, `/effort <level>` and `/reasoning <level>`, the typed forms of Shift+Tab and Ctrl+T, which set the session
-and leave the turn as it is, and the ones that only say where they run. Bare `/reasoning`, or with anything but a
-level, is Hermes' own and waits. Interrupting is Esc or
+`/sessions <id>` go into the session it opens. A command that opens a question (a guarded model's confirm) holds
+the queue until you answer it. Up takes a queued command back on its own, its paste chips as you typed them. The
+send-now key on a queued command stops the turn and runs the command the moment it ends, ahead of the rest of the
+queue, which then goes on behind it, as Claude Code's `ctrl+x ctrl+s` runs a queued `/context`; Esc or `/stop`
+before the turn ends takes that back, and the queue is held as after any stop. Which commands run at once follows
+Claude Code (measured on 2.1.332): `/usage` (`/cost`) and `/status` print beside the running turn, and `/model`
+opens its picker at once (bare or with `--refresh`) or switches to the model it names, which Hermes holds for the
+next turn while one runs, so the running turn ends on the model it started with; `/model` with any other flag
+(`--global`, `--once`) is Hermes' own form and waits. `/context`, `/compress` (`/compact`), `/export`, `/new`
+(`/clear`), `/resume`, a skill and every other Hermes command wait, as they do in Claude Code. Also at once:
+`/stop` and `/steer`, which are for the running turn, `/queue`, `/btw` and `/bg`, which Hermes runs beside it, the
+commands about this terminal (`/help`, `/keys`, `/whats-new`, `/redraw`, `/history`, `/todos`, `/details`,
+`/logs`, `/dag`, `/bots`, `/copy`, `/theme`, `/wallpaper`, `/image`, `/paste`), `/gateway restart`, which asks
+first and lets running turns finish, `/quit`, `/yolo`, `/effort <level>` and `/reasoning <level>`, the typed forms
+of Shift+Tab and Ctrl+T, which set the session and leave the turn as it is, and the ones that only say where they
+run. Bare `/reasoning`, or with anything but a level, is Hermes' own and waits. Interrupting is Esc or
 `/stop`, never Enter. The echo and output of a command run during a turn wait under what is running and are
 written after it, as a steer is, so a command never cuts off a running tool call or splits a reply; one Hermes has not finished
 answering when the turn ends is written above that turn's done line with what it printed so far, and

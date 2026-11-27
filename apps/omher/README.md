@@ -96,6 +96,15 @@ Check a download against `SHA256SUMS.txt` on the same release:
 3. The installer's default home: `~/.hermes/hermes-agent/venv/bin/python` on macOS and Linux,
    `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe` on Windows.
 
+### No Hermes here: connect to a server
+
+If Hermes runs on a server you reach over SSH, nothing needs to be installed on this computer. On the first screen pick
+**Connect to a server (SSH)**, choose a host from `~/.ssh/config` or type `user@host` (key or ssh agent login only),
+press Check to see the server's bots, then Connect. omher saves `~/.omher/remote.json`, starts no local bridge or
+Python, and keeps one `ssh` link (the same one Remote machines uses) to that server's own omher bridge, reconnecting
+when it drops. Settings › General › Server has Change server and Use this computer, which deletes the file.
+Terminals stay this computer's own; handing a bot a folder here and remote machines are off. `BOUNDARY.md` rule 47.
+
 ## Architecture
 
 ```
@@ -331,7 +340,9 @@ bash scripts/e2e-shards.sh 3           # the same as 3 shards at once, each with
 OMHER_E2E_PART=2/4 bash scripts/e2e-shards.sh 2   # one of CI's four Linux runners: shards 3-4 of 8
 (cd src-tauri && cargo test)           # the shell's Rust tests
 (cd src-tauri && cargo test real_agents_print_their_version -- --ignored --nocapture)  # `claude/codex --version` through the PTY
-python -m unittest discover -s bridge/tests -v   # bridge tests with a FakeGateway; needs no Hermes
+# bridge tests with a FakeGateway: no Hermes gateway runs, but the bridge imports websockets, pyyaml and ruamel.yaml, so use
+# a Python that has them (the Hermes venv's: ~/.hermes/hermes-agent/venv/bin/python)
+python -m unittest discover -s bridge/tests -v
 pnpm tauri build --debug --bundles app # a debug .app in src-tauri/target/debug/bundle/macos/
 pnpm tauri build --bundles dmg         # macOS release .dmg (ad-hoc signed)
 pnpm tauri build --bundles nsis,msi    # Windows release installers (unsigned)
