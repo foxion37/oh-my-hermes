@@ -11,6 +11,7 @@ mod disk;
 mod dsh_chat;
 mod fg;
 mod folder_open;
+mod gh_dash;
 mod gh_me;
 mod git_branch;
 mod hermes_auth;
@@ -655,6 +656,15 @@ async fn tasks_me(me: State<'_, Arc<gh_me::Me>>, account: String, section: Strin
     tauri::async_runtime::spawn_blocking(move || m.list(&account, sec, page, fresh.unwrap_or(false))).await.map_err(|e| gh_me::MeError::new("other", e.to_string()))?
 }
 
+/// Tasks › GitHub (the dashboard): one pinned repository's open pull requests (and which ask for my review), recent
+/// workflow runs, releases, default branch CI and commits since the latest release, as GitHub account `account` (rule
+/// 51). The page sends only the account id and the repository; every argv is gh_dash.rs's own.
+#[tauri::command]
+async fn gh_dash(me: State<'_, Arc<gh_me::Me>>, account: String, repo: String, fresh: Option<bool>) -> Result<gh_dash::DashRepo, gh_me::MeError> {
+    let m = Arc::clone(&me);
+    tauri::async_runtime::spawn_blocking(move || gh_dash::read(&m, &account, &repo, fresh.unwrap_or(false))).await.map_err(|e| gh_me::MeError::new("other", e.to_string()))?
+}
+
 /// Settings › Accounts › GitHub: gh's own sign-in for one more account in a terminal-panel tab (`gh auth login`, or
 /// `--hostname <host>` for GitHub Enterprise; rule 18). The page sends only the host (checked) and a size.
 #[tauri::command]
@@ -894,6 +904,17 @@ async fn past_chats_list(agent: String, cwds: Vec<String>) -> Result<Vec<past_ch
 async fn codex_conversation(shell: State<'_, Shell>, id: u32) -> Result<Option<String>, String> {
     let sessions = shell.sessions.clone();
     tauri::async_runtime::spawn_blocking(move || Ok(sessions.codex_conversation(id, &user_home()?).filter(|c| sessions::is_uuid(c))))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The conversation the Antigravity CLI in the foreground of TERMINALS session `id` is on, for the session to continue
+/// it after a restart (rule 11): only the id, checked as a UUID, from Antigravity's own workspace cache for the folder
+/// the session started in, written since it started (`fg::agy_conversation`). The page sends only the session id.
+#[tauri::command]
+async fn agy_conversation(shell: State<'_, Shell>, id: u32) -> Result<Option<String>, String> {
+    let sessions = shell.sessions.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(sessions.agy_conversation(id, &user_home()?).filter(|c| sessions::is_uuid(c))))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1213,6 +1234,7 @@ pub fn run() {
             conversation_state,
             codex_conversation,
             claude_conversation,
+            agy_conversation,
             session_shell_in_front,
             host_name,
             asks_badge,
@@ -1230,6 +1252,7 @@ pub fn run() {
             tasks_remote,
             gh_accounts,
             tasks_me,
+            gh_dash,
             gh_login_start,
             window_close,
             power_busy,

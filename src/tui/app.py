@@ -320,6 +320,7 @@ from .slash import (
     known_names,
     hermes_notice,
     parse_slash,
+    MODEL_REFRESH_ARG,
     plan_invocation,
     runs_during_turn,
     skill_completions,
@@ -509,8 +510,6 @@ REWIND_KEPT_NOTICE = "Hermes did not rewind: {reason}. The screen is back to how
 REWIND_CUT_NOTICE = "Hermes cut the session there but did not take the prompt: {reason}. The prompt is back in the composer."
 REWIND_UNREAD_NOTICE ="Hermes did not send the session's history ({reason}), so the screen stays as it was before you sent."
 REWIND_TURN_BACK_NOTICE = "/{name} went back in the session itself, so the rewind is cancelled."
-# `/model --refresh` as Hermes' own TUI reads it: the picker, over a list Hermes asks the providers for again.
-MODEL_REFRESH_ARG = "--refresh"
 # What a `config.set model` answer says, for `/model` and its picker.
 MODEL_SWITCHED_NOTICE = "This session now runs {model}."
 # Hermes persisted the switch (`scope: "global"`): its typed `/model` does so under `model.persist_switch_by_default`.
@@ -1226,6 +1225,7 @@ COPY_DROPPED_NOTE = "not copied ({why})"  # a copy herdr drops (`clipboard.HERDR
 # `omh-*` and `ulw-*` slugs) up to half the terminal; a name longer than that pushes only its own summary.
 MENU_NAME_CELLS = 16
 SESSION_LIST_LIMIT = 100  # visible rows per picker page; Ctrl+G extends the search to older pages
+LOCAL_RESUME_PAGE_LIMIT = 5  # bound the automatic search; Ctrl+G can still load more
 # The launcher resume picker has no echo; until Hermes answers, its loading row stands where the picker opens.
 SESSIONS_LOADING_LINE = "Loading sessions…"
 # Hermes lists the gateway profile's own store, newest first, and leaves archived, hidden (Bot Mode) and internal
@@ -6600,7 +6600,7 @@ class App(ModesMixin, AgentViewMixin):
 
     def _on_interrupt_refused(self, error: dict[str, Any]) -> bool:
         """Hermes did not stop the turn: the spinner comes back, and the refusal is said as any refused call is."""
-        self.interrupting = False
+        self.interrupting = self.command_cut_in = False
         return False
 
     def _interrupt_or_exit(self) -> None:
@@ -7262,10 +7262,8 @@ class App(ModesMixin, AgentViewMixin):
         if self.interrupting and self.command_cut_in and self.queued and self.queued[0].command is not None:
             # The person sent a queued command now: it runs first, then the queue goes on behind it, as behind a
             # cut-in prompt. Steers the turn had not read go back right behind the command.
-            self.interrupting = self.command_cut_in = False
-            command = self.queued.popleft()
             self._requeue_unread_steers()
-            self.queued.appendleft(command)
+            self.interrupting = self.command_cut_in = False
             self._drain_queue()
             self._check_default()
             return
@@ -7626,6 +7624,7 @@ class App(ModesMixin, AgentViewMixin):
 
     def _take_back_queue(self, composer: Composer) -> None:
         """Put the queue's next lines into the empty `composer`, as `_recall_queue` says; the hold ends with the queue."""
+        self.command_cut_in = False
         taken = [self.queued.popleft()]
         while self.queued and not taken[0].alone and not self.queued[0].alone:
             taken.append(self.queued.popleft())
@@ -7679,7 +7678,7 @@ class App(ModesMixin, AgentViewMixin):
         head = self.queued[0] if self.queued else None
         typed_command = head is not None and head.command is not None and not head.command.for_plan_mode
         cuts_in = head is not None and not head.shell and not head.typed and (bool(head.images) or typed_command)
-        return cuts_in and bool(self.sid) and self.cut_in is None
+        return cuts_in and bool(self.sid) and self.cut_in is None and not self.command_cut_in
 
     def _send_queued_now(self) -> None:
         """The send-now key: the oldest queued prompt leaves the queue and goes into the running turn as a steer, or,
@@ -7935,9 +7934,13 @@ class App(ModesMixin, AgentViewMixin):
         held, self.hermes_queued = self.hermes_queued, []
         unread = [*self.sent_now, *(SentNow(line, block) for block, line in held if line is not None)]
         self.sent_now = []
+        command = (self.queued.popleft()
+                   if self.command_cut_in and self.queued and self.queued[0].command is not None else None)
         for sent in reversed(unread):
             self.queued.appendleft(sent.line)
             self.transcript.steer_answered(sent.block, STEER_REFUSED, SENT_NOW_DROPPED_OUTCOME)
+        if command is not None:
+            self.queued.appendleft(command)
         for block, line in held:
             if line is None:
                 self.transcript.steer_answered(block, STEER_REFUSED, STEER_DROPPED_OUTCOME)
@@ -8544,7 +8547,7 @@ class App(ModesMixin, AgentViewMixin):
             self.transcript.add_aside(NoticeBlock("Local sessions are still loading. Try /sessions again shortly."))
             return
         profile = self.launch_profile  # only the gateway's session info names its effective profile
-        picker = SessionPicker([], current=self.stored_id, profiles=(),
+        picker = SessionPicker([], current=self.stored_id, profiles=(), gateway_profile=profile, gateway_loading=True,
                                inventory_status="Reading local profiles…", gateway_status="Waiting for Hermes…")
         self.picker = picker
         self.profile_inventory = None
@@ -8554,12 +8557,16 @@ class App(ModesMixin, AgentViewMixin):
 
         def done(result: dict[str, Any]) -> None:
             if self.picker is picker:
+                picker.gateway_loading = False
                 picker.gateway_status = ""
                 picker.add_older(session_rows(result, profile=profile), as_text(result.get("next_page")))
+                self._resolve_picker_open(picker)
 
         def problem(message: str) -> None:
             if self.picker is picker:
+                picker.gateway_loading = False
                 picker.gateway_status = message
+                self._resolve_picker_open(picker, failed=True)
                 self.dirty = True
 
         def refused(error: dict[str, Any]) -> bool:
@@ -8730,22 +8737,29 @@ class App(ModesMixin, AgentViewMixin):
     def _picker_key(self, event: Key | Paste) -> None:
         if self.picker is None:
             return
-        action = self.picker.handle_key(event)
+        picker = self.picker
+        action = picker.handle_key(event)
+        if picker.opening_local is not None and (
+            picker.selected() is not picker.opening_local or picker.renaming or picker.arming
+        ):
+            picker.opening_local = None
+            picker.history_status = ""
         if action is None:
             return
         if action.kind == LOAD_OLDER:
-            self._older_sessions(self.picker)
+            self._older_sessions(picker)
             return
         if action.kind == LOCAL_HISTORY:
-            from . import profile_sessions
-
-            picker, inventory = self.picker, self.profile_inventory
             row = picker.selected()
-            if (inventory is not None and row is not None and action.local is row.local
-                    and self.profile_history is None):
-                picker.history_status = "Reading local history…"
-                self.profile_history = picker, row, profile_sessions.background(
-                    lambda: inventory.transcript(self.environ, action.local), self._wake_loop)
+            if (row is not None and row.local is action.local and self.profile_history is None
+                    and picker.opening_local is None):
+                if picker.can_check_resume(row):
+                    picker.opening_local = row
+                    picker.open_pages_left = LOCAL_RESUME_PAGE_LIMIT
+                    picker.history_status = "Checking whether Hermes can resume this session…"
+                    self._resolve_picker_open(picker)
+                else:
+                    self._read_local_picker_history(picker, row)
             return
         if action.kind in (RENAME, SESSION_DELETE):  # the picker stays open, its row saying how the call went
             row = next((row for row in self.picker.rows if row.id == action.session_id), None)
@@ -8756,16 +8770,56 @@ class App(ModesMixin, AgentViewMixin):
                 return
             self._edit_session(self.picker, action)
             return
-        rows, self.picker = self.picker.rows, None
-        self.profile_inventory = None
         if action.kind == PICK:
-            row = next((row for row in rows if row.local is None and row.id == action.session_id), None)
-            if row is None:
+            row = picker.selected()
+            if row is not None and row.local is None and row.id == action.session_id:
+                self._open_picker_row(row)
                 return
-            if row.read_only:  # its owner is another runtime: its history is read, not resumed
-                self._read_session(row)
-                return
+        self.picker = None
+        self.profile_inventory = None
+
+    def _open_picker_row(self, row: SessionRow) -> None:
+        self.picker = None
+        self.profile_inventory = None
+        if row.read_only:
+            self._read_session(row)
+        else:
             self._switch_session(row.id, label=row.label)
+
+    def _read_local_picker_history(self, picker: SessionPicker, row: SessionRow) -> None:
+        from . import profile_sessions
+
+        inventory = self.profile_inventory
+        if inventory is not None and self.profile_history is None:
+            picker.history_status = "Reading local history…"
+            self.profile_history = picker, row, profile_sessions.background(
+                lambda: inventory.transcript(self.environ, row.local), self._wake_loop)
+
+    def _resolve_picker_open(self, picker: SessionPicker, *, failed: bool = False) -> None:
+        """Find the requested local row in the authenticated list before opening it."""
+        local = picker.opening_local
+        if local is None:
+            return
+        selected = picker.selected()
+        if (self.picker is not picker or self._front_picker() is not picker or self.slot is not None
+                or self.pager is not None or self.proofread_review is not None or selected is None
+                or (selected is not local and (selected.local is not None or not picker.same_lineage(local, selected)))):
+            picker.opening_local = None
+            picker.history_status = ""
+            return
+        if selected is local and not failed:
+            if picker.gateway_loading or picker.loading_older:
+                return
+            if picker.next_page and picker.open_pages_left:
+                picker.open_pages_left -= 1
+                self._older_sessions(picker)
+                return
+        picker.opening_local = None
+        picker.history_status = ""
+        if selected.local is not None:
+            self._read_local_picker_history(picker, selected)
+        else:
+            self._open_picker_row(selected)
 
     def _older_sessions(self, picker: SessionPicker) -> None:
         """Only the open picker that requested a page may receive it."""
@@ -8774,11 +8828,13 @@ class App(ModesMixin, AgentViewMixin):
         def done(result: dict[str, Any]) -> None:
             if self.picker is picker:
                 picker.add_older(session_rows(result, profile=profile), as_text(result.get("next_page")))
+                self._resolve_picker_open(picker)
 
         def problem(message: str) -> None:
             if self.picker is picker:
                 picker.loading_older = False
                 picker.older_problem = message
+                self._resolve_picker_open(picker, failed=True)
 
         def refused(error: dict[str, Any]) -> bool:
             reason = plain_sentence(as_text(error.get("message"))) or "Hermes refused the page"
@@ -8839,6 +8895,8 @@ class App(ModesMixin, AgentViewMixin):
         if not lines:
             self.transcript.add_aside(NoticeBlock(f"No messages stored for {row.label}."))
             return
+        if local and self.launch_profile and row.profile != self.launch_profile and PROFILE_NAME.fullmatch(row.profile):
+            lines[:0] = [(Span(f"To try resuming in this profile, open `omh -p {row.profile}` and use /sessions."),), ()]
         profile = f"{row.profile} · " if local else ""
         self._open_pager(f"Read-only · {profile}{row.label}", lines)
 

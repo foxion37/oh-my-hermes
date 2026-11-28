@@ -457,10 +457,12 @@ RULES = (
     "When the app starts, the page asks the shell once for this computer's name (`host_name`, read from the system, no"
     " program run), which it uses only to accept OSC 7 folders from this computer in any terminal (below); it is not"
     " kept or sent anywhere.",
-    "a new Claude Code terminal gets `--session-id <id>`, a random UUID omher makes and keeps with the session once its"
-    " CLI started,",
-    "Restart on a TERMINALS Claude Code or Codex session that has ended and has its conversation id continues it the"
-    " same way.",
+    # the agents beyond Claude Code and Codex that a restart continues (rule 11, harness resume)
+    "a new Claude Code, Gemini CLI, Qwen Code, Grok, Copilot CLI or pi terminal gets `--session-id <id>`, a random UUID"
+    " omher makes and keeps with the session once its CLI started,",
+    "Restart on such a session that has ended and has its conversation id continues it the same way.",
+    "OpenCode, Kimi Code, Cline, oh-my-pi and OmO terminals get no id: their CLIs make it and keep it where omher cannot"
+    " tell one terminal's from another's, so they come back paused and start on Resume as a new conversation, as before.",
     "A Claude Code conversation with no file that nobody used (no key was pressed in it and it has no title of its own;"
     " Claude Code writes the file on the first message) is not continued: its terminal starts again with `--session-id`"
     " and the same id, and when Claude Code refuses that id as one it already has (`Session ID <id> is already in use`),"
@@ -477,8 +479,9 @@ RULES = (
     " one also offers Start a new conversation, which forgets the id and starts the agent as a new terminal does.",
     "A continued CLI that ends any other way, one that waited for input (a login) and was left later included, goes on"
     " as the login shell without its id, as a new one does.",
+    # `--session-id` now goes to the six agents of `TERM_GIVES_ID` (rule 11, harness resume)
     "The page sends only the id; the shell (`sessions::terminal_args`) checks it is a UUID, gives `--session-id` to"
-    " Claude Code only, never sends both, and refuses every other agent or shape.",
+    " those six agents only, never sends both, and refuses every other agent or shape.",
     "omher also listens for three escapes a shell or CLI sends by itself, and puts no hook, script or variable into the"
     " shell for them:",
     "None of these is kept beyond the open terminal or sent anywhere, and nothing is run, opened or read from the"
@@ -728,9 +731,12 @@ class DocPins(unittest.TestCase):
         # link to the server and the page talking only to that bridge); 48: rule 48 (a /usage or /status typed during a
         # turn through the same `slash.exec`, `chat.command`, its answer as `command.output`; a bare /model opens the
         # picker; every other command waits in the steer queue); 49: rule 49 (a run stopped past its time ends its whole
-        # process tree on Windows through one fixed `taskkill /T /F /PID`). The rules stay numbered 1..n with no gap or repeat.
+        # process tree on Windows through one fixed `taskkill /T /F /PID`); 50: rule 50 (an Antigravity session's
+        # conversation id from its own workspace cache, read-only); 51: rule 51 (Tasks › GitHub: pinned repositories'
+        # open pull requests, runs and releases through rule 33's runner as a chosen account, six fixed read argv).
+        # The rules stay numbered 1..n with no gap or repeat.
         rules = re.findall(r"^(\d+)\. ", DOC.read_text(encoding="utf-8"), re.M)
-        self.assertTrue(6 <= len(rules) <= 49, len(rules))
+        self.assertTrue(6 <= len(rules) <= 51, len(rules))
         self.assertEqual([int(n) for n in rules], list(range(1, len(rules) + 1)))
 
     def test_glossary_and_docs_index_name_omher(self) -> None:
@@ -2072,14 +2078,61 @@ class SessionsStartOnlyAllowListedAgents(unittest.TestCase):
         self.assertIn("start_agent(&agent, std::path::Path::new(&cwd), session_id.as_deref(), resume.as_deref(), link.as_deref()", body)
         self.assertNotIn(".spawn(", body)
 
-    def test_terminal_args_are_only_a_checked_claude_or_codex_conversation_id(self) -> None:
-        # rule 11: a new Claude Code terminal gets `--session-id`, a restarted Claude Code / Codex one `--resume` /
-        # `resume`; each id is a UUID, never both, no other agent or shape
+    def test_terminal_args_are_only_a_checked_conversation_id_per_agent(self) -> None:
+        # rule 11: a new Claude Code, Gemini CLI, Qwen Code, Grok, Copilot CLI or pi terminal gets `--session-id`; a
+        # restarted one continues with its own flag (`--resume`, `resume`, `--conversation`, `--session`); each id is a
+        # UUID (one check covers both paths, so no id reads as an option), never both, no other agent or shape. The
+        # two branches were folded into one id check when the agents beyond Claude Code and Codex were added.
         tf = self.prod.split("pub fn terminal_args", 1)[1].split("\n}\n", 1)[0]
-        for needle in ('(Some(s), None) => {', 'if id != "claude" {', 'Ok(vec!["--session-id".into(), s.into()])',
-                       'Ok(vec!["resume".into(), r.into()])', '(Some(_), Some(_)) => Err('):
+        for needle in ('(Some(s), None) => {', 'if !TERM_GIVES_ID.contains(&id) {', '("--session-id", s)',
+                       'terminal_resume_flag(id).ok_or_else(', '(Some(_), Some(_)) => return Err(',
+                       'if !is_uuid(conv) {', 'Ok(vec![flag.into(), conv.into()])'):
             self.assertIn(needle, tf)
-        self.assertEqual(tf.count("is_uuid("), 2)
+        self.assertEqual(tf.count("is_uuid("), 1)
+        self.assertIn('pub const TERM_GIVES_ID: [&str; 6] = ["claude", "gemini", "qwen", "grok", "copilot", "pi"];', self.prod)
+        flags = self.prod.split("fn terminal_resume_flag(", 1)[1].split("\n}\n", 1)[0]
+        for needle in ('"claude" | "gemini" | "qwen" | "grok" => "--resume",', '"codex" => "resume",',
+                       '"agy" => "--conversation",', '"omo" => "--session",', "_ => return None,"):
+            self.assertIn(needle, flags)
+        self.assertEqual(flags.count("=>"), 5)
+
+    def test_an_antigravity_terminal_reads_only_its_folders_id_from_its_own_cache(self) -> None:
+        # rule 50: only when the foreground is Antigravity, one fixed file, no link, capped, written since the session
+        # started, only this folder's entry, only a UUID; the page sends only the session id and the shell never writes it
+        text = _flat(DOC.read_text(encoding="utf-8"))
+        self.assertIn("50. For a TERMINALS Antigravity CLI (`agy`) session that has no conversation id yet, the shell reads, when the page asks (`agy_conversation`, only the session id goes out), one file of Antigravity's own: its workspace cache `<home>/.gemini/antigravity-cli/cache/last_conversations.json`", text)
+        self.assertIn("an Antigravity the person runs in that folder outside omher, active after this one started, can be named instead", text)
+        self.assertIn("and never the id that entry held right before the session's program started", text)
+        self.assertIn("is started once more without it, keeps no id, and comes back paused after a restart as before", text)
+        fg = (SHELL / "fg.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests", 1)[0]
+        self.assertIn('home.join(".gemini").join("antigravity-cli").join("cache").join("last_conversations.json")', fg)
+        self.assertIn("const AGY_CACHE_MAX: u64 = 256 * 1024;", fg)
+        own = fg.split("pub fn agy_conversation(fg: u32, home: &Path, cwd: &Path, started: std::time::SystemTime, before: Option<&str>)", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('if Probe::default().agent(fg) != Some("agy") {', own)
+        # the file is read in one place (no link, capped); the folder's entry from before the start is refused
+        text_of = fg.split("fn agy_cache_text(", 1)[1].split("\n}\n", 1)[0]
+        for needle in ("open_record(&agy_cache_path(home))?", "meta.len() > AGY_CACHE_MAX", ".take(AGY_CACHE_MAX)"):
+            self.assertIn(needle, text_of)
+        read = fg.split("pub fn agy_cache_conversation(", 1)[1].split("\n}\n", 1)[0]
+        for needle in ("agy_cache_text(home)?", "if at < since {", "agy_workspace_conversation(&text, cwd).filter(|id| Some(id.as_str()) != before)"):
+            self.assertIn(needle, read)
+        self.assertIn('(agent_id == "agy" && resume.is_none()).then(|| user_home_dir().and_then(|h| crate::fg::agy_cache_entry(&h, cwd)))', self.prod)
+        entry = fg.split("pub fn agy_workspace_conversation(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("crate::sessions::is_uuid(id).then(|| id.to_ascii_lowercase())", entry)
+        for body in (own, text_of, read, entry):
+            for banned in ("Command::new", "fs::write", "OpenOptions", "remove_file", "read_dir"):
+                self.assertNotIn(banned, body, banned)
+        sig = re.search(r"async fn agy_conversation\((.*?)\) -> ", self.lib, re.S)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig.group(1).strip(), "shell: State<'_, Shell>, id: u32")
+        self.assertIn("Ok(sessions.agy_conversation(id, &user_home()?).filter(|c| sessions::is_uuid(c)))", self.lib)
+        # the page asks only for its own Antigravity row, and not while another runs in the same folder
+        ui = (UI_SRC / "sessions" / "sessions.ts").read_text(encoding="utf-8")
+        conv = (UI_SRC / "sessions" / "termConv.ts").read_text(encoding="utf-8")
+        self.assertIn('export const ONE_PER_FOLDER: readonly AgentId[] = ["agy"];', conv)
+        self.assertIn("(o.agent === agent || o.fgAgent === agent) && normDir(o.cwd) === here", conv)
+        self.assertIn('export const GIVES_ID: readonly AgentId[] = ["claude", "gemini", "qwen", "grok", "copilot", "pi"];', conv)
+        self.assertIn("const got = shared ? null : await askOf(agent)!.call(host, pty).catch(() => null);", ui)
 
     def test_only_an_omh_terminal_and_a_shell_row_get_their_checked_link_as_one_variable(self) -> None:
         # rule 11: an oh-my-hermes terminal and a TERMINALS Shell row are told their row's link id (OMHER_TERMINAL_LINK)
@@ -3138,7 +3191,78 @@ class TasksReadOnly(unittest.TestCase):
         create = store.split("const createThread = async (", 1)[1].split("\n  };\n", 1)[0]
         self.assertEqual(re.findall(r'(threadReq|bridge\.request)\("([a-z.]+)"', create), [("threadReq", "thread.create")])
         host = (UI_SRC / "tasks" / "host.ts").read_text(encoding="utf-8")
-        self.assertEqual(sorted(set(re.findall(r'invoke<[^>]+>\("([a-z_]+)"', host))), ["gh_accounts", "tasks_list", "tasks_me", "tasks_remote", "tasks_status", "tasks_view"])
+        self.assertEqual(sorted(set(re.findall(r'invoke<[^>]+>\("([a-z_]+)"', host))), ["gh_accounts", "gh_dash", "tasks_list", "tasks_me", "tasks_remote", "tasks_status", "tasks_view"])
+
+
+class GithubDashboardReadOnly(unittest.TestCase):
+    """Rule 51: Tasks › GitHub reads pinned repositories through rule 33's runner as a chosen account, with six fixed
+    read argv the page cannot extend; the page sends only an account id and a repository."""
+
+    RULE_51 = (
+        "51. Tasks › GitHub (the GitHub dashboard: the sidebar's GitHub row, shown once a github.com account is chosen in"
+        " Settings › Accounts, and the Tasks page's third scope) shows, read-only,",
+        "The desktop shell (`gh_dash.rs`) reads them as a chosen github.com account (the one whose login owns the"
+        " repository, else the first) through rule 33's `Me::run_as`:",
+        "The only argv it adds are `pr list --repo <owner>/<repo> --state open --json <fixed fields> --limit 50`, the same"
+        " with `--search review-requested:@me --json number`, `run list --repo <owner>/<repo> --json <fixed fields> --limit"
+        " 15`, `release list --repo <owner>/<repo> --exclude-drafts --json <fixed fields> --limit 5`, `api graphql -f"
+        " query=<one fixed query> -f owner=<owner> -f name=<repo>`",
+        "and `api repos/<owner>/<repo>/compare/<tag>...<branch> --jq .ahead_by`, a GET whose tag comes from the release"
+        " list and whose branch comes from that query, each checked",
+        "The page sends only a chosen account id and a repository, checked as rule 33 checks them;",
+        "omher never comments, reviews, merges, closes, edits, re-runs or cancels anything on GitHub from it.",
+    )
+
+    def setUp(self) -> None:
+        text = (SHELL / "gh_dash.rs").read_text(encoding="utf-8")
+        self.prod = text.split("#[cfg(test)]\nmod tests", 1)[0]
+        self.code = "\n".join(l for l in self.prod.splitlines() if not l.lstrip().startswith("//"))
+        self.lib = (SHELL / "lib.rs").read_text(encoding="utf-8")
+
+    def test_the_rule_is_stated(self) -> None:
+        text = _flat(DOC.read_text(encoding="utf-8"))
+        for sentence in self.RULE_51:
+            self.assertIn(_flat(sentence), text)
+
+    def test_no_spawn_of_its_own_only_the_accounts_runner(self) -> None:
+        # the four reads beside the pull request list run on scoped threads; no process is started here
+        self.assertEqual(re.findall(r"(\w+)\.spawn\(", self.code), ["sc"] * 4)
+        for bad in ("Command::new", "process::", "run_full(", "run_env(", "/bin/sh", '"-c"', "std::fs::", "File::", "OpenOptions", "println!", "eprintln!", "dbg!"):
+            self.assertNotIn(bad, self.code, bad)
+        # every read goes through gh_me.rs's Me::run_as (the chosen account, its token in that one child, cached)
+        self.assertEqual(len(re.findall(r"\brun_as\(", self.code)), 2)
+        self.assertIn("let ask = |argv: Result<Vec<String>, String>| argv.map_err(other).and_then(|a| me.run_as(id, a, fresh));", self.code)
+        self.assertIn("repo_account_ok(id).map_err(other)?;", self.code)
+        self.assertIn("let repo = check_repo(Source::Github, repo).map_err(other)?;", self.code)
+
+    def test_six_fixed_read_argv(self) -> None:
+        verbs = re.findall(r'vec!\[s\("([a-z]+)"\), (?:s\("([a-z]+)"\)|format!)', self.code)
+        self.assertEqual(sorted(verbs), [("api", ""), ("api", "graphql"), ("pr", "list"), ("pr", "list"), ("release", "list"), ("run", "list")])
+        for bad in ("create", "close", "edit", "comment", "merge", "delete", "review", "rerun", "cancel", "watch", "upload", "download", "-X", "--method", "--input", "-F", "--field", "--raw-field", "mutation"):
+            self.assertNotIn(f'"{bad}"', self.code, bad)
+        self.assertNotIn("mutation", self.code)
+        self.assertIn('pub const REPO_QUERY: &str = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {', self.prod)
+        # the compare read is a GET: no field (`-f` turns `gh api` into a POST), its tag and branch checked first
+        compare = self.prod.split("pub fn compare_argv(", 1)[1].split("\n}\n", 1)[0]
+        self.assertNotIn('"-f"', compare)
+        self.assertIn("if !ref_ok(tag) || !ref_ok(branch) {", compare)
+        self.assertIn('Ok(vec![s("api"), format!("repos/{repo}/compare/{tag}...{branch}"), s("--jq"), s(".ahead_by")])', compare)
+        # every repository argv checks the repository before it is built
+        for fn in ("prs_argv", "asked_argv", "runs_argv", "releases_argv", "repo_argv", "compare_argv"):
+            body = self.prod.split(f"pub fn {fn}(", 1)[1].split("\n}\n", 1)[0]
+            self.assertIn("let repo = check_repo(Source::Github, repo)?;", body, fn)
+
+    def test_the_page_sends_only_an_account_and_a_repository(self) -> None:
+        sig = self.lib[self.lib.index("async fn gh_dash("):]
+        sig = _flat(sig[: sig.index(") ->")])
+        self.assertIn("account: String, repo: String, fresh: Option<bool>", sig)
+        self.assertNotRegex(sig, r"\b(argv|args|program|command|token|query|tag|branch)\b")
+        view = (UI_SRC / "tasks" / "DashView.tsx").read_text(encoding="utf-8")
+        dash = (UI_SRC / "tasks" / "dash.ts").read_text(encoding="utf-8")
+        for src in (view, dash):
+            self.assertNotIn("invoke(", src)
+            self.assertNotIn("bridge.request", src)
+        self.assertIn('invoke<DashRepo>("gh_dash", { account, repo, fresh })', (UI_SRC / "tasks" / "host.ts").read_text(encoding="utf-8"))
 
 
 class HandToBotAddsNoRead(unittest.TestCase):
